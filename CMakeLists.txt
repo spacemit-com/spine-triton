@@ -17,7 +17,7 @@ add_triton_plugin(SpineTriton ${CMAKE_CURRENT_SOURCE_DIR}/triton_shared.cc LINK_
 target_link_libraries(SpineTriton PRIVATE Python3::Module pybind11::headers ${Python3_LIBRARIES})
 
 # Explicitly declare tablegen dependencies to prevent race conditions in parallel builds
-add_dependencies(SpineTriton 
+add_dependencies(SpineTriton
   XSMTTableGen
   XSMTAsyncTableGen
   TPtrTableGen

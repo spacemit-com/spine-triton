@@ -1,11 +1,28 @@
 name: Build Libraries CI
 
 on:
-  workflow_dispatch: 
+  workflow_dispatch:
 
 jobs:
-  build-libs:
+  setup:
     runs-on: ubuntu-latest
+    outputs:
+      python-versions: ${{ steps.read-versions.outputs.versions }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read Python versions from variables.env
+        id: read-versions
+        run: |
+          source .github/variables.env
+          echo "versions=$PYTHON_VERSIONS" >> $GITHUB_OUTPUT
+
+  build-libs:
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJson(needs.setup.outputs.python-versions) }}
     steps:
       - name: Checkout code with submodules
         uses: actions/checkout@v4
@@ -19,9 +36,7 @@ jobs:
       - name: Setup System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build clang lld gcc-11 g++-11 qemu-user-static binfmt-support
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 100
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-11 100
+          sudo apt-get install -y ninja-build clang lld
 
       - name: Free Disk Space & Setup Swap
         uses: jlumbroso/free-disk-space@main
@@ -37,7 +52,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ matrix.python-version }}
 
       - name: Install Python Dependencies
         run: |
@@ -112,7 +127,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: spine-triton-whl
+          name: spine-triton-whl-py${{ matrix.python-version }}
           path: build-wheel-riscv64/*.whl
           retention-days: 30
 
@@ -164,4 +179,3 @@ jobs:
           fi
 
           echo "Architecture check passed: all shared libraries are RISC-V"
-
