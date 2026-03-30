@@ -11,6 +11,7 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    environment: gitlab-pypi
     permissions:
       actions: read
       contents: read
