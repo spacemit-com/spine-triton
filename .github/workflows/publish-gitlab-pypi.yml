@@ -77,12 +77,17 @@ jobs:
 
       - name: Publish to GitLab PyPI
         env:
-          REPO: ${{ secrets.REPO }}
-          USER_NAME: ${{ secrets.USER_NAME }}
-          PASSWD: ${{ secrets.PASSWD }}
-          TWINE_USERNAME: ${{ secrets.USER_NAME }}
-          TWINE_PASSWORD: ${{ secrets.PASSWD }}
+          TWINE_REPOSITORY_URL: ${{ secrets.TWINE_REPO }}
+          TWINE_USERNAME: ${{ secrets.TWINE_USER }}
+          TWINE_PASSWORD: ${{ secrets.TWINE_PASSWD }}
         run: |
+          : "${TWINE_REPOSITORY_URL:?GitLab PyPI repository URL secret TWINE_REPO is required}"
+          : "${TWINE_USERNAME:?GitLab PyPI username secret TWINE_USER is required}"
+          : "${TWINE_PASSWORD:?GitLab PyPI password secret TWINE_PASSWD is required}"
           echo "Publishing wheels:"
           ls dist/*.whl
-          twine upload --repository-url "${REPO}" dist/*.whl
+          twine upload \
+            --repository-url "${TWINE_REPOSITORY_URL}" \
+            --username "${TWINE_USERNAME}" \
+            --password "${TWINE_PASSWORD}" \
+            dist/*.whl
