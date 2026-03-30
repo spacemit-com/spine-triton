@@ -72,24 +72,14 @@ jobs:
           echo ""
           echo "Total: $(ls dist/*.whl | wc -l) wheel(s)"
 
-      - name: Configure PyPI repository
+      - name: Publish to GitLab PyPI
         env:
           REPO: ${{ secrets.REPO }}
           USER_NAME: ${{ secrets.USER_NAME }}
           PASSWD: ${{ secrets.PASSWD }}
-        run: |
-          cat > ~/.pypirc <<EOF
-          [distutils]
-          index-servers = gitlab
-
-          [gitlab]
-          repository = ${REPO}
-          username = ${USER_NAME}
-          password = ${PASSWD}
-          EOF
-
-      - name: Publish to GitLab PyPI
+          TWINE_USERNAME: ${{ secrets.USER_NAME }}
+          TWINE_PASSWORD: ${{ secrets.PASSWD }}
         run: |
           echo "Publishing wheels:"
           ls dist/*.whl
-          twine upload --repository gitlab dist/*.whl
+          twine upload --repository-url "${REPO}" dist/*.whl
