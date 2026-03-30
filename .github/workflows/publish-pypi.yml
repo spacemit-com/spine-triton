@@ -52,8 +52,17 @@ jobs:
 
       - name: Flatten artifact structure
         run: |
+          # Detect duplicate wheel filenames (basenames) before copying
+          DUPLICATES=$(find wheels -name "*.whl" -printf '%f\n' | sort | uniq -d)
+          if [ -n "$DUPLICATES" ]; then
+            echo "Error: duplicate wheel filenames detected when flattening artifacts:"
+            echo "$DUPLICATES"
+            exit 1
+          fi
+
           mkdir -p dist
-          find wheels -name "*.whl" -exec cp {} dist/ \;
+          # Safe to copy now: all target filenames are unique
+          find wheels -name "*.whl" -exec cp -t dist {} +
           ls -la dist/
 
       - name: List wheels to publish
