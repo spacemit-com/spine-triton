@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Publish to GitLab PyPI
 
 on:
   workflow_dispatch:
