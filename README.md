@@ -5,6 +5,10 @@ spine-triton is forked from [microsoft/triton-shared](https://github.com/microso
 ## QuickStart
 1. env setup
 ~~~
+apt update
+
+apt install gcc g++ gdb libsleef-dev libnuma-dev libomp5 libgomp1 python3-dev
+
 pip install PyYAML sympy torch opencv-python pybind11 --index-url https://git.spacemit.com/api/v4/projects/33/packages/pypi/simple
 ~~~
 
@@ -60,6 +64,22 @@ https://archive.spacemit.com/spacemit-ai/spine-mlir/spine-mlir-riscv64-0.5.2.tar
 ~~~
 git submodule update --init --recursive
 bash scripts/build.sh ${LLVM_INSTALL_DIR} {arch/x86_64/riscv64} {spine-mlir-install-dir}
+~~~
+
+## Code Style
+
+Use the same pre-commit checks as CI before sending a PR.
+
+~~~
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip pre-commit
+
+# check only staged files
+pre-commit run
+
+# check all tracked files covered by the hooks
+pre-commit run --all-files
 ~~~
 
 ## License
