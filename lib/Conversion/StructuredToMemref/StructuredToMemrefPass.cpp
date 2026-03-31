@@ -1,8 +1,8 @@
 //===----------------------------------------------------------------------===//
 //
 // SPDX-FileCopyrightText: Copyright (c) 2025 SpacemiT. ALL rights reserved.
-// SPDX-FileCopyrightText: Copyright (c) Microsoft Corporation. All rights reserved.
-// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) Microsoft Corporation. All rights
+// reserved. SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -29,8 +29,8 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
-#include "triton/Dialect/Triton/IR/Types.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "triton/Dialect/Triton/IR/Types.h"
 
 #define DEBUG_TYPE "structured-to-memref"
 
@@ -61,8 +61,10 @@ public:
       Type pointeeType = ptrType.getPointeeType();
       SmallVector<int64_t> shape(tensorType.getShape());
 
-      SmallVector<int64_t> dynStrides(tensorType.getRank(), ShapedType::kDynamic);
-      auto layout = StridedLayoutAttr::get(ctx, /*offset=*/ShapedType::kDynamic, dynStrides);
+      SmallVector<int64_t> dynStrides(tensorType.getRank(),
+                                      ShapedType::kDynamic);
+      auto layout = StridedLayoutAttr::get(ctx, /*offset=*/ShapedType::kDynamic,
+                                           dynStrides);
 
       return MemRefType::get(shape, pointeeType, layout, /*memorySpace=*/0);
     });
@@ -74,8 +76,10 @@ public:
         SmallVector<int64_t> shape(tensorType.getShape());
         Type elementType = tensorType.getElementType();
 
-        SmallVector<int64_t> dynStrides(tensorType.getRank(), ShapedType::kDynamic);
-        auto layout = StridedLayoutAttr::get(ctx, /*offset=*/ShapedType::kDynamic, dynStrides);
+        SmallVector<int64_t> dynStrides(tensorType.getRank(),
+                                        ShapedType::kDynamic);
+        auto layout = StridedLayoutAttr::get(
+            ctx, /*offset=*/ShapedType::kDynamic, dynStrides);
 
         return MemRefType::get(shape, elementType, layout, /*memorySpace=*/0);
       }
@@ -89,7 +93,7 @@ public:
 
       SmallVector<int64_t> dynStrides(shape.size(), ShapedType::kDynamic);
       auto layout = StridedLayoutAttr::get(ctx, /*offset=*/ShapedType::kDynamic,
-                                          dynStrides);
+                                           dynStrides);
 
       return MemRefType::get(shape, elemTy, layout, /*memorySpace=*/0);
     });
@@ -101,17 +105,15 @@ public:
     });
     addTargetMaterialization([&](OpBuilder &builder,
                                  UnrankedMemRefType resultType,
-                                 ValueRange inputs,
-                                 Location loc) -> Value {
-      return UnrealizedConversionCastOp::create(builder, loc, resultType, inputs)
+                                 ValueRange inputs, Location loc) -> Value {
+      return UnrealizedConversionCastOp::create(builder, loc, resultType,
+                                                inputs)
           .getResult(0);
     });
 
     // Handle memref type conversions where strides differ (static vs dynamic)
-    addTargetMaterialization([&](OpBuilder &builder,
-                                 MemRefType resultType,
-                                 ValueRange inputs,
-                                 Location loc) -> Value {
+    addTargetMaterialization([&](OpBuilder &builder, MemRefType resultType,
+                                 ValueRange inputs, Location loc) -> Value {
       if (inputs.size() != 1)
         return nullptr;
       auto inputType = dyn_cast<MemRefType>(inputs[0].getType());
@@ -121,29 +123,19 @@ public:
       if (inputType.getElementType() != resultType.getElementType() ||
           inputType.getRank() != resultType.getRank())
         return nullptr;
-      // Check shape compatibility: allow dynamic -> static cast
-      // memref.cast can cast from dynamic dims to static dims
-      auto inputShape = inputType.getShape();
-      auto resultShape = resultType.getShape();
-      for (size_t i = 0; i < inputShape.size(); ++i) {
-        // If input is static and result is static, they must match
-        if (!ShapedType::isDynamic(inputShape[i]) &&
-            !ShapedType::isDynamic(resultShape[i]) &&
-            inputShape[i] != resultShape[i])
-          return nullptr;
-        // If input is static but result is dynamic, that's not allowed for cast
-        if (!ShapedType::isDynamic(inputShape[i]) &&
-            ShapedType::isDynamic(resultShape[i]))
-          return nullptr;
-      }
-      // Use memref.cast for compatible type conversion (dynamic -> static or same shape)
-      return memref::CastOp::create(builder, loc, resultType, inputs[0]).getResult();
+      // Let memref::CastOp decide compatibility. It correctly allows
+      // static->dynamic (loosening) and other valid memref casts.
+      if (!memref::CastOp::areCastCompatible(inputType, resultType))
+        return nullptr;
+
+      return memref::CastOp::create(builder, loc, resultType, inputs[0])
+          .getResult();
     });
 
     addSourceMaterialization([&](OpBuilder &builder, Type resultType,
-                                 ValueRange inputs,
-                                 Location loc) -> Value {
-      return UnrealizedConversionCastOp::create(builder, loc, resultType, inputs)
+                                 ValueRange inputs, Location loc) -> Value {
+      return UnrealizedConversionCastOp::create(builder, loc, resultType,
+                                                inputs)
           .getResult(0);
     });
   }
@@ -194,7 +186,8 @@ public:
     triton::populateStructuredToMemrefConversionPatterns(patterns0,
                                                          typeConverter);
 
-    if (failed(applyPartialConversion(moduleOp, target, std::move(patterns0)))) {
+    if (failed(
+            applyPartialConversion(moduleOp, target, std::move(patterns0)))) {
       signalPassFailure();
     }
 
@@ -204,9 +197,11 @@ public:
       SmallVector<linalg::PowFOp> targetOps;
       moduleOp.walk([&](linalg::PowFOp powfOp) {
         // Check if the second operand is a bufferization.to_tensor result
-        if (auto toTensor = powfOp.getInputs()[1].getDefiningOp<bufferization::ToTensorOp>()) {
+        if (auto toTensor = powfOp.getInputs()[1]
+                                .getDefiningOp<bufferization::ToTensorOp>()) {
           // Verify the memref comes from an alloc operation with shape [1]
-          if (auto alloc = toTensor.getBuffer().getDefiningOp<memref::AllocOp>()) {
+          if (auto alloc =
+                  toTensor.getBuffer().getDefiningOp<memref::AllocOp>()) {
             if (alloc.getType().getShape() == ArrayRef<int64_t>{1}) {
               targetOps.push_back(powfOp);
             }
@@ -215,28 +210,24 @@ public:
       });
       for (auto powfOp : targetOps) {
         OpBuilder builder(powfOp);
-        auto toTensor = powfOp.getInputs()[1].getDefiningOp<bufferization::ToTensorOp>();
+        auto toTensor =
+            powfOp.getInputs()[1].getDefiningOp<bufferization::ToTensorOp>();
         Value memref = toTensor.getBuffer();
 
         // Create load operation to get the scalar value
-        Value loaded = memref::LoadOp::create(builder, toTensor.getLoc(),
-            memref,
-            ValueRange{arith::ConstantIndexOp::create(builder, toTensor.getLoc(), 0)}
-        );
+        Value loaded =
+            memref::LoadOp::create(builder, toTensor.getLoc(), memref,
+                                   ValueRange{arith::ConstantIndexOp::create(
+                                       builder, toTensor.getLoc(), 0)});
 
         // Prepare new input list:
         // - Keep first input unchanged
         // - Replace second input with loaded scalar
-        SmallVector<Value> newInputs = {
-            powfOp.getInputs()[0],
-            loaded
-        };
+        SmallVector<Value> newInputs = {powfOp.getInputs()[0], loaded};
 
         auto newPowf = linalg::PowFOp::create(builder, powfOp.getLoc(),
-          powfOp.getResultTypes(),
-          newInputs,
-          powfOp.getOutputs()
-        );
+                                              powfOp.getResultTypes(),
+                                              newInputs, powfOp.getOutputs());
 
         powfOp.getResult(0).replaceAllUsesWith(newPowf.getResult(0));
 

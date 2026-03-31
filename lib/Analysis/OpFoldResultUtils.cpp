@@ -17,6 +17,41 @@
 #include "llvm/Support/Debug.h"
 #define DEBUG_TYPE "triton-ptr-analysis"
 
+#include "llvm/Support/raw_ostream.h"
+
+class CmpIOpListener : public mlir::OpBuilder::Listener {
+public:
+  void notifyOperationInserted(mlir::Operation *op,
+                               mlir::OpBuilder::InsertPoint previous) override {
+    (void)previous;
+    if (auto cmpiOp = llvm::dyn_cast<mlir::arith::CmpIOp>(op)) {
+      auto lhs = cmpiOp.getLhs();
+      auto rhs = cmpiOp.getRhs();
+      if (lhs.getType() != rhs.getType()) {
+        llvm::errs()
+            << "[FATAL] CmpIOp created with mismatched operand types:\n";
+        cmpiOp->dump();
+        llvm::errs() << "LHS type: ";
+        lhs.getType().dump();
+        llvm::errs() << "RHS type: ";
+        rhs.getType().dump();
+        llvm_unreachable("CmpIOp with mismatched types created");
+      }
+    }
+  }
+};
+
+// Helper to ensure the listener is set on the provided builder (thread-local
+// once).
+static inline void ensureCmpListener(mlir::OpBuilder &b) {
+  static thread_local bool listenerSet = false;
+  if (!listenerSet) {
+    static CmpIOpListener listener;
+    b.setListener(&listener);
+    listenerSet = true;
+  }
+}
+
 namespace mlir {
 
 std::optional<int64_t> getIntAttr(const OpFoldResult ofr) {
@@ -54,6 +89,7 @@ bool hasConstZero(const OpFoldResult ofr) {
 
 Value ofrToIndexValue(const OpFoldResult ofr, const Location loc,
                       OpBuilder &b) {
+  ensureCmpListener(b);
   if (Value val = dyn_cast<Value>(ofr)) {
     assert(val.getType().isIntOrIndex());
     if (!val.getType().isIndex()) {
@@ -72,6 +108,7 @@ Value ofrToIndexValue(const OpFoldResult ofr, const Location loc,
 
 SmallVector<Value> ofrsToIndexValues(ArrayRef<OpFoldResult> ofrs,
                                      const Location loc, OpBuilder &b) {
+  ensureCmpListener(b);
   return llvm::to_vector<4>(
       llvm::map_range(ofrs, [&](OpFoldResult ofr) -> Value {
         return ofrToIndexValue(ofr, loc, b);
@@ -79,6 +116,7 @@ SmallVector<Value> ofrsToIndexValues(ArrayRef<OpFoldResult> ofrs,
 }
 
 Value indexTypeCast(Value v, Type targetTy, const Location loc, OpBuilder &b) {
+  ensureCmpListener(b);
   Type ty = v.getType();
   if (isa<IndexType>(targetTy) || isa<IndexType>(ty)) {
     assert((isa<IntegerType>(targetTy) || isa<IntegerType>(ty)) &&
@@ -96,6 +134,7 @@ Value indexTypeCast(Value v, Type targetTy, const Location loc, OpBuilder &b) {
 
 OpFoldResult expandOFRIndex(OpFoldResult ofr, OpFoldResult targetForTy,
                             const Location loc, OpBuilder &b) {
+  ensureCmpListener(b);
   if (getIntAttr(targetForTy))
     return ofr;
   Value targetValueForTy = cast<Value>(targetForTy);
@@ -104,7 +143,8 @@ OpFoldResult expandOFRIndex(OpFoldResult ofr, OpFoldResult targetForTy,
 
   Value v = dyn_cast<Value>(ofr);
   if (!v)
-    v = arith::ConstantOp::create(b, loc, cast<IntegerAttr>(cast<Attribute>(ofr)));
+    v = arith::ConstantOp::create(b, loc,
+                                  cast<IntegerAttr>(cast<Attribute>(ofr)));
 
   Type ty = v.getType();
   if (targetTy == ty)
@@ -126,7 +166,8 @@ OpFoldResult expandOFRIndex(OpFoldResult ofr, OpFoldResult targetForTy,
       // This path is for case like:
       // input_ptr + (row_indices[:, None] + row_offsets[:,None] % mod_offset) *
       //   stride_m + col_offsets[None, :] * stride_n
-      // The modulo will be in shape of [ROW_SIZE, 1] while row_indices is in shape of [ROW_SIZE,].
+      // The modulo will be in shape of [ROW_SIZE, 1] while row_indices is in
+      // shape of [ROW_SIZE,].
       LLVM_DEBUG({
         llvm::dbgs() << "Reshaping ";
         shapedTy.dump();
@@ -135,12 +176,15 @@ OpFoldResult expandOFRIndex(OpFoldResult ofr, OpFoldResult targetForTy,
       });
       SmallVector<Value> shapeValues;
       for (auto dim : targetShapedTy.getShape()) {
-        shapeValues.push_back(arith::ConstantOp::create(b, loc, b.getIndexAttr(dim)));
+        shapeValues.push_back(
+            arith::ConstantOp::create(b, loc, b.getIndexAttr(dim)));
       }
       RankedTensorType targetShapeTensorTy = RankedTensorType::get(
           targetShapedTy.getShape().size(), b.getIndexType());
-      auto shapeTensor = tensor::FromElementsOp::create(b, loc, targetShapeTensorTy, shapeValues);
-      return triton::ReshapeOp::create(b, loc, targetTy, v, shapeTensor).getResult();
+      auto shapeTensor = tensor::FromElementsOp::create(
+          b, loc, targetShapeTensorTy, shapeValues);
+      return triton::ReshapeOp::create(b, loc, targetTy, v, shapeTensor)
+          .getResult();
     }
     if (isa<IndexType>(targetEltTy) || isa<IndexType>(eltTy)) {
       assert((isa<IntegerType>(targetEltTy) || isa<IntegerType>(eltTy)) &&
@@ -162,6 +206,7 @@ OpFoldResult expandOFRIndex(OpFoldResult ofr, OpFoldResult targetForTy,
 
 OpFoldResult addOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
                      const Location loc, OpBuilder &b) {
+  ensureCmpListener(b);
   auto lhsIntAttr = getIntAttr(lhs);
   auto rhsIntAttr = getIntAttr(rhs);
 
@@ -195,6 +240,7 @@ OpFoldResult addOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
 
 OpFoldResult subOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
                      const Location loc, OpBuilder &b) {
+  ensureCmpListener(b);
   auto lhsIntAttr = getIntAttr(lhs);
   auto rhsIntAttr = getIntAttr(rhs);
 
@@ -226,7 +272,8 @@ OpFoldResult subOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
 }
 
 OpFoldResult mulOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
-                         const Location loc, OpBuilder &b) {
+                     const Location loc, OpBuilder &b) {
+  ensureCmpListener(b);
   auto lhsIntAttr = getIntAttr(lhs);
   auto rhsIntAttr = getIntAttr(rhs);
 
@@ -280,6 +327,7 @@ OpFoldResult mulOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
 
 OpFoldResult minOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
                      const Location loc, OpBuilder &b) {
+  ensureCmpListener(b);
   auto lhsIntAttr = getIntAttr(lhs);
   auto rhsIntAttr = getIntAttr(rhs);
 
@@ -308,6 +356,7 @@ OpFoldResult minOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
 
 OpFoldResult maxOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
                      const Location loc, OpBuilder &b) {
+  ensureCmpListener(b);
   auto lhsIntAttr = getIntAttr(lhs);
   auto rhsIntAttr = getIntAttr(rhs);
 
@@ -334,34 +383,71 @@ OpFoldResult maxOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
   return maxOp.getResult();
 }
 
+static bool isShapedValue(OpFoldResult ofr) {
+  if (auto v = dyn_cast<Value>(ofr)) {
+    return isa<ShapedType>(v.getType());
+  }
+  return false;
+}
+
 OpFoldResult compareOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
-                    const arith::CmpIPredicate pred, const OpFoldResult trueOFR,
-                    const OpFoldResult falseOFR, const Location loc, OpBuilder &b) {
+                         const arith::CmpIPredicate pred,
+                         const OpFoldResult trueOFR,
+                         const OpFoldResult falseOFR, const Location loc,
+                         OpBuilder &b) {
+  ensureCmpListener(b);
   auto lhsIntAttr = getIntAttr(lhs);
   auto rhsIntAttr = getIntAttr(rhs);
 
-  // both lhs and rhs are constants, return the result directly
   if (lhsIntAttr && rhsIntAttr) {
     switch (pred) {
-      case arith::CmpIPredicate::eq:
-        return *lhsIntAttr == *rhsIntAttr ? trueOFR : falseOFR;
-      case arith::CmpIPredicate::ne:
-        return *lhsIntAttr != *rhsIntAttr ? trueOFR : falseOFR;
-      case arith::CmpIPredicate::slt:
-      case arith::CmpIPredicate::ult:
-        return *lhsIntAttr < *rhsIntAttr ? trueOFR : falseOFR;
-      case arith::CmpIPredicate::sle:
-      case arith::CmpIPredicate::ule:
-        return *lhsIntAttr <= *rhsIntAttr ? trueOFR : falseOFR;
-      case arith::CmpIPredicate::sgt:
-      case arith::CmpIPredicate::ugt:
-        return *lhsIntAttr > *rhsIntAttr ? trueOFR : falseOFR;
-      case arith::CmpIPredicate::sge:
-      case arith::CmpIPredicate::uge:
-        return *lhsIntAttr >= *rhsIntAttr ? trueOFR : falseOFR;
-      default:
-        llvm_unreachable("Unsupported predicate");
+    case arith::CmpIPredicate::eq:
+      return *lhsIntAttr == *rhsIntAttr ? trueOFR : falseOFR;
+    case arith::CmpIPredicate::ne:
+      return *lhsIntAttr != *rhsIntAttr ? trueOFR : falseOFR;
+    case arith::CmpIPredicate::slt:
+    case arith::CmpIPredicate::ult:
+      return *lhsIntAttr < *rhsIntAttr ? trueOFR : falseOFR;
+    case arith::CmpIPredicate::sle:
+    case arith::CmpIPredicate::ule:
+      return *lhsIntAttr <= *rhsIntAttr ? trueOFR : falseOFR;
+    case arith::CmpIPredicate::sgt:
+    case arith::CmpIPredicate::ugt:
+      return *lhsIntAttr > *rhsIntAttr ? trueOFR : falseOFR;
+    case arith::CmpIPredicate::sge:
+    case arith::CmpIPredicate::uge:
+      return *lhsIntAttr >= *rhsIntAttr ? trueOFR : falseOFR;
+    default:
+      llvm_unreachable("Unsupported predicate");
     }
+  }
+
+  if (isShapedValue(lhs) || isShapedValue(rhs) || isShapedValue(trueOFR) ||
+      isShapedValue(falseOFR)) {
+    llvm::errs()
+        << "[compareOFRs] shaped OFR detected, skip creating cmpi/select\n";
+    if (auto v = dyn_cast<Value>(lhs)) {
+      llvm::errs() << "  lhs type: ";
+      v.getType().dump();
+      llvm::errs() << "\n";
+    }
+    if (auto v = dyn_cast<Value>(rhs)) {
+      llvm::errs() << "  rhs type: ";
+      v.getType().dump();
+      llvm::errs() << "\n";
+    }
+    if (auto v = dyn_cast<Value>(trueOFR)) {
+      llvm::errs() << "  trueOFR type: ";
+      v.getType().dump();
+      llvm::errs() << "\n";
+    }
+    if (auto v = dyn_cast<Value>(falseOFR)) {
+      llvm::errs() << "  falseOFR type: ";
+      v.getType().dump();
+      llvm::errs() << "\n";
+    }
+
+    return falseOFR;
   }
 
   auto lhsValue = ofrToIndexValue(lhs, loc, b);

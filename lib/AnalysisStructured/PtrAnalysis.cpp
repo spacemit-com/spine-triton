@@ -19,18 +19,18 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
+#include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
-#include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
-#include "llvm/ADT/DenseMap.h"
 #include <cassert>
 #include <cstddef>
 #include <optional>
@@ -286,13 +286,13 @@ LogicalResult PtrState::addState(const PtrState &lhsState,
           }
 
           if (lhsStride == rhsStride) {
-            // For case like lhs_offset * stride + rhs_offset * stride, it is same as
-            // (lhs_offset + rhs_offset) * stride.
-            // We can just
-            // add the offsets and reuse the stride like this:
+            // For case like lhs_offset * stride + rhs_offset * stride, it is
+            // same as (lhs_offset + rhs_offset) * stride. We can just add the
+            // offsets and reuse the stride like this:
             //   offsets[i] = lhsOffset + rhsOffset
             //   strides[i] = lhsStride
-            // Expand structured offset since unstructured offset has tensor type.
+            // Expand structured offset since unstructured offset has tensor
+            // type.
             if (!lhsState.dimIsStructured(i)) {
               rhsOffset = expandOFRIndex(rhsOffset, lhsOffset, loc, builder);
             } else {
@@ -308,10 +308,9 @@ LogicalResult PtrState::addState(const PtrState &lhsState,
             // equal to 1 earlier for case both offsets and strides not equal.
             assert(lhsOffset == rhsOffset &&
                    "If strides are not equal, offsets must be equal");
-            // For case like offset * lhs_stride + offset * rhs_stride, it is same as
-            // offset * (lhs_stride + rhs_stride).
-            // We can just
-            // add the strides and reuse the offset like this:
+            // For case like offset * lhs_stride + offset * rhs_stride, it is
+            // same as offset * (lhs_stride + rhs_stride). We can just add the
+            // strides and reuse the offset like this:
             //   offsets[i] = lhsOffset
             //   strides[i] = lhsStride + rhsStride
 
@@ -565,9 +564,8 @@ LogicalResult PtrState::mergeUnstructuredState(const PtrState &other,
   return success();
 }
 
-tts::MakeTensorPtrOp PtrState::createTTSMakeTensorPtrOp(OpBuilder &builder,
-                                                        SmallVector<OpFoldResult> origiOffsets,
-                                                        Location loc) {
+tts::MakeTensorPtrOp PtrState::createTTSMakeTensorPtrOp(
+    OpBuilder &builder, SmallVector<OpFoldResult> origiOffsets, Location loc) {
   SmallVector<int64_t> staticSizes;
   for (size_t i = 0; i < getRank(); i++) {
     auto s = getIntAttr(sizes[i]);
@@ -580,21 +578,24 @@ tts::MakeTensorPtrOp PtrState::createTTSMakeTensorPtrOp(OpBuilder &builder,
       if (isa<IndexType>(value.getType())) {
         origiIndexOffsets.push_back(value);
       } else {
-        auto cast_op = arith::IndexCastOp::create(builder, loc, builder.getIndexType(), value);
+        auto cast_op = arith::IndexCastOp::create(
+            builder, loc, builder.getIndexType(), value);
         origiIndexOffsets.push_back(cast_op.getResult());
       }
-    } else if (auto attr = dyn_cast<Attribute>(offset)){
-        if (auto intAttr = dyn_cast<IntegerAttr>(attr)){
-          auto constOp = arith::ConstantOp::create(builder, loc, builder.getIndexType(), intAttr);
-          origiIndexOffsets.push_back(constOp.getResult());
+    } else if (auto attr = dyn_cast<Attribute>(offset)) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
+        auto constOp = arith::ConstantOp::create(
+            builder, loc, builder.getIndexType(), intAttr);
+        origiIndexOffsets.push_back(constOp.getResult());
       }
+    } else {
+      llvm_unreachable("Unsupported offset type in createTTSMakeTensorPtrOp");
     }
-    else {
-        llvm_unreachable("Unsupported offset type in createTTSMakeTensorPtrOp");
-      }
   }
 
-  auto op = mlir::tts::MakeTensorPtrOp::create(builder, loc, source, staticSizes, strides, offsets, origiIndexOffsets, shape, order);
+  auto op = mlir::tts::MakeTensorPtrOp::create(builder, loc, source,
+                                               staticSizes, strides, offsets,
+                                               origiIndexOffsets, shape, order);
   LLVM_DEBUG({
     llvm::dbgs() << "creating tts::make_tensor_ptr:\n";
     op->dump();
@@ -630,14 +631,16 @@ PtrState::createTTSMakeGatherScatterTensorPtrOp(OpBuilder &builder,
 
     auto collapseTy =
         RankedTensorType::get({offsetSize}, offsetTy.getElementType());
-    nonContinuousOffset = tensor::CollapseShapeOp::create(builder,
-                loc, collapseTy, nonContinuousOffset, reassociationMap)
+    nonContinuousOffset =
+        tensor::CollapseShapeOp::create(builder, loc, collapseTy,
+                                        nonContinuousOffset, reassociationMap)
             .getResult();
     offsets[nonContinuousDim] = nonContinuousOffset;
   }
   // Generate tts::make_gather_scatter_tensor_ptr.
-  auto op = mlir::tts::MakeGatherScatterTensorPtrOp::create(builder, loc, source, nonContinuousOffset, nonContinuousDim, staticSizes, strides,
-      offsets);
+  auto op = mlir::tts::MakeGatherScatterTensorPtrOp::create(
+      builder, loc, source, nonContinuousOffset, nonContinuousDim, staticSizes,
+      strides, offsets);
   LLVM_DEBUG({
     llvm::dbgs() << "creating tts::make_gather_scatter_tensor_ptr:\n";
     op->dump();
@@ -690,8 +693,8 @@ LogicalResult PtrAnalysis::visitOperandAdd(arith::AddIOp addOp, PtrState &state,
            "isAnalysisingUnstructured should not be true when "
            "enableMakeGatherScatterTensorPtr is false");
   }
-  if (failed(state.addState(lhsState, rhsState, isAnalysisingUnstructured, addOp,
-                        builder))) {
+  if (failed(state.addState(lhsState, rhsState, isAnalysisingUnstructured,
+                            addOp, builder))) {
     return failure();
   }
   state.origiOffsets = state.offsets;
@@ -736,8 +739,8 @@ LogicalResult PtrAnalysis::visitOperandMul(arith::MulIOp mulOp, PtrState &state,
            "isAnalysisingUnstructured should not be true when "
            "enableMakeGatherScatterTensorPtr is false");
   }
-  if (failed(state.mulState(lhsState, rhsState, isAnalysisingUnstructured, mulOp,
-                        builder))) {
+  if (failed(state.mulState(lhsState, rhsState, isAnalysisingUnstructured,
+                            mulOp, builder))) {
     return failure();
   }
   state.origiOffsets = state.offsets;
@@ -1001,7 +1004,7 @@ LogicalResult PtrAnalysis::visitOperandAddptr(triton::AddPtrOp addptrOp,
            "enableMakeGatherScatterTensorPtr is false");
   }
   if (failed(state.addState(ptrState, offsetState, isAnalysisingUnstructured,
-                        addptrOp, builder))) {
+                            addptrOp, builder))) {
     return failure();
   }
 
@@ -1082,16 +1085,20 @@ PtrAnalysis::visitOperandMakeTensorPtr(triton::MakeTensorPtrOp makeTPtrOp,
   for (int64_t i = 0; i < pointeeType.getRank(); i++) {
     state.sizes.push_back(builder.getIndexAttr(shape[i]));
 
-    auto strideCst = arith::IndexCastOp::create(builder, loc, builder.getIndexType(), makeTPtrOp.getStrides()[i]);
+    auto strideCst = arith::IndexCastOp::create(
+        builder, loc, builder.getIndexType(), makeTPtrOp.getStrides()[i]);
     state.strides.push_back(strideCst.getResult());
 
-    auto offsetCst = arith::IndexCastOp::create(builder, loc, builder.getIndexType(), makeTPtrOp.getOffsets()[i]);
+    auto offsetCst = arith::IndexCastOp::create(
+        builder, loc, builder.getIndexType(), makeTPtrOp.getOffsets()[i]);
     state.origiOffsets.push_back(offsetCst.getResult());
 
-    auto scaledOffset = arith::MulIOp::create(builder, loc, offsetCst.getResult(), strideCst.getResult());
+    auto scaledOffset = arith::MulIOp::create(
+        builder, loc, offsetCst.getResult(), strideCst.getResult());
     state.offsets.push_back(scaledOffset.getResult());
 
-    auto shapeCst = arith::IndexCastOp::create(builder, loc, builder.getIndexType(), makeTPtrOp.getShape()[i]);
+    auto shapeCst = arith::IndexCastOp::create(
+        builder, loc, builder.getIndexType(), makeTPtrOp.getShape()[i]);
     state.shape.push_back(shapeCst.getResult());
   }
   state.order = SmallVector<int32_t>(makeTPtrOp.getOrder());
@@ -1142,9 +1149,9 @@ LogicalResult PtrAnalysis::visitOperandBitcast(triton::BitcastOp op,
 }
 
 LogicalResult PtrAnalysis::visitOperandAlloc(xsmt::AllocOp allocOp,
-                                           PtrState &state,
-                                           const Location loc,
-                                           OpBuilder &builder) {
+                                             PtrState &state,
+                                             const Location loc,
+                                             OpBuilder &builder) {
   assert(state.isEmpty());
   state.source = allocOp.getResult();
 
@@ -1174,30 +1181,32 @@ LogicalResult PtrAnalysis::visitOperandAlloc(xsmt::AllocOp allocOp,
 }
 
 LogicalResult PtrAnalysis::visitOperandView(xsmt::ViewPtrOp viewOp,
-                                           PtrState &state,
-                                           const Location loc,
-                                           OpBuilder &builder) {
+                                            PtrState &state, const Location loc,
+                                            OpBuilder &builder) {
   auto result = viewOp.getResult();
-  auto base = viewOp.getBase();;
-  if(!triton::isTensorPointerType(result.getType()) || !triton::isTensorPointerType(base.getType())){
-    viewOp->emitRemark("xsmt::ViewPtrOp is not TensorPointerType, temporarily not lowering");
+  auto base = viewOp.getBase();
+  ;
+  if (!triton::isTensorPointerType(result.getType()) ||
+      !triton::isTensorPointerType(base.getType())) {
+    viewOp->emitRemark(
+        "xsmt::ViewPtrOp is not TensorPointerType, temporarily not lowering");
     return failure();
   }
   return success();
 }
 
-LogicalResult PtrAnalysis::visitOperandBufferTensorViewOp(xsmt::BufferTensorViewOp BufferTensorViewOp,
-                                           PtrState &state,
-                                           const Location loc,
-                                           OpBuilder &builder) {
+LogicalResult PtrAnalysis::visitOperandBufferTensorViewOp(
+    xsmt::BufferTensorViewOp BufferTensorViewOp, PtrState &state,
+    const Location loc, OpBuilder &builder) {
   auto result = BufferTensorViewOp.getResult();
-  if(!triton::isTensorPointerType(result.getType())){
-    BufferTensorViewOp->emitRemark("xsmt::BufferTensorViewOp is not TensorPointerType, temporarily not lowering");
+  if (!triton::isTensorPointerType(result.getType())) {
+    BufferTensorViewOp->emitRemark(
+        "xsmt::BufferTensorViewOp is not TensorPointerType, temporarily not "
+        "lowering");
     return failure();
   }
   return success();
 }
-
 
 LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
                                         const Location loc,
@@ -1221,7 +1230,8 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
     if (!isa<BlockArgument>(operand) && operand.getDefiningOp()) {
       builder.setInsertionPointAfter(operand.getDefiningOp());
     }
-    auto castOp = arith::IndexCastOp::create(builder, loc, builder.getIndexType(), operand);
+    auto castOp = arith::IndexCastOp::create(builder, loc,
+                                             builder.getIndexType(), operand);
     state.scalar = castOp.getResult();
     return success();
   } else if (isa<IndexType>(operand.getType())) {
@@ -1247,11 +1257,13 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
         return success();
       } else if (auto allocOp = dyn_cast<xsmt::AllocOp>(op)) {
         return visitOperandAlloc(allocOp, state, loc, builder);
-      } else if (auto BufferTensorViewOp = dyn_cast<xsmt::BufferTensorViewOp>(op)) {
-        return visitOperandBufferTensorViewOp(BufferTensorViewOp, state, loc, builder);
-      }else if (auto viewOp = dyn_cast<xsmt::ViewPtrOp>(op)) {
+      } else if (auto BufferTensorViewOp =
+                     dyn_cast<xsmt::BufferTensorViewOp>(op)) {
+        return visitOperandBufferTensorViewOp(BufferTensorViewOp, state, loc,
+                                              builder);
+      } else if (auto viewOp = dyn_cast<xsmt::ViewPtrOp>(op)) {
         return visitOperandView(viewOp, state, loc, builder);
-      }else {
+      } else {
         op->emitRemark("Unexpected defining op for triton pointer operand");
         return failure();
       }
@@ -1316,7 +1328,8 @@ LogicalResult PtrAnalysis::rewriteAddptrOp(triton::AddPtrOp op) {
 
   if (isa<RankedTensorType>(op.getPtr().getType())) {
     if (state.isStructured()) {
-      auto maketptrOp = state.createTTSMakeTensorPtrOp(builder, state.origiOffsets, op.getLoc());
+      auto maketptrOp = state.createTTSMakeTensorPtrOp(
+          builder, state.origiOffsets, op.getLoc());
       ptrMap.map(op.getResult(), maketptrOp.getResult());
     } else if (enableMakeGatherScatterTensorPtr) {
       // If there is only one dimension, return failure since there are no
@@ -1361,7 +1374,9 @@ LogicalResult PtrAnalysis::rewriteAddptrOp(triton::AddPtrOp op) {
   return success();
 }
 
-LogicalResult PtrAnalysis::rewriteMakeTensorPtrOp(triton::MakeTensorPtrOp op, llvm::DenseMap<Value, SmallVector<OpFoldResult>> offsetMap) {
+LogicalResult PtrAnalysis::rewriteMakeTensorPtrOp(
+    triton::MakeTensorPtrOp op,
+    llvm::DenseMap<Value, SmallVector<OpFoldResult>> offsetMap) {
   OpBuilder builder(op);
 
   PtrState state;
@@ -1370,7 +1385,8 @@ LogicalResult PtrAnalysis::rewriteMakeTensorPtrOp(triton::MakeTensorPtrOp op, ll
   }
   SmallVector<OpFoldResult> origiOffsets = offsetMap[state.source];
 
-  auto maketptrOp = state.createTTSMakeTensorPtrOp(builder, origiOffsets, op.getLoc());
+  auto maketptrOp =
+      state.createTTSMakeTensorPtrOp(builder, origiOffsets, op.getLoc());
   knownPtrs[op.getResult()] = state;
   ptrMap.map(op.getResult(), maketptrOp.getResult());
   return success();
@@ -1393,31 +1409,35 @@ LogicalResult PtrAnalysis::rewriteAdvanceOp(triton::AdvanceOp op) {
   SmallVector<OpFoldResult> newOffsets;
   SmallVector<OpFoldResult> origiOffsets;
   for (auto [increment, offset, origiOffset, stride] :
-       llvm::zip(incrementOffsets, state.offsets, state.origiOffsets, state.strides)) {
+       llvm::zip(incrementOffsets, state.offsets, state.origiOffsets,
+                 state.strides)) {
     Value offsetValue;
     if (auto offsetIntAttr = getIntAttr(offset)) {
-      auto constOp = arith::ConstantOp::create(builder, loc, builder.getIndexAttr(offsetIntAttr.value()));
+      auto constOp = arith::ConstantOp::create(
+          builder, loc, builder.getIndexAttr(offsetIntAttr.value()));
       offsetValue = constOp.getResult();
     } else {
       offsetValue = cast<Value>(offset);
     }
-    auto castOp = arith::IndexCastOp::create(builder, loc, builder.getIndexType(), increment);
+    auto castOp = arith::IndexCastOp::create(builder, loc,
+                                             builder.getIndexType(), increment);
     auto mulOp = arith::MulIOp::create(builder, loc, castOp.getResult(),
-                                               cast<Value>(stride));
+                                       cast<Value>(stride));
     auto addOp =
         arith::AddIOp::create(builder, loc, mulOp.getResult(), offsetValue);
     newOffsets.push_back(addOp.getResult());
 
     Value origiOffsetValue;
     if (auto origiOffsetIntAttr = getIntAttr(origiOffset)) {
-      auto constOp = arith::ConstantOp::create(builder, loc, builder.getIndexAttr(origiOffsetIntAttr.value()));
+      auto constOp = arith::ConstantOp::create(
+          builder, loc, builder.getIndexAttr(origiOffsetIntAttr.value()));
       origiOffsetValue = constOp.getResult();
     } else {
       origiOffsetValue = cast<Value>(origiOffset);
     }
 
-    auto origiOffsetAddop =
-        arith::AddIOp::create(builder, loc, castOp.getResult(), origiOffsetValue);
+    auto origiOffsetAddop = arith::AddIOp::create(
+        builder, loc, castOp.getResult(), origiOffsetValue);
     origiOffsets.push_back(origiOffsetAddop.getResult());
   }
 
@@ -1606,7 +1626,8 @@ LogicalResult PtrAnalysis::rewriteForOp(scf::ForOp op) {
     if (isPointerType(arg.getType())) {
       if (state->getRank() != 0) {
         OpBuilder builder(op.getRegion());
-        auto maketptrOp = state->createTTSMakeTensorPtrOp(builder, state->origiOffsets, op.getLoc());
+        auto maketptrOp = state->createTTSMakeTensorPtrOp(
+            builder, state->origiOffsets, op.getLoc());
         ptrMap.map(arg, maketptrOp.getResult());
       }
     }
@@ -1660,13 +1681,15 @@ PtrAnalysis::rewriteGetStructuredStateOp(tts::GetStructuredStateOp op) {
       // This operand is a pointer directly from the kernel arguments.
       // Use offset 0.
       assert(!tritonValue.getDefiningOp());
-      replacements.push_back(arith::ConstantOp::create(builder, op.getLoc(), builder.getIndexAttr(0)));
+      replacements.push_back(arith::ConstantOp::create(
+          builder, op.getLoc(), builder.getIndexAttr(0)));
     }
   } else {
     for (auto [j, s] : llvm::enumerate(state.offsets)) {
       auto sIntAttr = getIntAttr(s);
       if (sIntAttr) {
-        auto constOp = arith::ConstantOp::create(builder, op.getLoc(), builder.getIndexAttr(sIntAttr.value()));
+        auto constOp = arith::ConstantOp::create(
+            builder, op.getLoc(), builder.getIndexAttr(sIntAttr.value()));
         replacements.push_back(constOp.getResult());
       } else {
         replacements.push_back(cast<Value>(s));
@@ -1676,7 +1699,8 @@ PtrAnalysis::rewriteGetStructuredStateOp(tts::GetStructuredStateOp op) {
     for (auto [j, s] : llvm::enumerate(state.origiOffsets)) {
       auto sIntAttr = getIntAttr(s);
       if (sIntAttr) {
-        auto constOp = arith::ConstantOp::create(builder, op.getLoc(), builder.getIndexAttr(sIntAttr.value()));
+        auto constOp = arith::ConstantOp::create(
+            builder, op.getLoc(), builder.getIndexAttr(sIntAttr.value()));
         replacements.push_back(constOp.getResult());
       } else {
         replacements.push_back(cast<Value>(s));
@@ -1686,7 +1710,8 @@ PtrAnalysis::rewriteGetStructuredStateOp(tts::GetStructuredStateOp op) {
     for (auto [j, s] : llvm::enumerate(state.strides)) {
       auto sIntAttr = getIntAttr(s);
       if (sIntAttr) {
-        auto constOp = arith::ConstantOp::create(builder, op.getLoc(), builder.getIndexAttr(sIntAttr.value()));
+        auto constOp = arith::ConstantOp::create(
+            builder, op.getLoc(), builder.getIndexAttr(sIntAttr.value()));
         replacements.push_back(constOp.getResult());
       } else {
         replacements.push_back(cast<Value>(s));
@@ -1727,13 +1752,14 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
   // are moving.
 
   ArrayRef<int32_t> boundaryCheck;
-  if (auto boundaryCheckAttr = op->getAttrOfType<DenseI32ArrayAttr>("boundaryCheck")) {
+  if (auto boundaryCheckAttr =
+          op->getAttrOfType<DenseI32ArrayAttr>("boundaryCheck")) {
     boundaryCheck = boundaryCheckAttr.asArrayRef();
-  }else {
+  } else {
     boundaryCheck = ArrayRef<int32_t>{};
   }
 
-  Operation* newOp = nullptr;
+  Operation *newOp = nullptr;
 
   if (mask) {
     if (mstate.parse(mask, loc, builder).failed()) {
@@ -1749,7 +1775,7 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
     scalarOther = utils::getScalarValue(other, loc, builder);
     if (!scalarOther) {
       op->emitRemark("other value used in masked load produced by "
-                    "unsupported instruction");
+                     "unsupported instruction");
       return failure();
     }
   }
@@ -1757,11 +1783,11 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
 
   if (paddingOpt.has_value()) {
     newOp = tts::LoadOp::create(builder, loc, ptr, dims, scalarOther,
-                                        boundaryCheck, paddingOpt);
+                                boundaryCheck, paddingOpt);
   } else {
     newOp = tts::LoadOp::create(builder, loc, ptr, dims, scalarOther,
-                                        boundaryCheck, std::nullopt);
-}
+                                boundaryCheck, std::nullopt);
+  }
 
   auto loadOp = cast<tts::LoadOp>(newOp);
   LLVM_DEBUG({
@@ -1877,13 +1903,14 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
   OpBuilder builder(op);
 
   ArrayRef<int32_t> boundaryCheck;
-  if (auto boundaryCheckAttr = op->getAttrOfType<DenseI32ArrayAttr>("boundaryCheck")) {
+  if (auto boundaryCheckAttr =
+          op->getAttrOfType<DenseI32ArrayAttr>("boundaryCheck")) {
     boundaryCheck = boundaryCheckAttr.asArrayRef();
-  }else {
+  } else {
     boundaryCheck = ArrayRef<int32_t>{};
   }
 
-  Operation* newOp = nullptr;
+  Operation *newOp = nullptr;
 
   // Analyze the mask operand to determine at runtime the size of the data
   // are moving.
@@ -1895,11 +1922,7 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
     dims = mstate.dims;
   }
 
-  newOp = tts::StoreOp::create(builder, loc,
-    ptr,
-    val,
-    dims,
-    boundaryCheck);
+  newOp = tts::StoreOp::create(builder, loc, ptr, val, dims, boundaryCheck);
 
   auto storeOp = cast<tts::StoreOp>(newOp);
 
@@ -1945,13 +1968,49 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
           return WalkResult::advance();
         })
         .Case<triton::BitcastOp>([&](auto bitcast) {
-          // For tensor of pointers bitcast, propagate the ptrMap from source
-          // to result. This allows subsequent load/store ops to find the
-          // rewritten pointer.
+          // For tensor of pointers bitcast, normally propagate the ptrMap
+          // from source to result so subsequent load/store ops can find
+          // the rewritten pointer. However, skip propagation for
+          // ptr<i1> -> ptr<i8> bitcasts (common mask bitcast pattern),
+          // because propagating in that case causes loads to change their
+          // result element type from i8 to i1 while other users (e.g.,
+          // an existing arith.cmpi) still expect i8, producing type
+          // mismatches. See discussion in issue reports.
           if (isa<ShapedType>(bitcast.getType())) {
             Value src = bitcast.getSrc();
-            if (Value rewrittenSrc = ptrMap.lookupOrNull(src)) {
-              ptrMap.map(bitcast.getResult(), rewrittenSrc);
+
+            // Helper: extract pointee integer width if value is tensor/ptr
+            auto getPointeeIntWidth = [&](Type t) -> std::optional<int> {
+              if (auto shaped = dyn_cast<ShapedType>(t))
+                t = shaped.getElementType();
+              if (auto ptrTy = dyn_cast<triton::PointerType>(t)) {
+                if (auto intTy = dyn_cast<IntegerType>(ptrTy.getPointeeType()))
+                  return intTy.getWidth();
+              }
+              return std::nullopt;
+            };
+
+            Type srcTy = src.getType();
+            Type dstTy = bitcast.getType();
+            auto srcWidth = getPointeeIntWidth(srcTy);
+            auto dstWidth = getPointeeIntWidth(dstTy);
+
+            bool isBoolToBytecast = false;
+            if (srcWidth.has_value() && dstWidth.has_value()) {
+              if (srcWidth.value() == 1 && dstWidth.value() == 8)
+                isBoolToBytecast = true;
+            }
+
+            if (isBoolToBytecast) {
+              LLVM_DEBUG({
+                llvm::dbgs() << "Skipping ptrMap propagation for bool->byte "
+                                "bitcast at: ";
+                bitcast->dump();
+              });
+            } else {
+              if (Value rewrittenSrc = ptrMap.lookupOrNull(src)) {
+                ptrMap.map(bitcast.getResult(), rewrittenSrc);
+              }
             }
           }
           return WalkResult::advance();
@@ -1996,8 +2055,9 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
         .Case<xsmt::AllocOp>([&](auto alloc) {
           OpBuilder builder(alloc);
           PtrState state;
-          if (succeeded(visitOperandAlloc(alloc, state, alloc.getLoc(), builder))) {
-              ptrMap.map(alloc.getResult(), alloc.getResult());
+          if (succeeded(
+                  visitOperandAlloc(alloc, state, alloc.getLoc(), builder))) {
+            ptrMap.map(alloc.getResult(), alloc.getResult());
           } else {
             alloc->emitRemark("PtrAnalysis: Failed to analyze xsmt.alloc");
           }
@@ -2006,17 +2066,22 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
         .Case<xsmt::BufferTensorViewOp>([&](auto BufferTensorViewOp) {
           OpBuilder builder(BufferTensorViewOp);
           PtrState state;
-          if (succeeded(visitOperandBufferTensorViewOp(BufferTensorViewOp, state, BufferTensorViewOp.getLoc(), builder))) {
-              ptrMap.map(BufferTensorViewOp.getResult(), BufferTensorViewOp.getResult());
+          if (succeeded(visitOperandBufferTensorViewOp(
+                  BufferTensorViewOp, state, BufferTensorViewOp.getLoc(),
+                  builder))) {
+            ptrMap.map(BufferTensorViewOp.getResult(),
+                       BufferTensorViewOp.getResult());
           } else {
-            BufferTensorViewOp->emitRemark("PtrAnalysis: Failed to analyze xsmt.buffer_tensor_view");
+            BufferTensorViewOp->emitRemark(
+                "PtrAnalysis: Failed to analyze xsmt.buffer_tensor_view");
           }
           return WalkResult::advance();
         })
         .Case<xsmt::ViewPtrOp>([&](auto viewop) {
           OpBuilder builder(viewop);
           PtrState state;
-          if (failed(visitOperandView(viewop, state, viewop.getLoc(), builder))) {
+          if (failed(
+                  visitOperandView(viewop, state, viewop.getLoc(), builder))) {
             viewop->emitRemark("PtrAnalysis: Failed to analyze xsmt.view");
             return WalkResult::advance();
           }
@@ -2025,12 +2090,12 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
           Value rewrittenBase = ptrMap.lookupOrNull(originalBase);
 
           if (rewrittenBase) {
-            Operation* newViewOp = builder.clone(*viewop.getOperation());
+            Operation *newViewOp = builder.clone(*viewop.getOperation());
             newViewOp->setOperand(0, rewrittenBase);
 
             LLVM_DEBUG({
-                llvm::dbgs() << "rewriting xsmt.viewptr to use new base:\n";
-                newViewOp->dump();
+              llvm::dbgs() << "rewriting xsmt.viewptr to use new base:\n";
+              newViewOp->dump();
             });
             ptrMap.map(viewop.getResult(), newViewOp->getResult(0));
           } else {

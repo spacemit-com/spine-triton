@@ -4,8 +4,8 @@
 //===----------------------------------------------------------------------===//
 //
 // SPDX-FileCopyrightText: Copyright (c) 2025 SpacemiT. ALL rights reserved.
-// SPDX-FileCopyrightText: Copyright (c) Microsoft Corporation. All rights reserved.
-// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) Microsoft Corporation. All rights
+// reserved. SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -16,8 +16,8 @@
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 #include "triton-shared/Utils/Utils.h"
 
-#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -32,13 +32,13 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/MathExtras.h"
 
+#include "TypeConverter.hpp"
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
-#include "TypeConverter.hpp"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 
 #include <numeric>
 #include <optional>
@@ -47,9 +47,7 @@
 namespace mlir {
 namespace triton {
 
-static bool keepFp16ReduceAccInLinalg() {
-  return true;
-}
+static bool keepFp16ReduceAccInLinalg() { return true; }
 
 //===----------------------------------------------------------------------===//
 // Utilities
@@ -148,8 +146,8 @@ static Value getTransposedValue(Value source, const Location loc,
     }
   }
 
-  Value transposeInit = tensor::EmptyOp::create(rewriter,
-      loc, transposedShape, sourceType.getElementType());
+  Value transposeInit = tensor::EmptyOp::create(rewriter, loc, transposedShape,
+                                                sourceType.getElementType());
 
   Value transpose =
       linalg::TransposeOp::create(rewriter, loc, source, transposeInit, perm)
@@ -248,7 +246,7 @@ static Value sliceFirst(ConversionPatternRewriter &rewriter, Location loc,
   SmallVector<OpFoldResult> strides(rank, rewriter.getIndexAttr(1));
   // Create the slice of input.
   return tensor::ExtractSliceOp::create(rewriter, loc, input, offsets, sizes,
-                                                 strides);
+                                        strides);
 }
 
 static Value sliceRemaining(ConversionPatternRewriter &rewriter, Location loc,
@@ -269,7 +267,7 @@ static Value sliceRemaining(ConversionPatternRewriter &rewriter, Location loc,
   SmallVector<OpFoldResult> strides(rank, rewriter.getIndexAttr(1));
   // Create the slice of input.
   return tensor::ExtractSliceOp::create(rewriter, loc, input, offsets, sizes,
-                                                 strides);
+                                        strides);
 }
 
 //===----------------------------------------------------------------------===//
@@ -301,8 +299,8 @@ struct MakeTensorPtrConverter
                              Location loc) const {
     for (auto opnd : ops) {
       if (isa<IntegerType>(opnd.getType())) {
-        auto castOp = arith::IndexCastOp::create(rewriter,
-            loc, rewriter.getIndexType(), opnd);
+        auto castOp = arith::IndexCastOp::create(rewriter, loc,
+                                                 rewriter.getIndexType(), opnd);
         vec.push_back(castOp.getResult());
       } else {
         assert(isa<IndexType>(opnd.getType()));
@@ -335,7 +333,7 @@ struct MakeTensorPtrConverter
     for (auto [offset, stride] :
          llvm::zip(pointerState.offsets, pointerState.strides)) {
       auto mulOp = arith::MulIOp::create(rewriter, loc, cast<Value>(offset),
-                                                  cast<Value>(stride));
+                                         cast<Value>(stride));
       newOffsets.push_back(mulOp.getResult());
     }
 
@@ -399,22 +397,20 @@ private:
     Value block2Row = memref::DimOp::create(rewriter, loc, block2, 0);
     Value block2Col = memref::DimOp::create(rewriter, loc, block2, 1);
 
-    auto block1Dst =
-        memref::SubViewOp::create(rewriter, loc, dst, /* offsets */
-                                           ValueRange{zero, zero},
-                                           /* sizes */
-                                           ValueRange{block1Row, block1Col},
-                                           /* strides */
-                                           ValueRange{one, one});
+    auto block1Dst = memref::SubViewOp::create(rewriter, loc, dst, /* offsets */
+                                               ValueRange{zero, zero},
+                                               /* sizes */
+                                               ValueRange{block1Row, block1Col},
+                                               /* strides */
+                                               ValueRange{one, one});
 
-    auto block2Dst =
-        memref::SubViewOp::create(rewriter, loc, dst,
-                                           /* offsets */
-                                           ValueRange{zero, block1Col},
-                                           /* sizes */
-                                           ValueRange{block2Row, block2Col},
-                                           /* strides */
-                                           ValueRange{one, one});
+    auto block2Dst = memref::SubViewOp::create(rewriter, loc, dst,
+                                               /* offsets */
+                                               ValueRange{zero, block1Col},
+                                               /* sizes */
+                                               ValueRange{block2Row, block2Col},
+                                               /* strides */
+                                               ValueRange{one, one});
 
     memref::CopyOp::create(rewriter, loc, block1, block1Dst);
     memref::CopyOp::create(rewriter, loc, block2, block2Dst);
@@ -434,22 +430,20 @@ private:
     Value block2Row = memref::DimOp::create(rewriter, loc, block2, 0);
     Value block2Col = memref::DimOp::create(rewriter, loc, block2, 1);
 
-    auto block1Dst =
-        memref::SubViewOp::create(rewriter, loc, dst, /* offsets */
-                                           ValueRange{zero, zero},
-                                           /* sizes */
-                                           ValueRange{block1Row, block1Col},
-                                           /* strides */
-                                           ValueRange{one, one});
+    auto block1Dst = memref::SubViewOp::create(rewriter, loc, dst, /* offsets */
+                                               ValueRange{zero, zero},
+                                               /* sizes */
+                                               ValueRange{block1Row, block1Col},
+                                               /* strides */
+                                               ValueRange{one, one});
 
-    auto block2Dst =
-        memref::SubViewOp::create(rewriter, loc, dst,
-                                           /* offsets */
-                                           ValueRange{block1Row, zero},
-                                           /* sizes */
-                                           ValueRange{block2Row, block2Col},
-                                           /* strides */
-                                           ValueRange{one, one});
+    auto block2Dst = memref::SubViewOp::create(rewriter, loc, dst,
+                                               /* offsets */
+                                               ValueRange{block1Row, zero},
+                                               /* sizes */
+                                               ValueRange{block2Row, block2Col},
+                                               /* strides */
+                                               ValueRange{one, one});
 
     memref::CopyOp::create(rewriter, loc, block1, block1Dst);
     memref::CopyOp::create(rewriter, loc, block2, block2Dst);
@@ -469,8 +463,8 @@ public:
       auto sMemRef = PtrAnalysis::getScalarMemRef(op.getPtr(), adaptor.getPtr(),
                                                   loc, rewriter);
       auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
-      auto loadOp = affine::AffineLoadOp::create(rewriter,
-          op.getLoc(), sMemRef, zeroMap, ValueRange{});
+      auto loadOp = affine::AffineLoadOp::create(rewriter, op.getLoc(), sMemRef,
+                                                 zeroMap, ValueRange{});
       rewriter.replaceOp(op, loadOp.getResult());
       return success();
     }
@@ -488,8 +482,8 @@ public:
 
     auto tensorType =
         RankedTensorType::get(type.getShape(), type.getElementType());
-    auto alloc = memref::AllocOp::create(rewriter,
-        loc, MemRefType::get(type.getShape(), type.getElementType()));
+    auto alloc = memref::AllocOp::create(
+        rewriter, loc, MemRefType::get(type.getShape(), type.getElementType()));
 
     if (!mask) {
       assert(!other && "other value used in non-masked load");
@@ -517,8 +511,9 @@ public:
         memref::CopyOp::create(rewriter, loc, ptr, alloc);
       }
 
-      Value tensor = bufferization::ToTensorOp::create(rewriter,
-          loc, tensorType, alloc, true /* restrict */, true /* writable */);
+      Value tensor = bufferization::ToTensorOp::create(
+          rewriter, loc, tensorType, alloc, true /* restrict */,
+          true /* writable */);
       rewriter.replaceOp(op, tensor);
 
       return success();
@@ -548,27 +543,29 @@ public:
           arith::ConstantOp::create(rewriter, loc, rewriter.getBoolAttr(false))
               .getResult();
       for (size_t i = 0; i < type.getShape().size(); i++) {
-        auto shapei = arith::ConstantOp::create(rewriter,
-            loc, rewriter.getIndexAttr(shape[i]));
+        auto shapei = arith::ConstantOp::create(
+            rewriter, loc, rewriter.getIndexAttr(shape[i]));
 
         Value dimi = dyn_cast<Value>(mstate.dims[i]);
         if (!dimi) {
-          dimi = arith::ConstantOp::create(rewriter,
-              loc, cast<IntegerAttr>(cast<Attribute>(mstate.dims[i])));
+          dimi = arith::ConstantOp::create(
+              rewriter, loc,
+              cast<IntegerAttr>(cast<Attribute>(mstate.dims[i])));
         }
 
-        auto cmpOp = arith::CmpIOp::create(rewriter,
-            loc, arith::CmpIPredicate::slt, dimi, shapei);
-        accBase = arith::OrIOp::create(rewriter, loc, accBase, cmpOp.getResult())
-                      .getResult();
+        auto cmpOp = arith::CmpIOp::create(
+            rewriter, loc, arith::CmpIPredicate::slt, dimi, shapei);
+        accBase =
+            arith::OrIOp::create(rewriter, loc, accBase, cmpOp.getResult())
+                .getResult();
       }
 
       // condition the memset on the or-accumulation
       // initialize with padding prior to CopyOp
-      scf::IfOp::create(rewriter,
-          loc, accBase, [&](OpBuilder &builder, Location loc) {
+      scf::IfOp::create(
+          rewriter, loc, accBase, [&](OpBuilder &builder, Location loc) {
             linalg::FillOp::create(builder, loc, ValueRange{scalarOther},
-                                           ValueRange{alloc});
+                                   ValueRange{alloc});
             scf::YieldOp::create(builder, loc);
           });
     }
@@ -605,8 +602,9 @@ public:
       memref::CopyOp::create(rewriter, loc, srcSubview, dstSubview);
     }
 
-    Value tensor = bufferization::ToTensorOp::create(rewriter,
-        loc, tensorType, alloc, true /* restrict */, true /* writable */);
+    Value tensor = bufferization::ToTensorOp::create(rewriter, loc, tensorType,
+                                                     alloc, true /* restrict */,
+                                                     true /* writable */);
     rewriter.replaceOp(op, tensor);
 
     return success();
@@ -629,15 +627,16 @@ struct StoreConverter : public OpConversionPattern<triton::StoreOp> {
       auto sMemRef =
           PtrAnalysis::getScalarMemRef(op.getPtr(), ptr, loc, rewriter);
       auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
-      affine::AffineStoreOp::create(rewriter, loc, val, sMemRef, zeroMap, ValueRange{});
+      affine::AffineStoreOp::create(rewriter, loc, val, sMemRef, zeroMap,
+                                    ValueRange{});
       rewriter.eraseOp(op);
       return success();
     }
 
     // 1. Simple case where no mask is used.
     if (!mask) {
-      auto storeOp = bufferization::MaterializeInDestinationOp::create(rewriter,
-          loc, val, ptr);
+      auto storeOp = bufferization::MaterializeInDestinationOp::create(
+          rewriter, loc, val, ptr);
       storeOp.setWritable(true);
       rewriter.eraseOp(op);
       return success();
@@ -655,8 +654,8 @@ struct StoreConverter : public OpConversionPattern<triton::StoreOp> {
     auto srcSlice = mstate.getExtractSlice(val, loc, rewriter);
     auto dstSubview = mstate.getSubview(ptr, loc, rewriter);
 
-    auto storeOp = bufferization::MaterializeInDestinationOp::create(rewriter,
-        loc, srcSlice, dstSubview);
+    auto storeOp = bufferization::MaterializeInDestinationOp::create(
+        rewriter, loc, srcSlice, dstSubview);
     storeOp.setWritable(true);
     rewriter.eraseOp(op);
 
@@ -745,10 +744,11 @@ struct SplatConverter : public OpConversionPattern<triton::SplatOp> {
     auto loc = op.getLoc();
 
     auto init = tensor::EmptyOp::create(rewriter, loc, opType.getShape(),
-                                                 opType.getElementType());
+                                        opType.getElementType());
 
-    auto filledTensor = linalg::FillOp::create(rewriter, loc, ValueRange{adaptor.getSrc()},
-                                    ValueRange{init})
+    auto filledTensor =
+        linalg::FillOp::create(rewriter, loc, ValueRange{adaptor.getSrc()},
+                               ValueRange{init})
             .result();
 
     rewriter.replaceOp(op, filledTensor);
@@ -783,10 +783,10 @@ public:
 
     assert(op->getNumResults() == 1 && "code assumes single result!");
     auto init = tensor::EmptyOp::create(rewriter, loc, resultType.getShape(),
-                                                 elementType);
+                                        elementType);
 
-    auto linalgOp = linalg::GenericOp::create(rewriter,
-        loc, op->getResultTypes(), ValueRange{adaptor.getSrc()},
+    auto linalgOp = linalg::GenericOp::create(
+        rewriter, loc, op->getResultTypes(), ValueRange{adaptor.getSrc()},
         ValueRange{init}, indexingMaps, getNParallelLoopsAttrs(resultRank),
         [&](OpBuilder &nestedBuilder, Location nestedLoc,
             ValueRange blockArgs) {
@@ -825,8 +825,8 @@ struct ExpandDimsConverter : public OpConversionPattern<triton::ExpandDimsOp> {
       reassoc.push_back(g);
     }
 
-    auto expandShapeOp = tensor::ExpandShapeOp::create(rewriter,
-        op.getLoc(), resType, src, reassoc);
+    auto expandShapeOp = tensor::ExpandShapeOp::create(rewriter, op.getLoc(),
+                                                       resType, src, reassoc);
 
     rewriter.replaceOp(op, expandShapeOp.getResult());
     return success();
@@ -867,16 +867,17 @@ struct MakeRangeConverter : public OpConversionPattern<triton::MakeRangeOp> {
         SmallVector<AffineExpr>{mlir::getAffineDimExpr(0, context)}, context)};
 
     auto init = tensor::EmptyOp::create(rewriter, loc, shape, elementType);
-    auto linalgOp = linalg::GenericOp::create(rewriter,
-        loc, op->getResultTypes(), /* operands */ ValueRange{},
+    auto linalgOp = linalg::GenericOp::create(
+        rewriter, loc, op->getResultTypes(), /* operands */ ValueRange{},
         ValueRange{init}, indexingMaps, getNParallelLoopsAttrs(1),
         [&](OpBuilder &nestedBuilder, Location nestedLoc,
             ValueRange blockArgs) {
           Value index = linalg::IndexOp::create(nestedBuilder, loc, 0);
-          Value res = arith::IndexCastOp::create(nestedBuilder, loc, type.getElementType(), index);
+          Value res = arith::IndexCastOp::create(nestedBuilder, loc,
+                                                 type.getElementType(), index);
           if (op.getStart()) {
-            auto start = mlir::arith::ConstantIntOp::create(rewriter,
-                op.getLoc(), op.getStart(),
+            auto start = mlir::arith::ConstantIntOp::create(
+                rewriter, op.getLoc(), op.getStart(),
                 type.getElementType().getIntOrFloatBitWidth());
             res = arith::AddIOp::create(nestedBuilder, loc, res, start);
           }
@@ -939,8 +940,8 @@ struct AssertConverter : public OpConversionPattern<triton::AssertOp> {
 
     // 6. Call spine_assert(pid0, pid1, pid2, cond, msg, file, line, func)
     auto assertFn = getOrAddSpineAssertDecl(rewriter, moduleOp);
-    SmallVector<Value> callArgs = {pid0,    pid1,    pid2,    scalarCond,
-                                   msgStr,  fileStr, lineVal, funcStr};
+    SmallVector<Value> callArgs = {pid0,   pid1,    pid2,    scalarCond,
+                                   msgStr, fileStr, lineVal, funcStr};
     LLVM::CallOp::create(rewriter, loc, assertFn, callArgs);
 
     rewriter.eraseOp(op);
@@ -950,8 +951,7 @@ struct AssertConverter : public OpConversionPattern<triton::AssertOp> {
 private:
   /// Reduce a tensor<...xi1> to a scalar i1 via AND reduction.
   Value reduceCondTensor(ConversionPatternRewriter &rewriter, Location loc,
-                         Value condTensor,
-                         RankedTensorType tensorType) const {
+                         Value condTensor, RankedTensorType tensorType) const {
     auto ctx = rewriter.getContext();
     auto i1Type = IntegerType::get(ctx, 1);
     int64_t rank = tensorType.getRank();
@@ -960,12 +960,10 @@ private:
     auto initTensorType = RankedTensorType::get({}, i1Type);
     Value trueVal = arith::ConstantOp::create(
         rewriter, loc, i1Type, rewriter.getIntegerAttr(i1Type, 1));
-    Value initTensor =
-        bufferization::AllocTensorOp::create(rewriter, loc, initTensorType,
-                                             ValueRange{});
-    initTensor =
-        tensor::InsertOp::create(rewriter, loc, trueVal, initTensor,
-                                 ValueRange{});
+    Value initTensor = bufferization::AllocTensorOp::create(
+        rewriter, loc, initTensorType, ValueRange{});
+    initTensor = tensor::InsertOp::create(rewriter, loc, trueVal, initTensor,
+                                          ValueRange{});
 
     // linalg.reduce with AND across all dimensions
     SmallVector<int64_t> reductionDims;
@@ -975,8 +973,7 @@ private:
     auto reduceOp = linalg::ReduceOp::create(
         rewriter, loc, condTensor, initTensor, reductionDims,
         [&](OpBuilder &b, Location innerLoc, ValueRange args) {
-          Value andVal =
-              arith::AndIOp::create(b, innerLoc, args[0], args[1]);
+          Value andVal = arith::AndIOp::create(b, innerLoc, args[0], args[1]);
           linalg::YieldOp::create(b, innerLoc, andVal);
         });
 
@@ -1020,12 +1017,11 @@ private:
       std::string strWithNull = str.str() + '\0';
       auto strAttr = rewriter.getStringAttr(strWithNull);
       auto arrayType = LLVM::LLVMArrayType::get(IntegerType::get(ctx, 8),
-                                                 strWithNull.size());
+                                                strWithNull.size());
 
-      globalOp = LLVM::GlobalOp::create(rewriter, loc, arrayType,
-                                        /*isConstant=*/true,
-                                        LLVM::Linkage::Internal, globalName,
-                                        strAttr);
+      globalOp = LLVM::GlobalOp::create(
+          rewriter, loc, arrayType,
+          /*isConstant=*/true, LLVM::Linkage::Internal, globalName, strAttr);
     }
 
     Type ptrType = LLVM::LLVMPointerType::get(ctx);
@@ -1035,9 +1031,8 @@ private:
 
   /// Get or create LLVM declaration for spine_assert.
   /// Signature: void spine_assert(i32, i32, i32, i1, ptr, ptr, i32, ptr)
-  LLVM::LLVMFuncOp
-  getOrAddSpineAssertDecl(ConversionPatternRewriter &rewriter,
-                          ModuleOp moduleOp) const {
+  LLVM::LLVMFuncOp getOrAddSpineAssertDecl(ConversionPatternRewriter &rewriter,
+                                           ModuleOp moduleOp) const {
     StringRef funcName = "spine_assert";
     if (auto existing = moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
       return existing;
@@ -1050,19 +1045,19 @@ private:
 
     SmallVector<Type> argsType = {
         i32Type, i32Type, i32Type, // pid_x, pid_y, pid_z
-        i1Type,                     // condition
-        ptrType,                    // message
-        ptrType,                    // file
-        i32Type,                    // line
-        ptrType                     // func
+        i1Type,                    // condition
+        ptrType,                   // message
+        ptrType,                   // file
+        i32Type,                   // line
+        ptrType                    // func
     };
     auto funcType =
         LLVM::LLVMFunctionType::get(voidType, argsType, /*isVarArg=*/false);
 
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(moduleOp.getBody());
-    auto fn = LLVM::LLVMFuncOp::create(rewriter, UnknownLoc::get(ctx),
-                                        funcName, funcType);
+    auto fn = LLVM::LLVMFuncOp::create(rewriter, UnknownLoc::get(ctx), funcName,
+                                       funcType);
     fn.setLinkage(LLVM::Linkage::External);
     return fn;
   }
@@ -1087,8 +1082,8 @@ struct BitcastConverter : public OpConversionPattern<triton::BitcastOp> {
       return failure();
     }
 
-    auto arithBitcast = arith::BitcastOp::create(rewriter,
-        op.getLoc(), op.getType(), op.getOperand());
+    auto arithBitcast = arith::BitcastOp::create(rewriter, op.getLoc(),
+                                                 op.getType(), op.getOperand());
 
     rewriter.replaceOp(op, arithBitcast.getResult());
     return success();
@@ -1128,7 +1123,7 @@ struct CallConverter : public OpConversionPattern<triton::CallOp> {
     }
 
     auto call = func::CallOp::create(rewriter, op.getLoc(), op.getCallee(),
-                                              op.getResultTypes(), args);
+                                     op.getResultTypes(), args);
 
     if (!call) {
       op.emitError("Failed to create func::CallOp");
@@ -1165,14 +1160,14 @@ struct FpToFpConverter : public OpConversionPattern<triton::FpToFpOp> {
            "Not a float-like operand or result");
 
     if (operandWidth.value() > resultWidth.value()) {
-      Value truncatedValue = arith::TruncFOp::create(rewriter,
-          op.getLoc(), resultType, op.getOperand());
+      Value truncatedValue = arith::TruncFOp::create(
+          rewriter, op.getLoc(), resultType, op.getOperand());
       rewriter.replaceOp(op, truncatedValue);
       return success();
     }
 
-    Value extendedValue = arith::ExtFOp::create(rewriter,
-        op.getLoc(), resultType, op.getOperand());
+    Value extendedValue = arith::ExtFOp::create(rewriter, op.getLoc(),
+                                                resultType, op.getOperand());
     rewriter.replaceOp(op, extendedValue);
 
     return success();
@@ -1241,7 +1236,8 @@ struct CatConverter : public OpConversionPattern<triton::CatOp> {
   LogicalResult
   matchAndRewrite(triton::CatOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto replacement = tensor::ConcatOp::create(rewriter, op.getLoc(), 0 /* concat dimension */, adaptor.getOperands());
+    auto replacement = tensor::ConcatOp::create(
+        rewriter, op.getLoc(), 0 /* concat dimension */, adaptor.getOperands());
 
     rewriter.replaceOp(op, replacement);
 
@@ -1278,7 +1274,8 @@ struct SplitConverter : public OpConversionPattern<triton::SplitOp> {
 
       offsets.push_back(rewriter.getIndexAttr(i));
       sizes.push_back(rewriter.getIndexAttr(1));
-      Value slice = tensor::ExtractSliceOp::create(rewriter, loc, resultTensor, input, offsets, sizes, strides);
+      Value slice = tensor::ExtractSliceOp::create(
+          rewriter, loc, resultTensor, input, offsets, sizes, strides);
       results.push_back(slice);
     }
 
@@ -1298,7 +1295,8 @@ struct JoinConverter : public OpConversionPattern<triton::JoinOp> {
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
 
     auto loc = op.getLoc();
-    Value result = tensor::EmptyOp::create(rewriter, loc, resultType.getShape(), resultType.getElementType());
+    Value result = tensor::EmptyOp::create(rewriter, loc, resultType.getShape(),
+                                           resultType.getElementType());
 
     auto shape = resultType.getShape();
 
@@ -1316,7 +1314,7 @@ struct JoinConverter : public OpConversionPattern<triton::JoinOp> {
       offsets.push_back(rewriter.getIndexAttr(i));
       sizes.push_back(rewriter.getIndexAttr(1));
       result = tensor::InsertSliceOp::create(rewriter, loc, inputs[i], result,
-                                                      offsets, sizes, strides);
+                                             offsets, sizes, strides);
     }
 
     rewriter.replaceOp(op, result);
@@ -1372,13 +1370,41 @@ struct MatmulConverter : public OpConversionPattern<triton::DotOp> {
     return false;
   }
 
+  // Create an elementwise f16->f32 extension using a linalg.generic
+  Value createElementwiseFPExtTensor(ConversionPatternRewriter &rewriter,
+                                     Location loc, Value input,
+                                     RankedTensorType dstType) const {
+    auto srcType = cast<RankedTensorType>(input.getType());
+    int64_t rank = srcType.getRank();
+
+    auto empty = tensor::EmptyOp::create(rewriter, loc, dstType.getShape(),
+                                         dstType.getElementType());
+
+    SmallVector<AffineMap> indexingMaps(2,
+                                        rewriter.getMultiDimIdentityMap(rank));
+    SmallVector<utils::IteratorType> iteratorTypes(
+        rank, utils::IteratorType::parallel);
+
+    auto generic = linalg::GenericOp::create(
+        rewriter, loc, dstType, ValueRange{input}, ValueRange{empty},
+        indexingMaps, iteratorTypes,
+        [&](OpBuilder &b, Location nestedLoc, ValueRange args) {
+          Value ext = arith::ExtFOp::create(b, nestedLoc,
+                                            dstType.getElementType(), args[0]);
+          linalg::YieldOp::create(b, nestedLoc, ext);
+        });
+
+    return generic.getResult(0);
+  }
+
   LogicalResult
   matchAndRewrite(triton::DotOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    auto opa = op.getA();
-    auto opb = op.getB();
-    auto opc = op.getC();
+    // use adaptor values to respect earlier type conversions
+    auto opa = adaptor.getA();
+    auto opb = adaptor.getB();
+    auto opc = adaptor.getC();
 
     llvm::SmallVector<xsmt::AnnotationOp> annotationOps;
     llvm::SmallDenseMap<StringAttr, Attribute> annotations;
@@ -1394,36 +1420,79 @@ struct MatmulConverter : public OpConversionPattern<triton::DotOp> {
     }
 
     auto dstType = cast<RankedTensorType>(op.getType());
-    auto elementType = dstType.getElementType();
-    bool integers = elementType.isInteger();
+    auto dstElemType = dstType.getElementType();
+    bool integers = dstElemType.isInteger();
     bool skipC = isZeroTensor(opc, integers);
-    auto init =
-        tensor::EmptyOp::create(rewriter, loc, dstType.getShape(), elementType);
-    TypedAttr constantAttr =
-        integers
-            ? static_cast<TypedAttr>(rewriter.getIntegerAttr(elementType, 0))
-            : static_cast<TypedAttr>(rewriter.getFloatAttr(elementType, 0));
 
-    auto zero = mlir::arith::ConstantOp::create(rewriter, op.getLoc(), elementType, constantAttr);
+    // detect special case: inputs are f16 and destination is f32
+    auto aType = cast<RankedTensorType>(opa.getType());
+    auto bType = cast<RankedTensorType>(opb.getType());
+    auto aElemType = aType.getElementType();
+    auto bElemType = bType.getElementType();
 
-    auto zeroes =
-        linalg::FillOp::create(rewriter, loc, ValueRange{zero}, ValueRange{init})
-            .result();
+    bool useF16AccumThenCastToF32 =
+        aElemType.isF16() && bElemType.isF16() && dstElemType.isF32();
 
-    auto matmulOp = linalg::MatmulOp::create(rewriter, loc, ValueRange{opa, opb},
-                                                      ValueRange{zeroes});
+    Value res;
 
-    for (auto &kv : annotations) {
-      matmulOp->setAttr(kv.getFirst(), kv.getSecond());
-    }
+    if (useF16AccumThenCastToF32) {
+      // create f16 outs for matmul
+      Type f16Ty = Float16Type::get(rewriter.getContext());
+      auto matmulDstType = RankedTensorType::get(dstType.getShape(), f16Ty);
 
-    Value res = matmulOp.getResult(0);
+      auto init = tensor::EmptyOp::create(rewriter, loc,
+                                          matmulDstType.getShape(), f16Ty);
+      auto zeroAttr = rewriter.getFloatAttr(f16Ty, 0.0);
+      auto zero = arith::ConstantOp::create(rewriter, loc, f16Ty, zeroAttr);
+      auto zeroes = linalg::FillOp::create(rewriter, loc, ValueRange{zero},
+                                           ValueRange{init})
+                        .result();
 
-    if (!skipC) {
-      if (integers) {
-        res = arith::AddIOp::create(rewriter, loc, opc, res);
-      } else {
+      auto matmulOp = linalg::MatmulOp::create(
+          rewriter, loc, ValueRange{opa, opb}, ValueRange{zeroes});
+      for (auto &kv : annotations) {
+        matmulOp->setAttr(kv.getFirst(), kv.getSecond());
+      }
+
+      Value f16Res = matmulOp.getResult(0);
+
+      // elementwise extend to f32
+      res = createElementwiseFPExtTensor(rewriter, loc, f16Res, dstType);
+
+      if (!skipC) {
         res = arith::AddFOp::create(rewriter, loc, opc, res);
+      }
+    } else {
+      auto init = tensor::EmptyOp::create(rewriter, loc, dstType.getShape(),
+                                          dstElemType);
+
+      TypedAttr constantAttr =
+          integers
+              ? static_cast<TypedAttr>(rewriter.getIntegerAttr(dstElemType, 0))
+              : static_cast<TypedAttr>(rewriter.getFloatAttr(dstElemType, 0));
+
+      auto zero =
+          arith::ConstantOp::create(rewriter, loc, dstElemType, constantAttr);
+
+      auto zeroes = linalg::FillOp::create(rewriter, loc, ValueRange{zero},
+                                           ValueRange{init})
+                        .result();
+
+      auto matmulOp = linalg::MatmulOp::create(
+          rewriter, loc, ValueRange{opa, opb}, ValueRange{zeroes});
+
+      for (auto &kv : annotations) {
+        matmulOp->setAttr(kv.getFirst(), kv.getSecond());
+      }
+
+      res = matmulOp.getResult(0);
+
+      if (!skipC) {
+        if (integers) {
+          res = arith::AddIOp::create(rewriter, loc, opc, res);
+        } else {
+          res = arith::AddFOp::create(rewriter, loc, opc, res);
+        }
       }
     }
 
@@ -1513,7 +1582,7 @@ private:
             });
 
     return arith::ConstantOp::create(rewriter, redOp->getLoc(), constantType,
-                                              attr);
+                                     attr);
   }
 
   bool requiresF32Conversion(const Type elemType, Operation *redOp) const {
@@ -1533,25 +1602,25 @@ private:
     return llvm::TypeSwitch<Operation *, Value>(redOp)
         .Case<arith::AddFOp, arith::MulFOp>([&](auto redOp) {
           if (convertLhsToF32Precision) {
-            lhs = arith::ExtFOp::create(b, loc, Float32Type::get(b.getContext()),
-                                          lhs);
+            lhs = arith::ExtFOp::create(b, loc,
+                                        Float32Type::get(b.getContext()), lhs);
           }
           return decltype(redOp)::create(b, loc, lhs, rhs);
         })
         .Case([&](arith::MulFOp) {
           if (convertLhsToF32Precision) {
-            lhs = arith::ExtFOp::create(b, loc, Float32Type::get(b.getContext()),
-                                          lhs);
+            lhs = arith::ExtFOp::create(b, loc,
+                                        Float32Type::get(b.getContext()), lhs);
           }
           return arith::MulFOp::create(b, loc, lhs, rhs);
         })
         .Case<arith::AddIOp, arith::AndIOp, arith::XOrIOp, arith::MaximumFOp,
               arith::MaxNumFOp, arith::MulIOp, arith::MinimumFOp,
               arith::MinNumFOp, arith::MinSIOp, arith::MinUIOp, arith::MaxSIOp,
-              arith::MaxUIOp,
-              arith::OrIOp, arith::AndIOp, arith::OrIOp>([&](auto redOp) {
-          return decltype(redOp)::create(b, loc, lhs, rhs);
-        })
+              arith::MaxUIOp, arith::OrIOp, arith::AndIOp, arith::OrIOp>(
+            [&](auto redOp) {
+              return decltype(redOp)::create(b, loc, lhs, rhs);
+            })
         .Default([](Operation *op) {
           op->dump();
           llvm_unreachable("Reduction op not yet supported");
@@ -1616,26 +1685,30 @@ private:
       // directly instead of EmptyOp so that the subsequent pass can recognize
       // the patterns (EmptyOp is susceptible to being CSE'd away, making it
       // harder to match the patterns correctly).
-      initTensor = bufferization::AllocTensorOp::create(rewriter, loc, RankedTensorType::get({}, constantType), ValueRange{});
+      initTensor = bufferization::AllocTensorOp::create(
+          rewriter, loc, RankedTensorType::get({}, constantType), ValueRange{});
       initTensor = tensor::InsertOp::create(rewriter, loc, accBaseConstOp,
-                                                     initTensor, ValueRange{});
+                                            initTensor, ValueRange{});
     } else {
-      Value init = tensor::EmptyOp::create(rewriter, loc, cast<RankedTensorType>(resType).getShape(), constantType);
-      initTensor = linalg::FillOp::create(rewriter, loc, ValueRange{accBaseConstOp},
-                                               ValueRange{init})
-                       .result();
+      Value init = tensor::EmptyOp::create(
+          rewriter, loc, cast<RankedTensorType>(resType).getShape(),
+          constantType);
+      initTensor =
+          linalg::FillOp::create(rewriter, loc, ValueRange{accBaseConstOp},
+                                 ValueRange{init})
+              .result();
     }
 
-    Value finalResult = linalg::ReduceOp::create(rewriter,
-                loc, ValueRange{source}, ValueRange{initTensor},
-                SmallVector<int64_t>{axis},
-                [&](OpBuilder &opBuilder, Location loc, ValueRange inputs) {
-                  assert(inputs.size() == 2);
-                  Value result =
-                      getRedElement(inputs[0], inputs[1], loc, rop, opBuilder,
-                                    convertToF32Precision);
-                  linalg::YieldOp::create(opBuilder, loc, result);
-                })
+    Value finalResult =
+        linalg::ReduceOp::create(
+            rewriter, loc, ValueRange{source}, ValueRange{initTensor},
+            SmallVector<int64_t>{axis},
+            [&](OpBuilder &opBuilder, Location loc, ValueRange inputs) {
+              assert(inputs.size() == 2);
+              Value result = getRedElement(inputs[0], inputs[1], loc, rop,
+                                           opBuilder, convertToF32Precision);
+              linalg::YieldOp::create(opBuilder, loc, result);
+            })
             .getResult(0);
 
     if (isVectorReduce) {
@@ -1644,7 +1717,8 @@ private:
     }
 
     if (convertToF32Precision) {
-      finalResult = arith::TruncFOp::create(rewriter, loc, resType, finalResult);
+      finalResult =
+          arith::TruncFOp::create(rewriter, loc, resType, finalResult);
     }
 
     rewriter.replaceOp(op, finalResult);
@@ -1830,7 +1904,7 @@ class ArgMinMaxBaseConverter : public OpConversionPattern<triton::ReduceOp> {
     Value initTensor =
         tensor::EmptyOp::create(rewriter, loc, shape, fillValue.getType());
     return linalg::FillOp::create(rewriter, loc, ValueRange{fillValue},
-                                ValueRange{initTensor})
+                                  ValueRange{initTensor})
         .result();
   }
 
@@ -1905,13 +1979,15 @@ public:
     // the result value to either -inf or +inf depending on
     // whether we're dealing with argmax or argmin
     auto valueType = elemTypes[0];
-    auto valuesAccBaseVal = arith::ConstantOp::create(rewriter, loc, valueType,
+    auto valuesAccBaseVal = arith::ConstantOp::create(
+        rewriter, loc, valueType,
         rewriter.getFloatAttr(valueType, T::getBaseReductionValue()));
 
     // Set the initial value of the rank-0 tensor containing the index of the
     // min or max value to -1
     auto indexType = elemTypes[1];
-    auto indicesAccBaseVal = arith::ConstantOp::create(rewriter, loc, indexType, rewriter.getIntegerAttr(indexType, -1));
+    auto indicesAccBaseVal = arith::ConstantOp::create(
+        rewriter, loc, indexType, rewriter.getIntegerAttr(indexType, -1));
 
     // Get the shape of the resulting tensors (both for values and indices). If
     // we are reducing to a single scalar, then the result's type is a tensor of
@@ -1926,7 +2002,8 @@ public:
         getInitTensor(rewriter, reductionResultShape, valuesAccBaseVal, loc),
         getInitTensor(rewriter, reductionResultShape, indicesAccBaseVal, loc)};
 
-    auto linalgOp = linalg::ReduceOp::create(rewriter, loc, adaptor.getOperands(), outputs,
+    auto linalgOp = linalg::ReduceOp::create(
+        rewriter, loc, adaptor.getOperands(), outputs,
         SmallVector<int64_t>{adaptor.getAxis()},
         [&](OpBuilder &b, Location loc, ValueRange inputs) {
           assert(inputs.size() == 4);
@@ -1949,8 +2026,10 @@ public:
 
     if (isScalarReduce) {
       SmallVector<Value> reduceResults{
-          tensor::ExtractOp::create(rewriter, loc, valueType, linalgOp.getResults()[0], ValueRange{}),
-          tensor::ExtractOp::create(rewriter, loc, indexType, linalgOp.getResults()[1], ValueRange{})};
+          tensor::ExtractOp::create(rewriter, loc, valueType,
+                                    linalgOp.getResults()[0], ValueRange{}),
+          tensor::ExtractOp::create(rewriter, loc, indexType,
+                                    linalgOp.getResults()[1], ValueRange{})};
       rewriter.replaceOp(op, reduceResults);
     } else {
       rewriter.replaceOp(op, linalgOp);
@@ -2077,7 +2156,8 @@ struct normalReduceConverter : public OpConversionPattern<triton::ReduceOp> {
         [[maybe_unused]] bool res = createReassociationMaps(
             rewriter, inputShape, initTy.getShape(), reassociationMap);
         assert(res && "attempting to collapse into an incompatible shape");
-        auto collapse = tensor::CollapseShapeOp::create(rewriter, loc, inputVal, reassociationMap);
+        auto collapse = tensor::CollapseShapeOp::create(rewriter, loc, inputVal,
+                                                        reassociationMap);
         initVals.push_back(collapse);
         continue;
       }
@@ -2093,7 +2173,8 @@ struct normalReduceConverter : public OpConversionPattern<triton::ReduceOp> {
         [[maybe_unused]] bool res = createReassociationMaps(
             rewriter, sliceShape, initTy.getShape(), reassociationMap);
         assert(res && "attempting to collapse into an incompatible shape");
-        auto collapse = tensor::CollapseShapeOp::create(rewriter, loc, slice, reassociationMap);
+        auto collapse = tensor::CollapseShapeOp::create(rewriter, loc, slice,
+                                                        reassociationMap);
         initVals.push_back(collapse);
       }
 
@@ -2113,7 +2194,9 @@ struct normalReduceConverter : public OpConversionPattern<triton::ReduceOp> {
       SmallVector<Value> extractResults;
       for (auto [tensor, type] :
            llvm::zip(results, convertedResultTensorTypes)) {
-        Value scalar = tensor::ExtractOp::create(rewriter, loc, type.getElementType(), tensor, /*indices=*/ValueRange{});
+        Value scalar =
+            tensor::ExtractOp::create(rewriter, loc, type.getElementType(),
+                                      tensor, /*indices=*/ValueRange{});
         extractResults.push_back(scalar);
       }
       return extractResults;
@@ -2128,7 +2211,9 @@ struct normalReduceConverter : public OpConversionPattern<triton::ReduceOp> {
 
     // Create a linalg.reduce on the same input and move the combine region
     // there. (ReduceReturnOpConversion will take care of the terminator.)
-    auto reduceOp = linalg::ReduceOp::create(rewriter, loc, /*resultTypes=*/SmallVector<Type>(convertedResultTensorTypes),
+    auto reduceOp = linalg::ReduceOp::create(
+        rewriter, loc,
+        /*resultTypes=*/SmallVector<Type>(convertedResultTensorTypes),
         /*inputs=*/inputVals, /*inits=*/initVals,
         /*dimensions=*/ArrayRef<int64_t>{op.getAxis()});
     rewriter.inlineRegionBefore(op.getCombineOp(), reduceOp.getCombiner(),
@@ -2310,7 +2395,9 @@ struct DenseConstantConverter : public OpConversionPattern<arith::ConstantOp> {
     auto splatConst = arith::ConstantOp::materialize(
         rewriter, attr.getSplatValue<Attribute>(), attr.getElementType(), loc);
 
-    auto init = tensor::EmptyOp::create(rewriter, loc, cast<RankedTensorType>(op.getResult().getType()).getShape(),
+    auto init = tensor::EmptyOp::create(
+        rewriter, loc,
+        cast<RankedTensorType>(op.getResult().getType()).getShape(),
         attr.getElementType());
 
     rewriter.replaceOpWithNewOp<linalg::FillOp>(op, ValueRange{splatConst},
@@ -2379,7 +2466,7 @@ public:
     }
 
     Value init = tensor::EmptyOp::create(rewriter, op.getLoc(), type.getShape(),
-                                                  type.getElementType());
+                                         type.getElementType());
 
     rewriter.replaceOpWithNewOp<ttx::CumSumOp>(
         op, input, rewriter.getUI32IntegerAttr(axis), init);
@@ -2445,7 +2532,8 @@ class TensorOpConverter : public OpConversionPattern<OpType> {
         rewriter.getMultiDimIdentityMap(rank));
     SmallVector<utils::IteratorType> iteratorTypes(
         rank, utils::IteratorType::parallel);
-    SmallVector<Value> outputs = {tensor::EmptyOp::create(rewriter, op->getLoc(), resultTensorType.getShape(),
+    SmallVector<Value> outputs = {tensor::EmptyOp::create(
+        rewriter, op->getLoc(), resultTensorType.getShape(),
         resultTensorType.getElementType())};
     rewriter.replaceOpWithNewOp<linalg::GenericOp>(
         op, op->getResultTypes(), op->getOperands(), outputs, indexingMaps,
@@ -2535,7 +2623,8 @@ public:
 
     ArrayRef<int64_t> outputShape = outputType.getShape();
 
-    auto shape = arith::ConstantOp::create(rewriter, loc, rewriter.getI64TensorAttr(outputShape));
+    auto shape = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getI64TensorAttr(outputShape));
     rewriter.replaceOpWithNewOp<tensor::ReshapeOp>(op, outputType, input,
                                                    shape);
 
@@ -2543,162 +2632,184 @@ public:
   }
 };
 
-class ConvertExternElementwise : public OpConversionPattern<triton::ExternElementwiseOp> {
+class ConvertExternElementwise
+    : public OpConversionPattern<triton::ExternElementwiseOp> {
 public:
-    using OpConversionPattern<triton::ExternElementwiseOp>::OpConversionPattern;
+  using OpConversionPattern<triton::ExternElementwiseOp>::OpConversionPattern;
 
-    ConvertExternElementwise(MLIRContext *context) : OpConversionPattern(context) {
-        opMap.insert({"linalg.exp",   {1, createLinalgOpFunc<linalg::ExpOp>(),   createMathUnaryOpFunc<math::ExpOp>()}});
-        opMap.insert({"linalg.log",   {1, createLinalgOpFunc<linalg::LogOp>(),   createMathUnaryOpFunc<math::LogOp>()}});
-        opMap.insert({"linalg.abs",   {1, createLinalgOpFunc<linalg::AbsOp>(),   createMathUnaryOpFunc<math::AbsFOp>()}});
-        opMap.insert({"linalg.ceil",  {1, createLinalgOpFunc<linalg::CeilOp>(),  createMathUnaryOpFunc<math::CeilOp>()}});
-        opMap.insert({"linalg.floor", {1, createLinalgOpFunc<linalg::FloorOp>(), createMathUnaryOpFunc<math::FloorOp>()}});
-        opMap.insert({"linalg.round", {1, createLinalgOpFunc<linalg::RoundOp>(), createMathUnaryOpFunc<math::RoundOp>()}});
-        opMap.insert({"linalg.rsqrt", {1, createLinalgOpFunc<linalg::RsqrtOp>(), createMathUnaryOpFunc<math::RsqrtOp>()}});
-        opMap.insert({"linalg.sqrt",  {1, createLinalgOpFunc<linalg::SqrtOp>(),  createMathUnaryOpFunc<math::SqrtOp>()}});
-        opMap.insert({"linalg.tanh",  {1, createLinalgOpFunc<linalg::TanhOp>(),  createMathUnaryOpFunc<math::TanhOp>()}});
-        opMap.insert({"linalg.erf",   {1, createLinalgOpFunc<linalg::ErfOp>(),   createMathUnaryOpFunc<math::ErfOp>()}});
-        opMap.insert({"linalg.powf",  {2, createLinalgOpFunc<linalg::PowFOp>(),  createMathBinaryOpFunc<math::PowFOp>()}});
+  ConvertExternElementwise(MLIRContext *context)
+      : OpConversionPattern(context) {
+    opMap.insert({"linalg.exp",
+                  {1, createLinalgOpFunc<linalg::ExpOp>(),
+                   createMathUnaryOpFunc<math::ExpOp>()}});
+    opMap.insert({"linalg.log",
+                  {1, createLinalgOpFunc<linalg::LogOp>(),
+                   createMathUnaryOpFunc<math::LogOp>()}});
+    opMap.insert({"linalg.abs",
+                  {1, createLinalgOpFunc<linalg::AbsOp>(),
+                   createMathUnaryOpFunc<math::AbsFOp>()}});
+    opMap.insert({"linalg.ceil",
+                  {1, createLinalgOpFunc<linalg::CeilOp>(),
+                   createMathUnaryOpFunc<math::CeilOp>()}});
+    opMap.insert({"linalg.floor",
+                  {1, createLinalgOpFunc<linalg::FloorOp>(),
+                   createMathUnaryOpFunc<math::FloorOp>()}});
+    opMap.insert({"linalg.round",
+                  {1, createLinalgOpFunc<linalg::RoundOp>(),
+                   createMathUnaryOpFunc<math::RoundOp>()}});
+    opMap.insert({"linalg.rsqrt",
+                  {1, createLinalgOpFunc<linalg::RsqrtOp>(),
+                   createMathUnaryOpFunc<math::RsqrtOp>()}});
+    opMap.insert({"linalg.sqrt",
+                  {1, createLinalgOpFunc<linalg::SqrtOp>(),
+                   createMathUnaryOpFunc<math::SqrtOp>()}});
+    opMap.insert({"linalg.tanh",
+                  {1, createLinalgOpFunc<linalg::TanhOp>(),
+                   createMathUnaryOpFunc<math::TanhOp>()}});
+    opMap.insert({"linalg.erf",
+                  {1, createLinalgOpFunc<linalg::ErfOp>(),
+                   createMathUnaryOpFunc<math::ErfOp>()}});
+    opMap.insert({"linalg.powf",
+                  {2, createLinalgOpFunc<linalg::PowFOp>(),
+                   createMathBinaryOpFunc<math::PowFOp>()}});
+  }
+
+  LogicalResult
+  matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto inputs = adaptor.getSrcs();
+
+    auto symbol = op.getSymbol().str();
+    auto it = opMap.find(symbol);
+    if (it == opMap.end()) {
+      return failure();
     }
 
-    LogicalResult matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
-                                  ConversionPatternRewriter &rewriter) const override {
-        auto loc = op.getLoc();
-        auto inputs = adaptor.getSrcs();
+    int requiredOperands = it->second.numOperands;
+    auto createLinalgFunc = it->second.createLinalgFunc;
+    auto createMathFunc = it->second.createMathFunc;
 
-        auto symbol = op.getSymbol().str();
-        auto it = opMap.find(symbol);
-        if (it == opMap.end()) {
-            return failure();
-        }
+    if (inputs.size() < requiredOperands) {
+      return failure();
+    }
 
-        int requiredOperands = it->second.numOperands;
-        auto createLinalgFunc = it->second.createLinalgFunc;
-        auto createMathFunc = it->second.createMathFunc;
+    ValueRange opInputs = inputs.take_front(requiredOperands);
+    auto resultType = op.getResult().getType();
 
-        if (inputs.size() < requiredOperands) {
-            return failure();
-        }
-
-        ValueRange opInputs = inputs.take_front(requiredOperands);
-        auto resultType = op.getResult().getType();
-
-        if (auto tensorType = dyn_cast<RankedTensorType>(resultType)) {
-            auto elementType = tensorType.getElementType();
-            if (!isa<FloatType>(elementType)) {
-                return failure();
-            }
-
-          for (Value input : opInputs) {
-            auto inputTensorType = dyn_cast<RankedTensorType>(input.getType());
-            if (!inputTensorType || inputTensorType.getElementType() != elementType) {
-              return rewriter.notifyMatchFailure(
-                op,
-                "extern elementwise tensor lowering requires input/output "
-                "element types to match");
-            }
-          }
-
-            auto init = tensor::EmptyOp::create(rewriter, loc, tensorType.getShape(), elementType
-            );
-
-            Value output = init.getResult();
-            SmallVector<Value, 1> outputs{output};
-
-            Operation* resultOp =
-              createLinalgFunc(rewriter, loc, opInputs, outputs);
-            if (!resultOp || resultOp->getNumResults() == 0) {
-                return failure();
-            }
-
-            rewriter.replaceOp(op, resultOp->getResult(0));
-            return success();
-        }
-        else if (isa<FloatType>(resultType)) {
-          for (Value input : opInputs) {
-            if (!isa<FloatType>(input.getType()) || input.getType() != resultType) {
-              return rewriter.notifyMatchFailure(
-                op,
-                "extern elementwise scalar lowering requires input/output "
-                "types to match");
-            }
-          }
-
-            Operation* resultOp = createMathFunc(rewriter, loc, opInputs);
-            if (!resultOp || resultOp->getNumResults() == 0) {
-                return failure();
-            }
-
-            rewriter.replaceOp(op, resultOp->getResult(0));
-            return success();
-        }
-
+    if (auto tensorType = dyn_cast<RankedTensorType>(resultType)) {
+      auto elementType = tensorType.getElementType();
+      if (!isa<FloatType>(elementType)) {
         return failure();
+      }
+
+      for (Value input : opInputs) {
+        auto inputTensorType = dyn_cast<RankedTensorType>(input.getType());
+        if (!inputTensorType ||
+            inputTensorType.getElementType() != elementType) {
+          return rewriter.notifyMatchFailure(
+              op, "extern elementwise tensor lowering requires input/output "
+                  "element types to match");
+        }
+      }
+
+      auto init = tensor::EmptyOp::create(rewriter, loc, tensorType.getShape(),
+                                          elementType);
+
+      Value output = init.getResult();
+      SmallVector<Value, 1> outputs{output};
+
+      Operation *resultOp = createLinalgFunc(rewriter, loc, opInputs, outputs);
+      if (!resultOp || resultOp->getNumResults() == 0) {
+        return failure();
+      }
+
+      rewriter.replaceOp(op, resultOp->getResult(0));
+      return success();
+    } else if (isa<FloatType>(resultType)) {
+      for (Value input : opInputs) {
+        if (!isa<FloatType>(input.getType()) || input.getType() != resultType) {
+          return rewriter.notifyMatchFailure(
+              op, "extern elementwise scalar lowering requires input/output "
+                  "types to match");
+        }
+      }
+
+      Operation *resultOp = createMathFunc(rewriter, loc, opInputs);
+      if (!resultOp || resultOp->getNumResults() == 0) {
+        return failure();
+      }
+
+      rewriter.replaceOp(op, resultOp->getResult(0));
+      return success();
     }
+
+    return failure();
+  }
 
 private:
-    using CreateLinalgOpFunc = std::function<Operation*(ConversionPatternRewriter&, Location, ValueRange, ValueRange)>;
-    using CreateMathOpFunc = std::function<Operation*(ConversionPatternRewriter&, Location, ValueRange)>;
+  using CreateLinalgOpFunc = std::function<Operation *(
+      ConversionPatternRewriter &, Location, ValueRange, ValueRange)>;
+  using CreateMathOpFunc = std::function<Operation *(
+      ConversionPatternRewriter &, Location, ValueRange)>;
 
-    struct OpInfo {
-        int numOperands;
-        CreateLinalgOpFunc createLinalgFunc;
-        CreateMathOpFunc createMathFunc;
+  struct OpInfo {
+    int numOperands;
+    CreateLinalgOpFunc createLinalgFunc;
+    CreateMathOpFunc createMathFunc;
+  };
+
+  template <typename OpType> static CreateLinalgOpFunc createLinalgOpFunc() {
+    return [](ConversionPatternRewriter &rewriter, Location loc,
+              ValueRange inputs, ValueRange outputs) -> Operation * {
+      return OpType::create(rewriter, loc, inputs, outputs);
     };
+  }
 
-    template <typename OpType>
-    static CreateLinalgOpFunc createLinalgOpFunc() {
-        return [](ConversionPatternRewriter &rewriter, Location loc,
-                 ValueRange inputs, ValueRange outputs) -> Operation* {
-            return OpType::create(rewriter, loc, inputs, outputs);
-        };
-    }
+  template <typename OpType> static CreateMathOpFunc createMathUnaryOpFunc() {
+    return [](ConversionPatternRewriter &rewriter, Location loc,
+              ValueRange inputs) -> Operation * {
+      if (inputs.size() != 1) {
+        return nullptr;
+      }
 
-    template <typename OpType>
-    static CreateMathOpFunc createMathUnaryOpFunc() {
-        return [](ConversionPatternRewriter &rewriter, Location loc,
-                 ValueRange inputs) -> Operation* {
-            if (inputs.size() != 1) {
-                return nullptr;
-            }
+      Type resultType = inputs[0].getType();
+      auto fastmath = arith::FastMathFlags::none;
 
-            Type resultType = inputs[0].getType();
-            auto fastmath = arith::FastMathFlags::none;
+      OperationState state(loc, OpType::getOperationName());
+      OpType::build(rewriter, state, resultType, inputs[0], fastmath);
+      return rewriter.create(state);
+    };
+  }
 
-            OperationState state(loc, OpType::getOperationName());
-            OpType::build(rewriter, state, resultType, inputs[0], fastmath);
-            return rewriter.create(state);
-        };
-    }
+  template <typename OpType> static CreateMathOpFunc createMathBinaryOpFunc() {
+    return [](ConversionPatternRewriter &rewriter, Location loc,
+              ValueRange inputs) -> Operation * {
+      if (inputs.size() != 2) {
+        return nullptr;
+      }
 
-    template <typename OpType>
-    static CreateMathOpFunc createMathBinaryOpFunc() {
-        return [](ConversionPatternRewriter &rewriter, Location loc,
-                 ValueRange inputs) -> Operation* {
-            if (inputs.size() != 2) {
-                return nullptr;
-            }
+      Type resultType = inputs[0].getType();
+      auto fastmath = arith::FastMathFlags::none;
 
-            Type resultType = inputs[0].getType();
-            auto fastmath = arith::FastMathFlags::none;
+      OperationState state(loc, OpType::getOperationName());
+      OpType::build(rewriter, state, resultType, inputs[0], inputs[1],
+                    fastmath);
+      return rewriter.create(state);
+    };
+  }
 
-            OperationState state(loc, OpType::getOperationName());
-            OpType::build(rewriter, state, resultType, inputs[0], inputs[1], fastmath);
-            return rewriter.create(state);
-        };
-    }
-
-    std::unordered_map<std::string, OpInfo> opMap;
+  std::unordered_map<std::string, OpInfo> opMap;
 };
 
-
-class ConvertExternIsNaNOrInf : public OpConversionPattern<triton::ExternElementwiseOp> {
+class ConvertExternIsNaNOrInf
+    : public OpConversionPattern<triton::ExternElementwiseOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(
-      triton::ExternElementwiseOp op, OpAdaptor adaptor,
-      ConversionPatternRewriter &rewriter) const override {
+  LogicalResult
+  matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
 
     StringRef symbol = op.getSymbol();
     bool isIsNaN = (symbol == "math.isnan");
@@ -2718,7 +2829,8 @@ public:
 
     auto inputType = dyn_cast<RankedTensorType>(input.getType());
     if (!inputType) {
-      return rewriter.notifyMatchFailure(op, "input is not a ranked tensor type");
+      return rewriter.notifyMatchFailure(op,
+                                         "input is not a ranked tensor type");
     }
 
     auto outputType = cast<RankedTensorType>(op.getType());
@@ -2728,23 +2840,19 @@ public:
     }
     auto outputElemType = outputType.getElementType();
 
-    if ((isCos || isSin) &&
-        (!isa<FloatType>(outputElemType) ||
-         outputElemType != inputType.getElementType())) {
+    if ((isCos || isSin) && (!isa<FloatType>(outputElemType) ||
+                             outputElemType != inputType.getElementType())) {
       return rewriter.notifyMatchFailure(
-          op,
-          "math.sin/math.cos lowering requires float output element type "
-          "matching input element type");
+          op, "math.sin/math.cos lowering requires float output element type "
+              "matching input element type");
     }
 
-    Value outputTensor = tensor::EmptyOp::create(rewriter, loc, outputType.getShape(), outputElemType);
+    Value outputTensor = tensor::EmptyOp::create(
+        rewriter, loc, outputType.getShape(), outputElemType);
 
     AffineMap identityMap = AffineMap::getMultiDimIdentityMap(
         inputType.getRank(), rewriter.getContext());
-    SmallVector<AffineMap> indexingMaps = {
-        identityMap,
-        identityMap
-    };
+    SmallVector<AffineMap> indexingMaps = {identityMap, identityMap};
 
     SmallVector<utils::IteratorType> iteratorTypes(
         inputType.getRank(), utils::IteratorType::parallel);
@@ -2752,8 +2860,7 @@ public:
     OperationState state(loc, linalg::GenericOp::getOperationName());
 
     linalg::GenericOp::build(
-        rewriter,
-        state,
+        rewriter, state,
         /*resultTensorTypes=*/TypeRange{outputType},
         /*inputs=*/ValueRange{input},
         /*outputs=*/ValueRange{outputTensor},
@@ -2773,7 +2880,7 @@ public:
               outputVal =
                   arith::ExtUIOp::create(b, loc, outputElemType, specialOp);
             }
-          } else if(isIsInf) { // isIsInf
+          } else if (isIsInf) { // isIsInf
             Value specialOp = math::IsInfOp::create(b, loc, inputVal);
             if (outputElemType.isInteger(1)) {
               outputVal = specialOp;
@@ -2781,7 +2888,7 @@ public:
               outputVal =
                   arith::ExtUIOp::create(b, loc, outputElemType, specialOp);
             }
-          } else if(isFinite) {
+          } else if (isFinite) {
             Value specialOp = math::IsFiniteOp::create(b, loc, inputVal);
             if (outputElemType.isInteger(1)) {
               outputVal = specialOp;
@@ -2797,8 +2904,7 @@ public:
           }
 
           linalg::YieldOp::create(b, loc, outputVal);
-        }
-    );
+        });
 
     auto genericOp = cast<linalg::GenericOp>(rewriter.create(state));
 
@@ -2807,7 +2913,8 @@ public:
   }
 };
 
-struct ConvertExternGeluNone : public OpRewritePattern<triton::ExternElementwiseOp> {
+struct ConvertExternGeluNone
+    : public OpRewritePattern<triton::ExternElementwiseOp> {
   using OpRewritePattern<triton::ExternElementwiseOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(triton::ExternElementwiseOp op,
@@ -2833,11 +2940,9 @@ struct ConvertExternGeluNone : public OpRewritePattern<triton::ExternElementwise
 
     Location loc = op.getLoc();
 
-    Value initTensor = tensor::EmptyOp::create(rewriter, loc,
-        outputType.getShape(),
-        outputType.getElementType(),
-        ValueRange{}
-    );
+    Value initTensor =
+        tensor::EmptyOp::create(rewriter, loc, outputType.getShape(),
+                                outputType.getElementType(), ValueRange{});
 
     SmallVector<AffineMap> indexingMaps;
     auto ctx = rewriter.getContext();
@@ -2845,41 +2950,34 @@ struct ConvertExternGeluNone : public OpRewritePattern<triton::ExternElementwise
     indexingMaps.push_back(identityMap);
     indexingMaps.push_back(identityMap);
 
-    SmallVector<utils::IteratorType> iteratorTypes(rank, utils::IteratorType::parallel);
+    SmallVector<utils::IteratorType> iteratorTypes(
+        rank, utils::IteratorType::parallel);
     SmallVector<Attribute> iteratorAttrs;
     for (auto type : iteratorTypes) {
-      iteratorAttrs.push_back(linalg::IteratorTypeAttr::get(
-          rewriter.getContext(), type));
+      iteratorAttrs.push_back(
+          linalg::IteratorTypeAttr::get(rewriter.getContext(), type));
     }
 
-    auto genericOp = linalg::GenericOp::create(rewriter, loc,
-        initTensor.getType(),
-        input,
-        initTensor,
+    auto genericOp = linalg::GenericOp::create(
+        rewriter, loc, initTensor.getType(), input, initTensor,
         rewriter.getAffineMapArrayAttr(indexingMaps),
-        rewriter.getArrayAttr(iteratorAttrs),
-        nullptr,
-        nullptr
-    );
+        rewriter.getArrayAttr(iteratorAttrs), nullptr, nullptr);
 
     Block *body = new Block();
     genericOp.getRegion().push_back(body);
-    body->addArguments(
-        {inputElemTy, outputElemTy},
-        {loc, loc}
-    );
+    body->addArguments({inputElemTy, outputElemTy}, {loc, loc});
 
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(body);
 
     // output = 0.5 * x * (1 + erf(x * 0.7071067811))
-    Value c0_5 = arith::ConstantOp::create(
-      rewriter, loc, inputElemTy, rewriter.getFloatAttr(floatTy, 0.5));
-    Value c0_07071067811 = arith::ConstantOp::create(
-      rewriter, loc, inputElemTy,
-      rewriter.getFloatAttr(floatTy, 0.7071067811));
-    Value c1 = arith::ConstantOp::create(
-      rewriter, loc, inputElemTy, rewriter.getFloatAttr(floatTy, 1.0));
+    Value c0_5 = arith::ConstantOp::create(rewriter, loc, inputElemTy,
+                                           rewriter.getFloatAttr(floatTy, 0.5));
+    Value c0_07071067811 =
+        arith::ConstantOp::create(rewriter, loc, inputElemTy,
+                                  rewriter.getFloatAttr(floatTy, 0.7071067811));
+    Value c1 = arith::ConstantOp::create(rewriter, loc, inputElemTy,
+                                         rewriter.getFloatAttr(floatTy, 1.0));
 
     Value x = body->getArgument(0);
 
@@ -2906,7 +3004,8 @@ struct ConvertExternGeluNone : public OpRewritePattern<triton::ExternElementwise
   }
 };
 
-struct ConvertExternGeluTanh : public OpRewritePattern<triton::ExternElementwiseOp> {
+struct ConvertExternGeluTanh
+    : public OpRewritePattern<triton::ExternElementwiseOp> {
   using OpRewritePattern<triton::ExternElementwiseOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(triton::ExternElementwiseOp op,
@@ -2932,11 +3031,9 @@ struct ConvertExternGeluTanh : public OpRewritePattern<triton::ExternElementwise
 
     Location loc = op.getLoc();
 
-    Value initTensor = tensor::EmptyOp::create(rewriter, loc,
-        outputType.getShape(),
-        outputType.getElementType(),
-        ValueRange{}
-    );
+    Value initTensor =
+        tensor::EmptyOp::create(rewriter, loc, outputType.getShape(),
+                                outputType.getElementType(), ValueRange{});
 
     SmallVector<AffineMap> indexingMaps;
     auto ctx = rewriter.getContext();
@@ -2944,42 +3041,36 @@ struct ConvertExternGeluTanh : public OpRewritePattern<triton::ExternElementwise
     indexingMaps.push_back(identityMap);
     indexingMaps.push_back(identityMap);
 
-    SmallVector<utils::IteratorType> iteratorTypes(rank, utils::IteratorType::parallel);
+    SmallVector<utils::IteratorType> iteratorTypes(
+        rank, utils::IteratorType::parallel);
     SmallVector<Attribute> iteratorAttrs;
     for (auto type : iteratorTypes) {
-      iteratorAttrs.push_back(linalg::IteratorTypeAttr::get(
-          rewriter.getContext(), type));
+      iteratorAttrs.push_back(
+          linalg::IteratorTypeAttr::get(rewriter.getContext(), type));
     }
 
-    auto genericOp = linalg::GenericOp::create(rewriter, loc,
-        initTensor.getType(),
-        input,
-        initTensor,
+    auto genericOp = linalg::GenericOp::create(
+        rewriter, loc, initTensor.getType(), input, initTensor,
         rewriter.getAffineMapArrayAttr(indexingMaps),
-        rewriter.getArrayAttr(iteratorAttrs),
-        nullptr,
-        nullptr
-    );
+        rewriter.getArrayAttr(iteratorAttrs), nullptr, nullptr);
 
     Block *body = new Block();
     genericOp.getRegion().push_back(body);
-    body->addArguments(
-        {inputElemTy, outputElemTy},
-        {loc, loc}
-    );
+    body->addArguments({inputElemTy, outputElemTy}, {loc, loc});
 
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(body);
 
-    // 0.5 * x * (1 + tanh(x * 0.79788456 * (1 + 0.044715 * pow(x.to(tl.float32), 2))))
-    Value c0_5 = arith::ConstantOp::create(
-      rewriter, loc, inputElemTy, rewriter.getFloatAttr(floatTy, 0.5));
+    // 0.5 * x * (1 + tanh(x * 0.79788456 * (1 + 0.044715 *
+    // pow(x.to(tl.float32), 2))))
+    Value c0_5 = arith::ConstantOp::create(rewriter, loc, inputElemTy,
+                                           rewriter.getFloatAttr(floatTy, 0.5));
     Value c0_044715 = arith::ConstantOp::create(
-      rewriter, loc, inputElemTy, rewriter.getFloatAttr(floatTy, 0.044715));
+        rewriter, loc, inputElemTy, rewriter.getFloatAttr(floatTy, 0.044715));
     Value c0_797885 = arith::ConstantOp::create(
-      rewriter, loc, inputElemTy, rewriter.getFloatAttr(floatTy, 0.79788456));
-    Value c1 = arith::ConstantOp::create(
-      rewriter, loc, inputElemTy, rewriter.getFloatAttr(floatTy, 1.0));
+        rewriter, loc, inputElemTy, rewriter.getFloatAttr(floatTy, 0.79788456));
+    Value c1 = arith::ConstantOp::create(rewriter, loc, inputElemTy,
+                                         rewriter.getFloatAttr(floatTy, 1.0));
 
     Value x = body->getArgument(0);
 
@@ -3017,7 +3108,8 @@ struct ConvertExternGeluTanh : public OpRewritePattern<triton::ExternElementwise
   }
 };
 
-struct ConvertExternSilu : public OpRewritePattern<triton::ExternElementwiseOp> {
+struct ConvertExternSilu
+    : public OpRewritePattern<triton::ExternElementwiseOp> {
   using OpRewritePattern<triton::ExternElementwiseOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(triton::ExternElementwiseOp op,
@@ -3035,18 +3127,15 @@ struct ConvertExternSilu : public OpRewritePattern<triton::ExternElementwiseOp> 
 
     if (inputElemTy != outputElemTy) {
       return rewriter.notifyMatchFailure(
-          op,
-          "linalg.silu lowering requires input and output element types to "
-          "match");
+          op, "linalg.silu lowering requires input and output element types to "
+              "match");
     }
 
     Location loc = op.getLoc();
 
-    Value initTensor = tensor::EmptyOp::create(rewriter, loc,
-        outputType.getShape(),
-        outputType.getElementType(),
-        ValueRange{}
-    );
+    Value initTensor =
+        tensor::EmptyOp::create(rewriter, loc, outputType.getShape(),
+                                outputType.getElementType(), ValueRange{});
 
     SmallVector<AffineMap> indexingMaps;
     auto ctx = rewriter.getContext();
@@ -3054,40 +3143,31 @@ struct ConvertExternSilu : public OpRewritePattern<triton::ExternElementwiseOp> 
     indexingMaps.push_back(identityMap);
     indexingMaps.push_back(identityMap);
 
-    SmallVector<utils::IteratorType> iteratorTypes(rank, utils::IteratorType::parallel);
+    SmallVector<utils::IteratorType> iteratorTypes(
+        rank, utils::IteratorType::parallel);
     SmallVector<Attribute> iteratorAttrs;
     for (auto type : iteratorTypes) {
-      iteratorAttrs.push_back(linalg::IteratorTypeAttr::get(
-          rewriter.getContext(), type));
+      iteratorAttrs.push_back(
+          linalg::IteratorTypeAttr::get(rewriter.getContext(), type));
     }
 
-    auto genericOp = linalg::GenericOp::create(rewriter, loc,
-        initTensor.getType(),
-        input,
-        initTensor,
+    auto genericOp = linalg::GenericOp::create(
+        rewriter, loc, initTensor.getType(), input, initTensor,
         rewriter.getAffineMapArrayAttr(indexingMaps),
-        rewriter.getArrayAttr(iteratorAttrs),
-        nullptr,
-        nullptr
-    );
+        rewriter.getArrayAttr(iteratorAttrs), nullptr, nullptr);
 
     Block *body = new Block();
     genericOp.getRegion().push_back(body);
-    body->addArguments(
-        {inputElemTy, outputElemTy},
-        {loc, loc}
-    );
+    body->addArguments({inputElemTy, outputElemTy}, {loc, loc});
 
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(body);
 
     // Compute SiLU in input element type (e.g. f16 path).
     Value c0 = arith::ConstantOp::create(
-        rewriter, loc, inputElemTy,
-        rewriter.getFloatAttr(inputElemTy, 0.0));
+        rewriter, loc, inputElemTy, rewriter.getFloatAttr(inputElemTy, 0.0));
     Value c1 = arith::ConstantOp::create(
-        rewriter, loc, inputElemTy,
-        rewriter.getFloatAttr(inputElemTy, 1.0));
+        rewriter, loc, inputElemTy, rewriter.getFloatAttr(inputElemTy, 1.0));
 
     Value x = body->getArgument(0);
     Value xneg = arith::SubFOp::create(rewriter, loc, c0, x);
@@ -3112,8 +3192,7 @@ struct ConvertExternSilu : public OpRewritePattern<triton::ExternElementwiseOp> 
   }
 };
 
-struct TritonPtrToIntPattern
-    : public OpConversionPattern<triton::PtrToIntOp> {
+struct TritonPtrToIntPattern : public OpConversionPattern<triton::PtrToIntOp> {
 private:
   using OpConversionPattern::OpConversionPattern;
 
@@ -3123,19 +3202,14 @@ public:
       : OpConversionPattern<triton::PtrToIntOp>(typeConverter, context) {}
 
   LogicalResult
-  matchAndRewrite(
-      triton::PtrToIntOp op, OpAdaptor adaptor,
-      ConversionPatternRewriter &rewriter) const override {
+  matchAndRewrite(triton::PtrToIntOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
 
     Location loc = op.getLoc();
     Value src = adaptor.getSrc();
     Type targetType = rewriter.getIntegerType(64);
 
-    rewriter.replaceOpWithNewOp<LLVM::PtrToIntOp>(
-        op,
-        targetType,
-        src
-    );
+    rewriter.replaceOpWithNewOp<LLVM::PtrToIntOp>(op, targetType, src);
     return success();
   }
 };
@@ -3238,7 +3312,6 @@ public:
   }
 };
 
-
 static void populateExternElementwiseOpToMLIROps(RewritePatternSet &patterns) {
   patterns.add<ExternElementwiseBinaryOpConverter,
                ExternElementwiseUnaryOpConverter>(patterns.getContext());
@@ -3321,10 +3394,11 @@ private:
 
       std::string strWithNull = str.str() + '\0';
       auto strAttr = rewriter.getStringAttr(strWithNull);
-      auto arrayType = LLVM::LLVMArrayType::get(
-          IntegerType::get(ctx, 8), strWithNull.size());
+      auto arrayType = LLVM::LLVMArrayType::get(IntegerType::get(ctx, 8),
+                                                strWithNull.size());
 
-      globalOp = LLVM::GlobalOp::create(rewriter, loc, arrayType,
+      globalOp = LLVM::GlobalOp::create(
+          rewriter, loc, arrayType,
           /*isConstant=*/true, LLVM::Linkage::Internal, globalName, strAttr);
     }
 
@@ -3335,7 +3409,7 @@ private:
 
   /// Get or create LLVM declaration for printf (variadic).
   LLVM::LLVMFuncOp getOrAddPrintfDecl(ConversionPatternRewriter &rewriter,
-                                       ModuleOp moduleOp) const {
+                                      ModuleOp moduleOp) const {
     StringRef funcName = "printf";
     if (auto existing = moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
       return existing;
@@ -3348,8 +3422,8 @@ private:
 
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(moduleOp.getBody());
-    auto fn = LLVM::LLVMFuncOp::create(rewriter, UnknownLoc::get(ctx),
-                                        funcName, funcType);
+    auto fn = LLVM::LLVMFuncOp::create(rewriter, UnknownLoc::get(ctx), funcName,
+                                       funcType);
     fn.setLinkage(LLVM::Linkage::External);
     return fn;
   }
@@ -3357,9 +3431,8 @@ private:
   /// Get or create func declaration for spine_print_unranked_memref.
   /// Uses func::FuncOp so that unranked memref types are automatically
   /// lowered to LLVM struct {i64, ptr} by the memref-to-llvm pass.
-  func::FuncOp
-  getOrAddPrintMemrefDecl(ConversionPatternRewriter &rewriter,
-                          ModuleOp moduleOp, Type elemType) const {
+  func::FuncOp getOrAddPrintMemrefDecl(ConversionPatternRewriter &rewriter,
+                                       ModuleOp moduleOp, Type elemType) const {
     StringRef funcName = "spine_print_unranked_memref";
     if (auto existing = moduleOp.lookupSymbol<func::FuncOp>(funcName))
       return existing;
@@ -3370,20 +3443,20 @@ private:
     auto unrankedType = UnrankedMemRefType::get(elemType, /*memorySpace=*/0);
 
     SmallVector<Type> argsType = {
-        i32Type, i32Type, i32Type, // pid_x, pid_y, pid_z
-        ptrType,                    // prefix string
-        unrankedType,               // unranked memref
-        i32Type,                    // bitWidth
-        i32Type,                    // isInteger
-        i32Type,                    // isSigned
-        i32Type                     // asHex
+        i32Type,      i32Type, i32Type, // pid_x, pid_y, pid_z
+        ptrType,                        // prefix string
+        unrankedType,                   // unranked memref
+        i32Type,                        // bitWidth
+        i32Type,                        // isInteger
+        i32Type,                        // isSigned
+        i32Type                         // asHex
     };
     auto funcType = FunctionType::get(ctx, argsType, {i32Type});
 
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(moduleOp.getBody());
-    auto fn = func::FuncOp::create(rewriter, UnknownLoc::get(ctx),
-                                    funcName, funcType);
+    auto fn = func::FuncOp::create(rewriter, UnknownLoc::get(ctx), funcName,
+                                   funcType);
     fn.setPrivate();
     return fn;
   }
@@ -3416,9 +3489,9 @@ private:
     if (type.isIntOrIndex() && type.getIntOrFloatBitWidth() < 32) {
       auto i32Type = IntegerType::get(ctx, 32);
       return isSigned ? arith::ExtSIOp::create(rewriter, loc, i32Type, value)
-                              .getResult()
+                            .getResult()
                       : arith::ExtUIOp::create(rewriter, loc, i32Type, value)
-                              .getResult();
+                            .getResult();
     }
     if (type.isBF16() || type.isF16() || type.isF32()) {
       return arith::ExtFOp::create(rewriter, loc, Float64Type::get(ctx), value)
@@ -3448,7 +3521,7 @@ private:
       args.push_back(printfPromoteValue(rewriter, loc, *arg, isSigned));
 
     LLVM::CallOp::create(rewriter, loc, getOrAddPrintfDecl(rewriter, moduleOp),
-                          args);
+                         args);
   }
 
   /// Emit tensor print: alloc memref → copy → cast unranked → call runtime →
@@ -3470,15 +3543,14 @@ private:
     Value alloc = memref::AllocOp::create(rewriter, loc, memrefType);
 
     // 2. Copy tensor → memref: materialize tensor to buffer first, then copy
-    Value srcMemref = bufferization::ToBufferOp::create(rewriter,
-        loc, memrefType, tensorOperand);
+    Value srcMemref = bufferization::ToBufferOp::create(
+        rewriter, loc, memrefType, tensorOperand);
     memref::CopyOp::create(rewriter, loc, srcMemref, alloc);
 
     // 3. Cast to UnrankedMemRef
     auto unrankedType =
         UnrankedMemRefType::get(elemType, memrefType.getMemorySpace());
-    Value unranked =
-        memref::CastOp::create(rewriter, loc, unrankedType, alloc);
+    Value unranked = memref::CastOp::create(rewriter, loc, unrankedType, alloc);
 
     // 4. Prepare call arguments
     Value prefixVal =
@@ -3488,7 +3560,8 @@ private:
         rewriter, loc, i32Type,
         rewriter.getI32IntegerAttr(elemType.getIntOrFloatBitWidth()));
     Value isInt = arith::ConstantOp::create(
-        rewriter, loc, i32Type, rewriter.getI32IntegerAttr(elemType.isInteger() ? 1 : 0));
+        rewriter, loc, i32Type,
+        rewriter.getI32IntegerAttr(elemType.isInteger() ? 1 : 0));
     Value isSig = arith::ConstantOp::create(
         rewriter, loc, i32Type, rewriter.getI32IntegerAttr(isSigned ? 1 : 0));
     Value asHex = arith::ConstantOp::create(
@@ -3497,7 +3570,7 @@ private:
     // 5. Call spine_print_unranked_memref via func::CallOp
     // The unranked memref will be automatically lowered to {i64, ptr} struct
     // by the memref-to-llvm pass
-    SmallVector<Value> callArgs = {pid0, pid1, pid2, prefixVal, unranked,
+    SmallVector<Value> callArgs = {pid0, pid1,  pid2,  prefixVal, unranked,
                                    bw,   isInt, isSig, asHex};
     auto funcDecl = getOrAddPrintMemrefDecl(rewriter, moduleOp, elemType);
     func::CallOp::create(rewriter, loc, funcDecl, callArgs);
@@ -3508,7 +3581,7 @@ private:
   }
 };
 
-}
-}
+} // namespace triton
+} // namespace mlir
 
 #endif
