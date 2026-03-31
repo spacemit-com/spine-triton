@@ -31,6 +31,8 @@ export TRITON_APPEND_CMAKE_ARGS="-DLLVM_LIBRARY_DIR=${LLVM_INSTALL_DIR}/lib -DLL
 export CC=${RISCV_ROOT_PATH}/bin/riscv64-unknown-linux-gnu-gcc
 export CXX=${RISCV_ROOT_PATH}/bin/riscv64-unknown-linux-gnu-g++
 
+chmod a+x ${SPINE_MLIR_INSTALL_DIR}/bin/*
+
 TRITON_BUILD_PROTON=false TRITON_BUILD_WITH_CLANG_LLD=false TRITON_BUILD_UT=false TRITON_OFFLINE_BUILD=true \
 TRITON_BUILD_WITH_CCACHE=false LLVM_ROOT_DIR=${LLVM_INSTALL_DIR} MAX_JOBS=${MAX_JOBS} \
 python3 setup.py bdist_wheel --plat=linux-${2}
