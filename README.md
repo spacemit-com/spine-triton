@@ -57,7 +57,7 @@ popd
 
 2. download spine-mlir
 ~~~
-https://archive.spacemit.com/spacemit-ai/spine-mlir/spine-mlir-riscv64-0.5.2.tar.gz
+https://archive.spacemit.com/spacemit-ai/spine-mlir/spine-mlir-riscv64-0.5.3.tar.gz
 ~~~
 
 3. install triton
