@@ -471,40 +471,32 @@ private:
 
   LogicalResult rewriteSplitPtr(tts::MakeTensorPtrOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const {
-    auto parentShape = op.getStaticShape();
-    assert(parentShape.size() == 2 &&
-           "Only support split pointer for 2D tensors only");
-    SmallVector<Value> casts;
-    StringRef wrapType;
+    // Stopgap (Scheme A): disable high-risk split/wrap lowering path.
+    //
+    // Instead of creating two wraparound reinterpret_cast segments, emit a
+    // single reinterpret_cast with the static result shape from the pointer
+    // type. This keeps tl.load result typing stable (e.g., tensor<64x64>) and
+    // avoids dynamic actualSizes that can break bufferization.to_tensor
+    // verification.
+    auto mixedStrides = getMixedStridesForMemref(op, rewriter);
+    SmallVector<int64_t> staticStrides;
+    SmallVector<Value> dynamicStrides;
+    dispatchIndexOpFoldResults(mixedStrides, dynamicStrides, staticStrides);
 
-    // For split pointers, a split dimension is either a dynamic or a non-zero
-    // value. The other dimension must be zero.
-    auto isSplitDimension = [](int64_t dim) {
-      return dim == ShapedType::kDynamic || dim != 0;
-    };
+    auto targetOffset =
+      accumulateTargetOffset(op.getLoc(), op.getMixedOffsets(), rewriter);
+    auto staticTargetOffset = getIntAttr(targetOffset);
 
-    if (isSplitDimension(parentShape[0])) {
-      // Stacked case
-      assert(parentShape[1] == 0);
-      auto [cast1, cast2] = createStackedCastOps(op, adaptor, rewriter);
-      casts = {cast1.getResult(), cast2.getResult()};
-      wrapType = WRAP_STACKED;
-    } else if (isSplitDimension(parentShape[1])) {
-      assert(parentShape[0] == 0);
-      auto [cast1, cast2] = createSideBySideCastOps(op, adaptor, rewriter);
-      casts = {cast1.getResult(), cast2.getResult()};
-      wrapType = WRAP_SIDE_BY_SIDE;
-    } else {
-      llvm_unreachable("Unexpected split pointer shape");
-    }
+    ArrayRef<int64_t> resultShape = cast<ShapedType>(op.getType()).getShape();
+    auto resultType = getResultMemrefType(
+      op, staticTargetOffset.value_or(ShapedType::kDynamic), staticStrides,
+      resultShape);
 
-    auto combinedCast = UnrealizedConversionCastOp::create(
-        rewriter, op.getLoc(), op.getType(), casts);
+    auto castOp = memref::ReinterpretCastOp::create(
+      rewriter, op.getLoc(), resultType, adaptor.getBase(), targetOffset,
+      op.getMixedSizes(), mixedStrides);
 
-    combinedCast->setAttr(wrapType, rewriter.getUnitAttr());
-
-    rewriter.replaceOp(op, combinedCast);
-
+    rewriter.replaceOp(op, castOp);
     return success();
   }
 
