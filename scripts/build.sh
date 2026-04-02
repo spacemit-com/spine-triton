@@ -5,6 +5,7 @@
 LLVM_INSTALL_DIR=$(cd "${1}" && pwd)
 BUILD_DIR=build-${2}
 SPINE_MLIR_INSTALL_DIR=$(cd "${3}" && pwd)
+chmod a+x "${SPINE_MLIR_INSTALL_DIR}"/bin/*
 
 
 CUR_DIR=${PWD}
@@ -26,7 +27,7 @@ ls ${CUR_DIR}/patch/*.patch | xargs -n1 git apply
 
 export SPINE_MLIR_INSTALL_DIR=${SPINE_MLIR_INSTALL_DIR}
 export SPINE_TRITON_VERSION_NUMBER=${VERSION_NUMBER}
-export TRITON_APPEND_CMAKE_ARGS="-DLLVM_LIBRARY_DIR=${LLVM_INSTALL_DIR}/lib -DLLVM_DIR=${LLVM_INSTALL_DIR}/lib/cmake/llvm -DLLD_DIR=${LLVM_INSTALL_DIR}/lib/cmake/lld -DMLIR_DIR=${LLVM_INSTALL_DIR}/lib/cmake/mlir -DCMAKE_TOOLCHAIN_FILE=${CUR_DIR}/cmake/linux_riscv64.toolchain.cmake" 
+export TRITON_APPEND_CMAKE_ARGS="-DLLVM_LIBRARY_DIR=${LLVM_INSTALL_DIR}/lib -DLLVM_DIR=${LLVM_INSTALL_DIR}/lib/cmake/llvm -DLLD_DIR=${LLVM_INSTALL_DIR}/lib/cmake/lld -DMLIR_DIR=${LLVM_INSTALL_DIR}/lib/cmake/mlir -DCMAKE_TOOLCHAIN_FILE=${CUR_DIR}/cmake/linux_riscv64.toolchain.cmake"
 
 export CC=${RISCV_ROOT_PATH}/bin/riscv64-unknown-linux-gnu-gcc
 export CXX=${RISCV_ROOT_PATH}/bin/riscv64-unknown-linux-gnu-g++

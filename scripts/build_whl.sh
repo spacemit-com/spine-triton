@@ -5,6 +5,7 @@
 LLVM_INSTALL_DIR=$(cd "${1}" && pwd)
 BUILD_DIR=build-wheel-${2}
 SPINE_MLIR_INSTALL_DIR=$(cd "${3}" && pwd)
+chmod a+x "${SPINE_MLIR_INSTALL_DIR}"/bin/*
 
 CUR_DIR=${PWD}
 VERSION_NUMBER=$(cat VERSION_NUMBER)
