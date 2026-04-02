@@ -4,16 +4,16 @@ index a534cf430..db01dd1e8 100644
 +++ b/CMakeLists.txt
 @@ -239,10 +239,10 @@ if(TRITON_BUILD_PYTHON_MODULE)
 
-#LLVM
+     # LLVM
      LLVMPasses
 -    LLVMNVPTXCodeGen
 +    # LLVMNVPTXCodeGen
-#LLVMNVPTXAsmPrinter
+     # LLVMNVPTXAsmPrinter
 -    LLVMAMDGPUCodeGen
 -    LLVMAMDGPUAsmParser
 +    # LLVMAMDGPUCodeGen
 +    # LLVMAMDGPUAsmParser
- 
+
      Python3::Module
      pybind11::headers
 @@ -265,6 +265,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
@@ -31,21 +31,21 @@ index a534cf430..db01dd1e8 100644
 @@ -300,18 +305,18 @@ if(TRITON_BUILD_PYTHON_MODULE)
    endif()
    target_link_options(triton PRIVATE ${LLVM_LDFLAGS})
- 
+
 -  if (NOT DEFINED LLVM_SYSPATH)
 -      message(FATAL_ERROR "LLVM_SYSPATH must be set.")
 -  endif()
 +  # if (NOT DEFINED LLVM_SYSPATH)
 +  #     message(FATAL_ERROR "LLVM_SYSPATH must be set.")
 +  # endif()
- 
+
 -  if (NOT DEFINED TRITON_WHEEL_DIR)
 -      message(FATAL_ERROR "TRITON_WHEEL_DIR must be set.")
 -  endif()
 +  # if (NOT DEFINED TRITON_WHEEL_DIR)
 +  #     message(FATAL_ERROR "TRITON_WHEEL_DIR must be set.")
 +  # endif()
- 
+
 -  configure_file(
 -    "${LLVM_SYSPATH}/bin/FileCheck"
 -    "${TRITON_WHEEL_DIR}/FileCheck"
@@ -54,9 +54,9 @@ index a534cf430..db01dd1e8 100644
 +  #   "${LLVM_SYSPATH}/bin/FileCheck"
 +  #   "${TRITON_WHEEL_DIR}/FileCheck"
 +  #   COPYONLY)
- 
+
  endif()
- 
+
 diff --git a/include/triton/Dialect/Triton/IR/TritonAttrDefs.td b/include/triton/Dialect/Triton/IR/TritonAttrDefs.td
 index 5a76a1d7b..9968583a9 100644
 --- a/include/triton/Dialect/Triton/IR/TritonAttrDefs.td
@@ -70,130 +70,119 @@ index 5a76a1d7b..9968583a9 100644
 +        I32EnumAttrCase<"PAD_NEG_INF", 3, "neg_inf">,
 +        I32EnumAttrCase<"PAD_INF", 4, "inf">
      ]> {
-  let cppNamespace = "::mlir::triton";
+     let cppNamespace = "::mlir::triton";
  }
 diff --git a/python/src/ir.cc b/python/src/ir.cc
 index d4e0619cc..a81802a60 100644
 --- a/python/src/ir.cc
 +++ b/python/src/ir.cc
 @@ -40,7 +40,9 @@
-#include "llvm/Support/FileSystem.h"
-#include "llvm/Support/SourceMgr.h"
- 
+ #include "llvm/Support/FileSystem.h"
+ #include "llvm/Support/SourceMgr.h"
+
 -namespace {
-  +#include "third_party/proton/Dialect/include/Dialect/Proton/IR/Dialect.h" +
-      #include "third_party/spine_triton/include/triton-shared/Dialect/XSMT/IR/"
-               "XSMTDialect.h" +
++#include "third_party/proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
++#include "third_party/spine_triton/include/triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
++
 
-      namespace py = pybind11;
-  using namespace mlir;
-  @ @-48, 6 + 50, 12 @ @ using namespace triton;
-  namespace tt = triton;
-  namespace ttg = triton::gpu;
-  namespace ttng = triton::nvidia_gpu;
-  +namespace ir {
-    + + // Pointer to the TritonOpBuilder class, used to register IR ops for
-        // third-party
-      + // dialects.
-      +static py::class_<TritonOpBuilder> *builderClassPtr = nullptr;
-    +py::class_<TritonOpBuilder> *getBuilderClass() {
-      return builderClassPtr;
-    }
+ namespace py = pybind11;
+ using namespace mlir;
+@@ -48,6 +50,12 @@ using namespace triton;
+ namespace tt = triton;
+ namespace ttg = triton::gpu;
+ namespace ttng = triton::nvidia_gpu;
++namespace ir {
++
++// Pointer to the TritonOpBuilder class, used to register IR ops for third-party
++// dialects.
++static py::class_<TritonOpBuilder> *builderClassPtr = nullptr;
++py::class_<TritonOpBuilder> *getBuilderClass() { return builderClassPtr; }
 
-    llvm::raw_fd_ostream &mlir_dumps() {
-      std::error_code EC;
-      @ @-252, 13 + 260, 13 @ @py::list getTensorDescMetadata(ModuleOp & mod) {
-      }
-      return result;
-    }
-    - -
-  } // anonymous namespace
-  +
-}
+ llvm::raw_fd_ostream &mlir_dumps() {
+   std::error_code EC;
+@@ -252,13 +260,13 @@ py::list getTensorDescMetadata(ModuleOp &mod) {
+   }
+   return result;
+ }
+-
+-} // anonymous namespace
++}
 
-/*****************************************************************************/
-/* Python bindings for ir                                                    */
-/*****************************************************************************/
+ /*****************************************************************************/
+ /* Python bindings for ir                                                    */
+ /*****************************************************************************/
 
-+ using namespace ir;
-void init_triton_ir(py::module &&m) {
-  using ret = py::return_value_policy;
-  using namespace pybind11::literals;
-  @ @-266, 6 + 274, 8 @ @ void init_triton_ir(py::module && m) {
-    py::enum_<PaddingOption>(m, "PADDING_OPTION", py::module_local())
-            .value("PAD_ZERO", PaddingOption::PAD_ZERO)
-            .value("PAD_NAN", PaddingOption::PAD_NAN) +
-            .value("PAD_NEG_INF", PaddingOption::PAD_NEG_INF) +
-            .value("PAD_INF", PaddingOption::PAD_INF)
-            .export_values();
++using namespace ir;
+ void init_triton_ir(py::module &&m) {
+   using ret = py::return_value_policy;
+   using namespace pybind11::literals;
+@@ -266,6 +274,8 @@ void init_triton_ir(py::module &&m) {
+   py::enum_<PaddingOption>(m, "PADDING_OPTION", py::module_local())
+       .value("PAD_ZERO", PaddingOption::PAD_ZERO)
+       .value("PAD_NAN", PaddingOption::PAD_NAN)
++      .value("PAD_NEG_INF", PaddingOption::PAD_NEG_INF)
++      .value("PAD_INF", PaddingOption::PAD_INF)
+       .export_values();
 
-    py::enum_<CacheModifier>(m, "CACHE_MODIFIER", py::module_local()) @ @-540,
-        6 + 550, 7 @ @ void init_triton_ir(py::module && m) {
-      py::class_<IntegerAttr, Attribute>(m, "integer_attr", py::module_local());
-      py::class_<BoolAttr, Attribute>(m, "bool_attr", py::module_local());
-      py::class_<UnitAttr, Attribute>(m, "unit_attr", py::module_local());
-      +py::class_<StringAttr, Attribute>(m, "string_attr", py::module_local());
+   py::enum_<CacheModifier>(m, "CACHE_MODIFIER", py::module_local())
+@@ -540,6 +550,7 @@ void init_triton_ir(py::module &&m) {
+   py::class_<IntegerAttr, Attribute>(m, "integer_attr", py::module_local());
+   py::class_<BoolAttr, Attribute>(m, "bool_attr", py::module_local());
+   py::class_<UnitAttr, Attribute>(m, "unit_attr", py::module_local());
++  py::class_<StringAttr, Attribute>(m, "string_attr", py::module_local());
 
-      // Ops
-      py::class_<OpState>(m, "OpState", py::module_local()) @ @-805, 9 + 816,
-          12 @ @ void init_triton_ir(py::module && m) {
+   // Ops
+   py::class_<OpState>(m, "OpState", py::module_local())
+@@ -805,9 +816,12 @@ void init_triton_ir(py::module &&m) {
 
-        py::class_<OpBuilder::InsertPoint>(m, "InsertPoint",
-                                           py::module_local());
+   py::class_<OpBuilder::InsertPoint>(m, "InsertPoint", py::module_local());
 
-        -py::class_<TritonOpBuilder>(m, "builder", py::module_local(),
-                                     -py::dynamic_attr()) -
-                .def(py::init<MLIRContext *>()) + // The static builderClass
-                                                  // object persists throughout
-                                                  // the compilation,
-            + // allowing third-party backends to register their ops separately.
-            +static py::class_<TritonOpBuilder> builderClass(
-                +m, "builder", py::module_local(), py::dynamic_attr());
-        +builderClassPtr = &builderClass;
-        +builderClass.def(py::init<MLIRContext *>())
-                .def("get_op_builder", &TritonOpBuilder::getBuilder,
-                     ret::reference)
-                // getters
-                .def(
-                    "create_module", @ @-1850, 6 + 1864,
-                    11 @ @ void init_triton_ir(py::module && m) {
-                      return self.create<MakeTensorDescOp>(
-                          base, shape, strides, tensorShape, isSignedInteger,
-                          paddingOption);
-                      +
-                    }) +
-                .def(
-                    "create_smt_bind",
-                    +[](TritonOpBuilder &self, Value &dest,
-                        +Value &src) -> Value {
-                      +return self.create<mlir::xsmt::BindOp>(dest.getType(),
-                                                              dest, src);
-                    });
+-  py::class_<TritonOpBuilder>(m, "builder", py::module_local(),
+-                              py::dynamic_attr())
+-      .def(py::init<MLIRContext *>())
++  // The static builderClass object persists throughout the compilation,
++  // allowing third-party backends to register their ops separately.
++  static py::class_<TritonOpBuilder> builderClass(
++      m, "builder", py::module_local(), py::dynamic_attr());
++  builderClassPtr = &builderClass;
++  builderClass.def(py::init<MLIRContext *>())
+       .def("get_op_builder", &TritonOpBuilder::getBuilder, ret::reference)
+       // getters
+       .def("create_module",
+@@ -1850,6 +1864,11 @@ void init_triton_ir(py::module &&m) {
+              return self.create<MakeTensorDescOp>(base, shape, strides,
+                                                   tensorShape, isSignedInteger,
+                                                   paddingOption);
++           })
++      .def("create_smt_bind",
++           [](TritonOpBuilder &self, Value &dest,
++              Value &src) -> Value {
++             return self.create<mlir::xsmt::BindOp>(dest.getType(), dest, src);
+            });
 
-        py::class_<PassManager>(m, "pass_manager", py::module_local())
-                    diff-- git a /
-                python / src / ir.h b / python / src /
-                ir.h index 499dd9e8a..9c863e6fa 100644 -- -a / python / src /
-                ir.h++ +
-            b / python / src / ir.h @ @-2,
-            6 + 2,
-            9 @ @
-#include "mlir/IR/Builders.h"
-#include "triton/Tools/Sys/GetEnv.hpp"
-#include <memory>
-                +#include<pybind11 / pybind11.h> +
-                +namespace py = pybind11;
+   py::class_<PassManager>(m, "pass_manager", py::module_local())
+diff --git a/python/src/ir.h b/python/src/ir.h
+index 499dd9e8a..9c863e6fa 100644
+--- a/python/src/ir.h
++++ b/python/src/ir.h
+@@ -2,6 +2,9 @@
+ #include "mlir/IR/Builders.h"
+ #include "triton/Tools/Sys/GetEnv.hpp"
+ #include <memory>
++#include <pybind11/pybind11.h>
++
++namespace py = pybind11;
 
-        // A custom op builder that keeps track of the last location
-        class TritonOpBuilder {
-        @ @-98, 3 + 101, 7 @ @private:
-          return builder->getUnknownLoc();
-        }
-      };
-      + +namespace ir {
-        +extern py::class_<TritonOpBuilder> *getBuilderClass();
-        +
-      } // namespace ir
+ // A custom op builder that keeps track of the last location
+ class TritonOpBuilder {
+@@ -98,3 +101,7 @@ private:
+     return builder->getUnknownLoc();
+   }
+ };
++
++namespace ir {
++extern py::class_<TritonOpBuilder> *getBuilderClass();
++} // namespace ir
 \ No newline at end of file
 diff --git a/python/triton/compiler/code_generator.py b/python/triton/compiler/code_generator.py
 index 3ffb90457..49bf2c31f 100644
@@ -209,7 +198,7 @@ index 3ffb90457..49bf2c31f 100644
                      self._is_constexpr_global(name),  #
 @@ -1150,7 +1151,15 @@ class CodeGenerator(ast.NodeVisitor):
          return lhs[slices]
- 
+
      def visit_Subscript_Store(self, node, value):
 -        raise NotImplementedError("__setitem__ is not supported in triton")
 +        assert isinstance(node.ctx, ast.Store)
@@ -221,7 +210,7 @@ index 3ffb90457..49bf2c31f 100644
 +            lhs.__setitem__(slices, value)
 +        else:
 +            raise RuntimeError('Only `tuple` and `tensor` are currently supported')
- 
+
      def visit_Subscript(self, node):
          return self.visit_Subscript_Load(node)
 @@ -1176,8 +1185,8 @@ class CodeGenerator(ast.NodeVisitor):
@@ -233,8 +222,8 @@ index 3ffb90457..49bf2c31f 100644
 +        bind_sub_block = None
 +        if IteratorClass in [language.range, language.extra.smt.parallel]:
              iterator = IteratorClass(*iter_args, **iter_kwargs)
-#visit iterator arguments
-#note : only `range` iterator is supported now
+             # visit iterator arguments
+             # note: only `range` iterator is supported now
 @@ -1190,7 +1199,8 @@ class CodeGenerator(ast.NodeVisitor):
              disallow_acc_multi_buffer = iterator.disallow_acc_multi_buffer
              flatten = iterator.flatten
@@ -243,8 +232,8 @@ index 3ffb90457..49bf2c31f 100644
 +            if (IteratorClass is language.extra.smt.parallel):
 +                bind_sub_block = iterator.bind_sub_block
          elif IteratorClass is range:
-#visit iterator arguments
-#note : only `range` iterator is supported now
+             # visit iterator arguments
+             # note: only `range` iterator is supported now
 @@ -1253,8 +1263,8 @@ class CodeGenerator(ast.NodeVisitor):
                  for_op.set_attr("tt.flatten", self.builder.get_unit_attr())
              if warp_specialize:
@@ -253,7 +242,7 @@ index 3ffb90457..49bf2c31f 100644
 -                for_op.set_attr("llvm.loop_annotation", self.builder.get_disable_loop_licm_attr())
 +            if (bind_sub_block is not None) and bind_sub_block:
 +                for_op.set_attr("bind_sub_block", self.builder.get_bool_attr(bind_sub_block))
- 
+
              self.scf_stack.append(node)
              for_op_body = for_op.get_body(0)
 diff --git a/python/triton/language/core.py b/python/triton/language/core.py
@@ -263,7 +252,7 @@ index bf01d5bc1..27d17df5e 100644
 @@ -1111,6 +1111,12 @@ class tensor(base_value):
                  raise ValueError(f"unsupported tensor index: {sl}")
          return ret
- 
+
 +    @builtin
 +    def __setitem__(self, slices, value, _semantic=None):
 +        if slices is Ellipsis or slices == Ellipsis:
@@ -273,28 +262,6 @@ index bf01d5bc1..27d17df5e 100644
      @property
      def T(self):
          """Transposes a 2D tensor."""
-diff --git a/python/triton/language/math.py b/python/triton/language/math.py
-index 582cd876c..682c7f21b 100644
---- a/python/triton/language/math.py
-+++ b/python/triton/language/math.py
-@@ -92,7 +92,7 @@ def umulhi(x, y, _semantic=None):
- 
- 
- @core.builtin
--@_check_dtype(dtypes=["fp32", "fp64"])
-+@_check_dtype(dtypes=["fp32", "fp64", "fp16"])
- @_add_math_1arg_docstr("exponential")
- @core._tensor_member_fn
- def exp(x, _semantic=None):
-@@ -101,7 +101,7 @@ def exp(x, _semantic=None):
- 
- 
- @core.builtin
--@_check_dtype(dtypes=["fp32", "fp64"])
-+@_check_dtype(dtypes=["fp32", "fp64", "fp16"])
- @_add_math_1arg_docstr("exponential (base 2)")
- @core._tensor_member_fn
- def exp2(x, _semantic=None):
 diff --git a/python/triton/language/semantic.py b/python/triton/language/semantic.py
 index bd48990d6..1bd8e1219 100644
 --- a/python/triton/language/semantic.py
@@ -304,26 +271,26 @@ index bd48990d6..1bd8e1219 100644
  import builtins
 +import os
  import warnings
- 
+
  from typing import List, Optional, Sequence, Tuple, TypeVar, Generic, Type
 @@ -75,6 +76,8 @@ class TritonSemantic(Generic[TensorTy]):
              if scalar_ty.kind().value <= tensor_ty.kind().value:
-#Upcast because of 3) and 4) below !
+                 # Upcast because of 3) and 4) below!
                  if div_or_mod and (tensor_ty in (tl.float16, tl.bfloat16)):
 +                    if tensor_ty is tl.float16:
 +                        return tl.float16
                      return tl.float32
                  return tensor_ty
- 
+
 @@ -91,7 +94,7 @@ class TritonSemantic(Generic[TensorTy]):
-#Supported PTX op : add, sub, mul, fma, neg, abs, min, max, tanh, ex2, setp
+         #     Supported PTX op: add, sub, mul, fma, neg, abs, min, max, tanh, ex2, setp
          if a_ty.is_fp16() or b_ty.is_fp16():
              if div_or_mod:
 -                return tl.float32
 +                return tl.float16
              else:
                  return tl.float16
-# 4) return bf16 only if both operands are of bf16
+         # 4) return bf16 only if both operands are of bf16
 @@ -957,6 +960,10 @@ class TritonSemantic(Generic[TensorTy]):
                  padding = ir.PADDING_OPTION.PAD_ZERO
              elif padding_option == "nan":
@@ -382,13 +349,13 @@ index fccb4ef17..4b336833a 100644
      is_external: bool
 +    bin_dir: Optional[str]
 +    lib_dir: Optional[str]
- 
- 
+
+
  class BackendInstaller:
 @@ -94,13 +96,45 @@ class BackendInstaller:
          if not os.path.exists(tools_dir):
              tools_dir = None
- 
+
 +        bin_dir = os.path.join(backend_src_dir, "backend", "bin")
 +        os.makedirs(bin_dir, exist_ok=True)
 +        if backend_name == "spine_triton":
@@ -423,28 +390,28 @@ index fccb4ef17..4b336833a 100644
 +
          for file in ["compiler.py", "driver.py"]:
              assert os.path.exists(os.path.join(backend_path, file)), f"${file} does not exist in ${backend_path}"
- 
+
          install_dir = os.path.join(os.path.dirname(__file__), "python", "triton", "backends", backend_name)
- 
+
          return Backend(name=backend_name, src_dir=backend_src_dir, backend_dir=backend_path, language_dir=language_dir,
 -                       tools_dir=tools_dir, install_dir=install_dir, is_external=is_external)
 +                       tools_dir=tools_dir, install_dir=install_dir, is_external=is_external, bin_dir=bin_dir, lib_dir=lib_dir)
 
-#Copy all in - tree backends under triton / third_party.
+     # Copy all in-tree backends under triton/third_party.
      @staticmethod
 @@ -381,7 +415,7 @@ class CMakeBuildPy(build_py):
- 
+
      def run(self) -> None:
          self.run_command('build_ext')
 -        return super().run()
 +        super().run()
- 
- 
+
+
  class CMakeExtension(Extension):
 @@ -446,7 +480,8 @@ class CMakeBuild(build_ext):
          lit_dir = shutil.which('lit')
          ninja_dir = shutil.which('ninja')
-#lit is used by the test suite
+         # lit is used by the test suite
 -        thirdparty_cmake_args = get_thirdparty_packages([get_llvm_package_info()])
 +        thirdparty_cmake_args = []
 +        # thirdparty_cmake_args = get_thirdparty_packages([get_llvm_package_info()])
@@ -463,17 +430,17 @@ index fccb4ef17..4b336833a 100644
 +                    os.path.join(backend.bin_dir, "spine-triton-opt")
 +                )
 +
- 
- 
+
+
  def download_and_copy_dependencies():
 +    return
      nvidia_version_path = os.path.join(get_base_dir(), "cmake", "nvidia-toolchain-version.json")
      with open(nvidia_version_path, "r") as nvidia_version_file:
-#parse this json file to get the version of the nvidia toolchain
+         # parse this json file to get the version of the nvidia toolchain
 @@ -672,6 +716,12 @@ def get_packages():
              for x in os.listdir(backend.tools_dir):
                  yield f"triton.tools.extra.{x}"
- 
+
 +        if backend.bin_dir:
 +            yield f"triton.backends.{backend.name}.bin"
 +
@@ -482,14 +449,15 @@ index fccb4ef17..4b336833a 100644
 +
      if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
          yield "triton.profiler"
- 
+
 @@ -808,7 +858,7 @@ def get_triton_version_suffix():
 
-#keep it separate for easy substitution
+
+ # keep it separate for easy substitution
 -TRITON_VERSION = "3.6.0" + get_triton_version_suffix()
 +TRITON_VERSION = "3.6.0" + "+" + os.environ.get("SPINE_TRITON_VERSION_NUMBER", "")
 
-#Dynamically define supported Python versions and classifiers
+ # Dynamically define supported Python versions and classifiers
  MIN_PYTHON = (3, 10)
 @@ -832,7 +882,7 @@ setup(
      author="Philippe Tillet",
@@ -507,7 +475,7 @@ index abd90d689..281d1cdb8 100644
 @@ -4,12 +4,33 @@ set(PROTON_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/csrc")
  set(PROTON_COMMON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/common")
 
-#== == == == == == Check for includes == == == == == == =
+ # ============ Check for includes =============
 -if(NOT CUPTI_INCLUDE_DIR)
 -  message(FATAL_ERROR "CUPTI include directory not defined")
 +# Use TRITON_PROTON_BUILD_CUPTI and TRITON_PROTON_BUILD_ROCTRACER to control GPU support
@@ -545,21 +513,19 @@ index abd90d689..281d1cdb8 100644
 @@ -28,21 +49,30 @@ function(add_proton_library name)
    target_link_libraries(${name} PRIVATE Python3::Module pybind11::headers)
 
-#Use system to skip warnings caused by legacy clang compilers
--  target_include_directories(${
-        name}
+   # Use system to skip warnings caused by legacy clang compilers
+-  target_include_directories(${name}
 -    SYSTEM PRIVATE
 -      "${ROCTRACER_INCLUDE_DIR}"
 -  )
 +  if(PROTON_ENABLE_ROCTRACER)
-+    target_include_directories(${
-        name}
++    target_include_directories(${name}
 +      SYSTEM PRIVATE
 +        "${ROCTRACER_INCLUDE_DIR}"
 +    )
 +    target_compile_definitions(${name} PRIVATE PROTON_ENABLE_ROCTRACER)
 +  endif()
- 
+
    target_include_directories(${name}
      PRIVATE
 -      "${CUPTI_INCLUDE_DIR}"
@@ -567,271 +533,256 @@ index abd90d689..281d1cdb8 100644
        "${PROTON_COMMON_DIR}/include"
        "${PROTON_SRC_DIR}/include"
    )
- 
+
 +  if(PROTON_ENABLE_CUDA)
 +    target_include_directories(${name} PRIVATE "${CUPTI_INCLUDE_DIR}")
 +    target_compile_definitions(${name} PRIVATE PROTON_ENABLE_CUDA)
 +  endif()
 +
-#If HIP is AMD - based
+   # If HIP is AMD-based
 -  target_compile_definitions(${name} PRIVATE __HIP_PLATFORM_AMD__)
 +  if(PROTON_ENABLE_ROCTRACER)
 +    target_compile_definitions(${name} PRIVATE __HIP_PLATFORM_AMD__)
 +  endif()
 
-#Append this library name to the GLOBAL property "PROTON_LIBS"
+   # Append this library name to the GLOBAL property "PROTON_LIBS"
    set_property(GLOBAL APPEND PROPERTY PROTON_LIBS ${name})
 diff --git a/third_party/proton/common/include/Device.h b/third_party/proton/common/include/Device.h
 index 2c02f2b9b..676b7aedf 100644
 --- a/third_party/proton/common/include/Device.h
 +++ b/third_party/proton/common/include/Device.h
 @@ -6,7 +6,7 @@
- 
+
  namespace proton {
-        -enum class DeviceType { HIP, CUDA, COUNT };
-        +enum class DeviceType { HIP, CUDA, CPU, COUNT };
 
-        template <DeviceType T> struct DeviceTraits;
+-enum class DeviceType { HIP, CUDA, COUNT };
++enum class DeviceType { HIP, CUDA, CPU, COUNT };
 
-        @ @-20, 6 + 20,
-            11 @ @ template <>
-            struct DeviceTraits<DeviceType::HIP> {
-          constexpr static const char *name = "HIP";
-        };
+ template <DeviceType T> struct DeviceTraits;
 
-        +template <> struct DeviceTraits<DeviceType::CPU> {
-          + constexpr static DeviceType type = DeviceType::CPU;
-          + constexpr static const char *name = "CPU";
-          +
-        };
-        +struct Device {
-          DeviceType type;
-          uint64_t id;
-          diff-- git a / third_party / proton / csrc / include / Profiler /
-                  Cpu / CpuProfiler.h b / third_party / proton / csrc /
-                  include / Profiler / Cpu /
-                  CpuProfiler
-                      .h new file mode 100644 index 000000000..208c9572a -- -/
-                  dev / null++ +
-              b / third_party / proton / csrc / include / Profiler / Cpu /
-                  CpuProfiler.h @ @-0,
-              0 + 1,
-              65 @ @+#ifndef PROTON_PROFILER_CPU_PROFILER_H_ +
-                  #define PROTON_PROFILER_CPU_PROFILER_H_ +
-                  +#include "Context/Context.h" +
-                  #include "Profiler/Profiler.h" +
-                  #include "Utility/Singleton.h" + #include<map> +
-                  #include<stack> + #include<vector> + +namespace proton {
-            + + // CpuProfiler directly inherits from Profiler, OpInterface, and
-                // ScopeInterface
-              + // It does NOT depend on InstrumentationProfiler (which requires
-                // CUDA)
-              +class CpuProfiler : public Profiler,
-                +public OpInterface, +public ScopeInterface,
-                +public Singleton<CpuProfiler> {
-              + public:+using Singleton<CpuProfiler>::instance;
-              + CpuProfiler();
-              + virtual ~CpuProfiler();
-              + + protected:+ // Profiler interface
-                            +void doStart()override;
-              + void doStop()override;
-              + void doFlush()override;
-              + void
-              doSetMode(const std::vector<std::string> &modeAndOptions)override;
-              + void
-              doAddMetrics(
-                  +size_t scopeId,
-                  +const std::map<std::string, MetricValueType> &scalarMetrics,
-                  +const std::map<std::string, TensorMetric> &tensorMetrics)
-                  override;
-              + + // Op Interface for user scopes (proton.scope)
-                  +void startOp(const Scope &scope)override;
-              + void stopOp(const Scope &scope)override;
-              + + // Scope Interface for nested scopes (proton.scope context
-                  // manager)
-                  +void enterScope(const Scope &scope)override;
-              + void exitScope(const Scope &scope)override;
-              + + private:+void setupCounters();
-              + void readCounters(std::map<std::string, uint64_t> &values);
-              + + struct PerfCounter {
-                + int fd = -1;
-                + std::string name;
-                +
-              };
-              + std::vector<PerfCounter> counters;
-              + + // Nested scope support using stack
-                  +struct ScopeState {
-                + size_t scopeId;
-                + std::string name;
-                + std::map<std::string, uint64_t> startValues;
-                + std::map<Data *, size_t> dataScopeIdMap;
-                +
-              };
-              + std::stack<ScopeState> scopeStack;
-              +
-            };
-            + +
-          } // namespace proton
-          + +
-              #endif // PROTON_PROFILER_CPU_PROFILER_H_
-                  diff-- git a /
-                  third_party / proton / csrc / include / Profiler /
-                  Instrumentation / InstrumentationProfiler.h b / third_party /
-                  proton / csrc / include / Profiler / Instrumentation /
-                  InstrumentationProfiler
-                      .h index 1dfdae5a5..c8d79c4cf 100644 -- -a /
-                  third_party / proton / csrc / include / Profiler /
-                  Instrumentation / InstrumentationProfiler.h++ +
-              b / third_party / proton / csrc / include / Profiler /
-                  Instrumentation / InstrumentationProfiler.h @ @-51,
-              7 + 51, 7 @ @protected:
-        } void stopOp(const Scope &scope) override {
-          dataScopeIdMap.clear();
-        }
-
-      -private : +protected : std::shared_ptr<ParserConfig> getParserConfig(
-                                  uint64_t functionId, size_t bufferSize) const;
-
-        diff-- git a / third_party / proton / csrc / include / Runtime /
-                CpuRuntime.h b / third_party / proton / csrc / include /
-                Runtime /
-                CpuRuntime
-                    .h new file mode 100644 index 000000000..473711567 -- -/
-                dev / null++ +
-            b / third_party / proton / csrc / include / Runtime /
-                CpuRuntime.h @ @-0,
-            0 + 1,
-            74 @ @+#ifndef PROTON_RUNTIME_CPU_RUNTIME_H_ +
-                #define PROTON_RUNTIME_CPU_RUNTIME_H_ +
-                +#include "Runtime/Runtime.h" + #include<vector> +
-                #include<cstring> + #include<cstdlib> + +namespace proton {
-          + +class CpuRuntime : public Runtime {
-            + public:+CpuRuntime():Runtime(DeviceType::CPU) {
-            }
-            + virtual ~CpuRuntime() = default;
-            + + static CpuRuntime &instance() {
-              +static CpuRuntime instance;
-              +return instance;
-              +
-            }
-            + +
-                void launchKernel(void *kernel, unsigned int gridDimX,
-                                  unsigned int gridDimY, +unsigned int gridDimZ,
-                                  unsigned int blockDimX,
-                                  +unsigned int blockDimY,
-                                  unsigned int blockDimZ,
-                                  +unsigned int sharedMemBytes, void *stream,
-                                  +void **kernelParams, void **extra)override {
-              + // No-op for CPU profiling currently
-                  +
-            }
-            + +
-                void memset(void *devicePtr, uint32_t value, size_t size,
-                            +void *stream)override {
-              +std::memset(devicePtr, value, size);
-              +
-            }
-            + + void allocateHostBuffer(uint8_t **buffer, size_t size)override {
-              +*buffer = (uint8_t *)std::malloc(size);
-              +
-            }
-            + + void freeHostBuffer(uint8_t *buffer)override {
-              +std::free(buffer);
-              +
-            }
-            + +
-                void allocateDeviceBuffer(uint8_t **buffer, size_t size)
-                    override {
-              + // Unified memory on CPU
-                  +allocateHostBuffer(buffer, size);
-              +
-            }
-            + + void freeDeviceBuffer(uint8_t *buffer)override {
-              +freeHostBuffer(buffer);
-              +
-            }
-            + +
-                void copyDeviceToHostAsync(void *dst, const void *src,
-                                           size_t size, +void *stream)override {
-              +std::memcpy(dst, src, size);
-              +
-            }
-            + + void *getDevice()override {
-              return nullptr;
-            }
-            + + void *getPriorityStream()override {
-              return nullptr;
-            }
-            + + void destroyStream(void *stream)override {
-            }
-            + + void synchronizeStream(void *stream)override {
-            }
-            + + void synchronizeDevice()override {
-            }
-            + +
-                void processHostBuffer(
-                    uint8_t *hostBuffer, size_t hostBufferSize,
-                    +uint8_t *deviceBuffer, size_t deviceBufferSize,
-                    +void *stream,
-                    +std::function<void(uint8_t *, size_t)> callback)override {
-            }
-            +
-          };
-          + +
-        }       // namespace proton
-      + +#endif // PROTON_RUNTIME_CPU_RUNTIME_H_
-              diff-- git a /
-              third_party / proton / csrc / lib / Data / TreeData.cpp b /
-              third_party / proton / csrc / lib / Data /
-              TreeData.cpp index e72b7bd1e..53ba1164a 100644 -- -a /
-              third_party / proton / csrc / lib / Data / TreeData.cpp++ +
-          b / third_party / proton / csrc / lib / Data / TreeData.cpp @ @-103,
-          6 + 103, 32 @ @private:
-        std::map<size_t, TreeNode> treeNodeMap;
+@@ -20,6 +20,11 @@ template <> struct DeviceTraits<DeviceType::HIP> {
+   constexpr static const char *name = "HIP";
  };
- 
+
++template <> struct DeviceTraits<DeviceType::CPU> {
++  constexpr static DeviceType type = DeviceType::CPU;
++  constexpr static const char *name = "CPU";
++};
++
+ struct Device {
+   DeviceType type;
+   uint64_t id;
+diff --git a/third_party/proton/csrc/include/Profiler/Cpu/CpuProfiler.h b/third_party/proton/csrc/include/Profiler/Cpu/CpuProfiler.h
+new file mode 100644
+index 000000000..208c9572a
+--- /dev/null
++++ b/third_party/proton/csrc/include/Profiler/Cpu/CpuProfiler.h
+@@ -0,0 +1,65 @@
++#ifndef PROTON_PROFILER_CPU_PROFILER_H_
++#define PROTON_PROFILER_CPU_PROFILER_H_
++
++#include "Context/Context.h"
++#include "Profiler/Profiler.h"
++#include "Utility/Singleton.h"
++#include <map>
++#include <stack>
++#include <vector>
++
++namespace proton {
++
++// CpuProfiler directly inherits from Profiler, OpInterface, and ScopeInterface
++// It does NOT depend on InstrumentationProfiler (which requires CUDA)
++class CpuProfiler : public Profiler,
++                    public OpInterface,
++                    public ScopeInterface,
++                    public Singleton<CpuProfiler> {
++public:
++  using Singleton<CpuProfiler>::instance;
++  CpuProfiler();
++  virtual ~CpuProfiler();
++
++protected:
++  // Profiler interface
++  void doStart() override;
++  void doStop() override;
++  void doFlush() override;
++  void doSetMode(const std::vector<std::string> &modeAndOptions) override;
++  void doAddMetrics(
++      size_t scopeId,
++      const std::map<std::string, MetricValueType> &scalarMetrics,
++      const std::map<std::string, TensorMetric> &tensorMetrics) override;
++
++  // Op Interface for user scopes (proton.scope)
++  void startOp(const Scope &scope) override;
++  void stopOp(const Scope &scope) override;
++
++  // Scope Interface for nested scopes (proton.scope context manager)
++  void enterScope(const Scope &scope) override;
++  void exitScope(const Scope &scope) override;
++
++private:
++  void setupCounters();
++  void readCounters(std::map<std::string, uint64_t> &values);
++
++  struct PerfCounter {
++      int fd = -1;
++      std::string name;
++  };
++  std::vector<PerfCounter> counters;
++
++  // Nested scope support using stack
++  struct ScopeState {
++    size_t scopeId;
++    std::string name;
++    std::map<std::string, uint64_t> startValues;
++    std::map<Data *, size_t> dataScopeIdMap;
++  };
++  std::stack<ScopeState> scopeStack;
++};
++
++} // namespace proton
++
++#endif // PROTON_PROFILER_CPU_PROFILER_H_
+diff --git a/third_party/proton/csrc/include/Profiler/Instrumentation/InstrumentationProfiler.h b/third_party/proton/csrc/include/Profiler/Instrumentation/InstrumentationProfiler.h
+index 1dfdae5a5..c8d79c4cf 100644
+--- a/third_party/proton/csrc/include/Profiler/Instrumentation/InstrumentationProfiler.h
++++ b/third_party/proton/csrc/include/Profiler/Instrumentation/InstrumentationProfiler.h
+@@ -51,7 +51,7 @@ protected:
+   }
+   void stopOp(const Scope &scope) override { dataScopeIdMap.clear(); }
+
+-private:
++protected:
+   std::shared_ptr<ParserConfig> getParserConfig(uint64_t functionId,
+                                                 size_t bufferSize) const;
+
+diff --git a/third_party/proton/csrc/include/Runtime/CpuRuntime.h b/third_party/proton/csrc/include/Runtime/CpuRuntime.h
+new file mode 100644
+index 000000000..473711567
+--- /dev/null
++++ b/third_party/proton/csrc/include/Runtime/CpuRuntime.h
+@@ -0,0 +1,74 @@
++#ifndef PROTON_RUNTIME_CPU_RUNTIME_H_
++#define PROTON_RUNTIME_CPU_RUNTIME_H_
++
++#include "Runtime/Runtime.h"
++#include <vector>
++#include <cstring>
++#include <cstdlib>
++
++namespace proton {
++
++class CpuRuntime : public Runtime {
++public:
++  CpuRuntime() : Runtime(DeviceType::CPU) {}
++  virtual ~CpuRuntime() = default;
++
++  static CpuRuntime &instance() {
++    static CpuRuntime instance;
++    return instance;
++  }
++
++  void launchKernel(void *kernel, unsigned int gridDimX, unsigned int gridDimY,
++                    unsigned int gridDimZ, unsigned int blockDimX,
++                    unsigned int blockDimY, unsigned int blockDimZ,
++                    unsigned int sharedMemBytes, void *stream,
++                    void **kernelParams, void **extra) override {
++      // No-op for CPU profiling currently
++  }
++
++  void memset(void *devicePtr, uint32_t value, size_t size,
++              void *stream) override {
++     std::memset(devicePtr, value, size);
++  }
++
++  void allocateHostBuffer(uint8_t **buffer, size_t size) override {
++     *buffer = (uint8_t *)std::malloc(size);
++  }
++
++  void freeHostBuffer(uint8_t *buffer) override {
++     std::free(buffer);
++  }
++
++  void allocateDeviceBuffer(uint8_t **buffer, size_t size) override {
++      // Unified memory on CPU
++      allocateHostBuffer(buffer, size);
++  }
++
++  void freeDeviceBuffer(uint8_t *buffer) override {
++      freeHostBuffer(buffer);
++  }
++
++  void copyDeviceToHostAsync(void *dst, const void *src, size_t size,
++                             void *stream) override {
++      std::memcpy(dst, src, size);
++  }
++
++  void *getDevice() override { return nullptr; }
++
++  void *getPriorityStream() override { return nullptr; }
++
++  void destroyStream(void *stream) override {}
++
++  void synchronizeStream(void *stream) override {}
++
++  void synchronizeDevice() override {}
++
++  void processHostBuffer(uint8_t *hostBuffer, size_t hostBufferSize,
++                         uint8_t *deviceBuffer, size_t deviceBufferSize,
++                         void *stream,
++                         std::function<void(uint8_t *, size_t)> callback) override {}
++};
++
++} // namespace proton
++
++#endif // PROTON_RUNTIME_CPU_RUNTIME_H_
+diff --git a/third_party/proton/csrc/lib/Data/TreeData.cpp b/third_party/proton/csrc/lib/Data/TreeData.cpp
+index e72b7bd1e..53ba1164a 100644
+--- a/third_party/proton/csrc/lib/Data/TreeData.cpp
++++ b/third_party/proton/csrc/lib/Data/TreeData.cpp
+@@ -103,6 +103,32 @@ private:
+   std::map<size_t, TreeNode> treeNodeMap;
+ };
+
 +// Helper function to recursively filter out nodes with empty metrics
 +static void filterEmptyMetricsNodes(json &node) {
-        +if (!node.contains("children") || !node["children"].is_array()) {
-          +return;
-          +
-        }
-        + +json filteredChildren = json::array();
-        +for (auto &child : node["children"]) {
-          + // Recursively filter children first
-              +filterEmptyMetricsNodes(child);
-          + + // Keep the child if it has non-empty metrics OR has non-empty
-              // children
-            +bool hasMetrics = child.contains("metrics") &&
-                               +child["metrics"].is_object() &&
-                               +!child["metrics"].empty();
-          +bool hasChildren = child.contains("children") &&
-                              +child["children"].is_array() &&
-                              +!child["children"].empty();
-          + +if (hasMetrics || hasChildren) {
-            +filteredChildren.push_back(std::move(child));
-            +
-          }
-          +
-        }
-        +node["children"] = std::move(filteredChildren);
-        +}
++  if (!node.contains("children") || !node["children"].is_array()) {
++    return;
++  }
++
++  json filteredChildren = json::array();
++  for (auto &child : node["children"]) {
++    // Recursively filter children first
++    filterEmptyMetricsNodes(child);
++
++    // Keep the child if it has non-empty metrics OR has non-empty children
++    bool hasMetrics = child.contains("metrics") &&
++                      child["metrics"].is_object() &&
++                      !child["metrics"].empty();
++    bool hasChildren = child.contains("children") &&
++                       child["children"].is_array() &&
++                       !child["children"].empty();
++
++    if (hasMetrics || hasChildren) {
++      filteredChildren.push_back(std::move(child));
++    }
++  }
++  node["children"] = std::move(filteredChildren);
++}
 +
  json TreeData::buildHatchetJson(TreeData::Tree *tree) const {
-        std::map<size_t, json *> jsonNodes;
-        json output = json::array();
-        @ @-228, 6 + 254,
-            10 @ @json TreeData::buildHatchetJson(TreeData::Tree * tree)
-                const {{"num_sms", device.numSms}};
+   std::map<size_t, json *> jsonNodes;
+   json output = json::array();
+@@ -228,6 +254,10 @@ json TreeData::buildHatchetJson(TreeData::Tree *tree) const {
+           {"num_sms", device.numSms}};
      }
-    }
-    + // Filter out nodes with empty metrics
-        +if (!output.empty() && output[0].is_object()) {
-      +filterEmptyMetricsNodes(output[0]);
-      +
-    }
-    return output;
-  }
+   }
++  // Filter out nodes with empty metrics
++  if (!output.empty() && output[0].is_object()) {
++    filterEmptyMetricsNodes(output[0]);
++  }
+   return output;
+ }
 
 diff --git a/third_party/proton/csrc/lib/Driver/CMakeLists.txt b/third_party/proton/csrc/lib/Driver/CMakeLists.txt
 index 438f24f49..079face44 100644
@@ -874,59 +825,63 @@ index 24f4d1612..a7d587e91 100644
 --- a/third_party/proton/csrc/lib/Driver/Device.cpp
 +++ b/third_party/proton/csrc/lib/Driver/Device.cpp
 @@ -1,27 +1,57 @@
-#include "Device.h"
+ #include "Device.h"
 +
 +#ifdef PROTON_ENABLE_CUDA
-#include "Driver/GPU/CudaApi.h"
+ #include "Driver/GPU/CudaApi.h"
 +#endif
 +
 +#ifdef PROTON_ENABLE_ROCTRACER
-#include "Driver/GPU/HipApi.h"
+ #include "Driver/GPU/HipApi.h"
 +#endif
 
-#include "Utility/Errors.h"
- 
- namespace proton {
-    Device getDevice(DeviceType type, uint64_t index) {
-      +#ifdef PROTON_ENABLE_CUDA if (type == DeviceType::CUDA) {
-        return cuda::getDevice(index);
-      }
-      +#endif + #ifdef PROTON_ENABLE_ROCTRACER if (type == DeviceType::HIP) {
-        return hip::getDevice(index);
-      }
-      +#endif + if (type == DeviceType::CPU) {
-        + // CPU doesn't have device-specific info like GPU
-            +Device dev;
-        +dev.type = DeviceType::CPU;
-        +dev.id = 0;
-        +dev.clockRate = 0;
-        +dev.memoryClockRate = 0;
-        +dev.busWidth = 0;
-        +dev.numSms = 0;
-        +dev.arch = "cpu";
-        +return dev;
-        +
-      }
-      throw std::runtime_error("DeviceType not supported");
-    }
+ #include "Utility/Errors.h"
 
-    const std::string getDeviceTypeString(DeviceType type) {
-      +#ifdef PROTON_ENABLE_CUDA if (type == DeviceType::CUDA) {
-        return DeviceTraits<DeviceType::CUDA>::name;
-        -
-      }
-      else if (type == DeviceType::HIP) {
-        +
-      }
-      +#endif + #ifdef PROTON_ENABLE_ROCTRACER + if (type == DeviceType::HIP) {
-        return DeviceTraits<DeviceType::HIP>::name;
-      }
-      +#endif + if (type == DeviceType::CPU) {
-        +return DeviceTraits<DeviceType::CPU>::name;
-        +
-      }
-      throw std::runtime_error("DeviceType not supported");
-    }
+ namespace proton {
+
+ Device getDevice(DeviceType type, uint64_t index) {
++#ifdef PROTON_ENABLE_CUDA
+   if (type == DeviceType::CUDA) {
+     return cuda::getDevice(index);
+   }
++#endif
++#ifdef PROTON_ENABLE_ROCTRACER
+   if (type == DeviceType::HIP) {
+     return hip::getDevice(index);
+   }
++#endif
++  if (type == DeviceType::CPU) {
++    // CPU doesn't have device-specific info like GPU
++    Device dev;
++    dev.type = DeviceType::CPU;
++    dev.id = 0;
++    dev.clockRate = 0;
++    dev.memoryClockRate = 0;
++    dev.busWidth = 0;
++    dev.numSms = 0;
++    dev.arch = "cpu";
++    return dev;
++  }
+   throw std::runtime_error("DeviceType not supported");
+ }
+
+ const std::string getDeviceTypeString(DeviceType type) {
++#ifdef PROTON_ENABLE_CUDA
+   if (type == DeviceType::CUDA) {
+     return DeviceTraits<DeviceType::CUDA>::name;
+-  } else if (type == DeviceType::HIP) {
++  }
++#endif
++#ifdef PROTON_ENABLE_ROCTRACER
++  if (type == DeviceType::HIP) {
+     return DeviceTraits<DeviceType::HIP>::name;
+   }
++#endif
++  if (type == DeviceType::CPU) {
++    return DeviceTraits<DeviceType::CPU>::name;
++  }
+   throw std::runtime_error("DeviceType not supported");
+ }
 
 diff --git a/third_party/proton/csrc/lib/Profiler/CMakeLists.txt b/third_party/proton/csrc/lib/Profiler/CMakeLists.txt
 index 22c311fe2..9ffd0ebde 100644
@@ -993,313 +948,293 @@ index 000000000..61d2928cf
 +}
 +
 +CpuProfiler::CpuProfiler() {
-    +std::cout << "[Proton] CpuProfiler constructed" << std::endl;
-    +}
++  std::cout << "[Proton] CpuProfiler constructed" << std::endl;
++}
 +
 +CpuProfiler::~CpuProfiler() {
-    + // Close all perf event file descriptors
-        +for (auto &c : counters) {
-      +if (c.fd >= 0) {
-        +close(c.fd);
-        +
-      }
-      +
-    }
-    +counters.clear();
-    +}
++  // Close all perf event file descriptors
++  for (auto &c : counters) {
++    if (c.fd >= 0) {
++      close(c.fd);
++    }
++  }
++  counters.clear();
++}
 +
 +void CpuProfiler::setupCounters() {
-    +struct perf_event_attr pe;
-    +std::memset(&pe, 0, sizeof(struct perf_event_attr));
-    +pe.type = PERF_TYPE_HARDWARE;
-    +pe.size = sizeof(struct perf_event_attr);
-    +pe.disabled = 1;
-    +pe.exclude_kernel = 1;
-    +pe.exclude_hv = 1;
-    + + // Cycles
-      +pe.config = PERF_COUNT_HW_CPU_CYCLES;
-    +int fd_cycles = perf_event_open(&pe, 0, -1, -1, 0);
-    +if (fd_cycles != -1) {
-      +std::cout << "[Proton] Successfully opened CPU Cycle counter."
-                 << std::endl;
-      +counters.push_back({fd_cycles, "cycle"});
-      +
-    }
-    else {
-      +std::cerr << "[Proton] Warning: Failed to open cycles counter. Errno: " +
-                 << strerror(errno) << std::endl;
-      +
-    }
-    + + // Instructions
-      +pe.config = PERF_COUNT_HW_INSTRUCTIONS;
-    +int fd_inst = perf_event_open(&pe, 0, -1, -1, 0);
-    +if (fd_inst != -1) {
-      +std::cout << "[Proton] Successfully opened Instruction counter."
-                 << std::endl;
-      +counters.push_back({fd_inst, "instruction"});
-      +
-    }
-    else {
-      +std::cerr
-          << "[Proton] Warning: Failed to open instruction counter. Errno: " +
-          << strerror(errno) << std::endl;
-      +
-    }
-    +}
++  struct perf_event_attr pe;
++  std::memset(&pe, 0, sizeof(struct perf_event_attr));
++  pe.type = PERF_TYPE_HARDWARE;
++  pe.size = sizeof(struct perf_event_attr);
++  pe.disabled = 1;
++  pe.exclude_kernel = 1;
++  pe.exclude_hv = 1;
++
++  // Cycles
++  pe.config = PERF_COUNT_HW_CPU_CYCLES;
++  int fd_cycles = perf_event_open(&pe, 0, -1, -1, 0);
++  if (fd_cycles != -1) {
++    std::cout << "[Proton] Successfully opened CPU Cycle counter." << std::endl;
++    counters.push_back({fd_cycles, "cycle"});
++  } else {
++    std::cerr << "[Proton] Warning: Failed to open cycles counter. Errno: "
++              << strerror(errno) << std::endl;
++  }
++
++  // Instructions
++  pe.config = PERF_COUNT_HW_INSTRUCTIONS;
++  int fd_inst = perf_event_open(&pe, 0, -1, -1, 0);
++  if (fd_inst != -1) {
++    std::cout << "[Proton] Successfully opened Instruction counter." << std::endl;
++    counters.push_back({fd_inst, "instruction"});
++  } else {
++    std::cerr << "[Proton] Warning: Failed to open instruction counter. Errno: "
++              << strerror(errno) << std::endl;
++  }
++}
 +
 +void CpuProfiler::doStart() {
-    +std::cout << "[Proton] CpuProfiler::doStart()" << std::endl;
-    +if (counters.empty()) {
-      +setupCounters();
-      +
-    }
-    +for (auto &c : counters) {
-      +ioctl(c.fd, PERF_EVENT_IOC_RESET, 0);
-      +ioctl(c.fd, PERF_EVENT_IOC_ENABLE, 0);
-      +
-    }
-    +}
++  std::cout << "[Proton] CpuProfiler::doStart()" << std::endl;
++  if (counters.empty()) {
++    setupCounters();
++  }
++  for (auto &c : counters) {
++    ioctl(c.fd, PERF_EVENT_IOC_RESET, 0);
++    ioctl(c.fd, PERF_EVENT_IOC_ENABLE, 0);
++  }
++}
 +
 +void CpuProfiler::doStop() {
-    +std::cout << "[Proton] CpuProfiler::doStop()" << std::endl;
-    +for (auto &c : counters) {
-      +ioctl(c.fd, PERF_EVENT_IOC_DISABLE, 0);
-      +
-    }
-    +}
++  std::cout << "[Proton] CpuProfiler::doStop()" << std::endl;
++  for (auto &c : counters) {
++    ioctl(c.fd, PERF_EVENT_IOC_DISABLE, 0);
++  }
++}
 +
 +void CpuProfiler::doFlush() {
-    + // Nothing special to flush for CPU profiler
-        +}
++  // Nothing special to flush for CPU profiler
++}
 +
 +void CpuProfiler::doSetMode(const std::vector<std::string> &modeAndOptions) {
-    + // CPU profiler doesn't need special mode configuration
-        +}
++  // CPU profiler doesn't need special mode configuration
++}
 +
 +void CpuProfiler::readCounters(std::map<std::string, uint64_t> &values) {
-    +for (auto &c : counters) {
-      +long long count;
-      +int ret = read(c.fd, &count, sizeof(long long));
-      +if (ret == sizeof(long long)) {
-        +values[c.name] = count;
-        +
-      }
-      else {
-        +std::cerr << "[Proton Error] Failed to read " << c.name +
-                   << " ret=" << ret << " errno=" << strerror(errno)
-                   << std::endl;
-        +
-      }
-      +
-    }
-    +}
++  for (auto &c : counters) {
++    long long count;
++    int ret = read(c.fd, &count, sizeof(long long));
++    if (ret == sizeof(long long)) {
++      values[c.name] = count;
++    } else {
++      std::cerr << "[Proton Error] Failed to read " << c.name
++                << " ret=" << ret << " errno=" << strerror(errno) << std::endl;
++    }
++  }
++}
 +
 +// OpInterface implementation
 +void CpuProfiler::startOp(const Scope &scope) {
-    + // Delegate to enterScope for consistency
-        +enterScope(scope);
-    +}
++  // Delegate to enterScope for consistency
++  enterScope(scope);
++}
 +
 +void CpuProfiler::stopOp(const Scope &scope) {
-    + // Delegate to exitScope for consistency
-        +exitScope(scope);
-    +}
++  // Delegate to exitScope for consistency
++  exitScope(scope);
++}
 +
 +void CpuProfiler::doAddMetrics(
 +    size_t scopeId,
 +    const std::map<std::string, MetricValueType> &scalarMetrics,
 +    const std::map<std::string, TensorMetric> &tensorMetrics) {
-    + // Add metrics to all registered data objects
-        +for (auto *data : getDataSet()) {
-      +data->addMetrics(scopeId, scalarMetrics);
-      +
-    }
-    +}
++  // Add metrics to all registered data objects
++  for (auto *data : getDataSet()) {
++    data->addMetrics(scopeId, scalarMetrics);
++  }
++}
 +
 +// ScopeInterface implementation - supports nested scopes using stack
 +void CpuProfiler::enterScope(const Scope &scope) {
-    +std::cout << "[Proton Debug] enterScope: " << scope.name << " (scopeId=" +
-               << scope.scopeId << ", stack depth=" << scopeStack.size() << ")"
-               << std::endl;
-    + + // Create new scope state
-      +ScopeState state;
-    +state.scopeId = scope.scopeId;
-    +state.name = scope.name;
-    + + // Register this scope with all data objects
-      +for (auto data : getDataSet()) {
-      +auto internalScopeId = data->addOp(scope.scopeId, scope.name);
-      +state.dataScopeIdMap[data] = internalScopeId;
-      +std::cout
-          << "[Proton Debug] Registered scope with data, internalScopeId=" +
-          << internalScopeId << std::endl;
-      +
-    }
-    + + // Read current counter values as start values
-      +readCounters(state.startValues);
-    + + // Push state onto stack
-      +scopeStack.push(std::move(state));
-    + +std::cout << "[Proton Debug] Start values recorded, stack depth now=" +
-                 << scopeStack.size() << std::endl;
-    +}
++  std::cout << "[Proton Debug] enterScope: " << scope.name << " (scopeId="
++            << scope.scopeId << ", stack depth=" << scopeStack.size() << ")" << std::endl;
++
++  // Create new scope state
++  ScopeState state;
++  state.scopeId = scope.scopeId;
++  state.name = scope.name;
++
++  // Register this scope with all data objects
++  for (auto data : getDataSet()) {
++    auto internalScopeId = data->addOp(scope.scopeId, scope.name);
++    state.dataScopeIdMap[data] = internalScopeId;
++    std::cout << "[Proton Debug] Registered scope with data, internalScopeId="
++              << internalScopeId << std::endl;
++  }
++
++  // Read current counter values as start values
++  readCounters(state.startValues);
++
++  // Push state onto stack
++  scopeStack.push(std::move(state));
++
++  std::cout << "[Proton Debug] Start values recorded, stack depth now="
++            << scopeStack.size() << std::endl;
++}
 +
 +void CpuProfiler::exitScope(const Scope &scope) {
-    +std::cout << "[Proton Debug] exitScope: " << scope.name << " (scopeId=" +
-               << scope.scopeId << ", stack depth=" << scopeStack.size() << ")"
-               << std::endl;
-    + +if (scopeStack.empty()) {
-      +std::cerr << "[Proton Error] exitScope called but stack is empty!"
-                 << std::endl;
-      +return;
-      +
-    }
-    + + // Pop the top state from stack
-      +ScopeState state = std::move(scopeStack.top());
-    +scopeStack.pop();
-    + + // Verify scope matches (optional safety check)
-      +if (state.scopeId != scope.scopeId) {
-      +std::cerr << "[Proton Warning] Scope mismatch: expected "
-                 << state.scopeId + << " but got " << scope.scopeId
-                 << std::endl;
-      +
-    }
-    + + // Read end counter values
-      +std::map<std::string, uint64_t> endValues;
-    +readCounters(endValues);
-    + + // Calculate metrics (difference between end and start)
-      +std::map<std::string, MetricValueType> metrics;
-    +for (auto &c : counters) {
-      +if (endValues.count(c.name) && state.startValues.count(c.name)) {
-        +uint64_t diff = endValues[c.name] - state.startValues[c.name];
-        +metrics[c.name] = static_cast<double>(diff);
-        +std::cout << "[Proton Debug] Scope " << scope.name << " " << c.name +
-                   << ": " << diff << std::endl;
-        +
-      }
-      +
-    }
-    + + // Report metrics to all data objects using the saved dataScopeIdMap
-      +if (!metrics.empty()) {
-      +std::cout << "[Proton] Reporting metrics for scope " << scope.name +
-                 << " (dataScopeIdMap size: " << state.dataScopeIdMap.size()
-                 << ")" + << std::endl;
-      + // Use current valid DataSet instead of saved pointers to avoid dangling
-        // pointers
-          +for (auto *data : getDataSet()) {
-        +auto it = state.dataScopeIdMap.find(data);
-        +if (it != state.dataScopeIdMap.end()) {
-          +std::cout
-              << "[Proton Debug] Adding metrics to data for internalScopeId=" +
-              << it->second << std::endl;
-          +data->addMetrics(it->second, metrics);
-          +
-        }
-        +
-      }
-      +
-    }
-    else {
-      +std::cerr << "[Proton] No metrics recorded for scope " << scope.name
-                 << std::endl;
-      +
-    }
-    + +std::cout << "[Proton Debug] exitScope done, stack depth now=" +
-                 << scopeStack.size() << std::endl;
-    +}
++  std::cout << "[Proton Debug] exitScope: " << scope.name << " (scopeId="
++            << scope.scopeId << ", stack depth=" << scopeStack.size() << ")" << std::endl;
 +
++  if (scopeStack.empty()) {
++    std::cerr << "[Proton Error] exitScope called but stack is empty!" << std::endl;
++    return;
++  }
 +
-} // namespace proton
-diff-- git a / third_party / proton / csrc / lib / Runtime / CMakeLists.txt b /
-        third_party / proton / csrc / lib / Runtime /
-        CMakeLists.txt index 8c8e93e35..513052068 100644 -- -a / third_party /
-        proton / csrc / lib / Runtime / CMakeLists.txt++ +
-    b / third_party / proton / csrc / lib / Runtime / CMakeLists.txt @ @-1,
-    4 + 1,
-    18 @ @-add_proton_library(ProtonRuntime - CudaRuntime.cpp -
-                              HipRuntime.cpp -) +
-        #Runtime sources - conditionally compiled based on GPU support +
-        set(RUNTIME_SOURCES) + +if (PROTON_ENABLE_CUDA) +
-        list(APPEND RUNTIME_SOURCES CudaRuntime.cpp) + endif() +
-        +if (PROTON_ENABLE_ROCTRACER) +
-        list(APPEND RUNTIME_SOURCES HipRuntime.cpp) + endif() +
-        +#Only create library if there are sources + if (RUNTIME_SOURCES) +
-        add_proton_library(ProtonRuntime ${RUNTIME_SOURCES}) + else() +
-        #Create an empty interface library when no GPU support +
-        add_library(ProtonRuntime INTERFACE) +
-        endif() diff-- git a / third_party / proton / csrc / lib / Runtime
-            / CpuRuntime.cpp b / third_party / proton / csrc / lib / Runtime /
-            CpuRuntime.cpp new file mode 100644 index 000000000..010c507d4 -- -/
-            dev / null++ +
-        b / third_party / proton / csrc / lib / Runtime / CpuRuntime.cpp @ @-0,
-    0 + 1,
-    5 @ @+#include "Runtime/CpuRuntime.h" +
-        +namespace proton{+ // Instantiation
-                          +} diff-- git a
-            / third_party / proton / csrc / lib / Session / Session.cpp b
-            / third_party / proton / csrc / lib / Session
-            / Session.cpp index f73a0f184..0cec77129 100644 -- -a / third_party
-            / proton / csrc / lib / Session / Session.cpp++ +
-        b / third_party / proton / csrc / lib / Session / Session.cpp @ @-3,
-    9 + 3,
-    14 @ @
-#include "Context/Shadow.h"
-#include "Data/TraceData.h"
-#include "Data/TreeData.h"
-        +#ifdef PROTON_ENABLE_CUDA
-#include "Profiler/Cupti/CuptiProfiler.h"
-#include "Profiler/Instrumentation/InstrumentationProfiler.h"
-        + #endif + #ifdef PROTON_ENABLE_ROCTRACER
-#include "Profiler/Roctracer/RoctracerProfiler.h"
-        + #endif +
-        #include "Profiler/Cpu/CpuProfiler.h"
-#include "Utility/String.h"
++  // Pop the top state from stack
++  ScopeState state = std::move(scopeStack.top());
++  scopeStack.pop();
++
++  // Verify scope matches (optional safety check)
++  if (state.scopeId != scope.scopeId) {
++    std::cerr << "[Proton Warning] Scope mismatch: expected " << state.scopeId
++              << " but got " << scope.scopeId << std::endl;
++  }
++
++  // Read end counter values
++  std::map<std::string, uint64_t> endValues;
++  readCounters(endValues);
++
++  // Calculate metrics (difference between end and start)
++  std::map<std::string, MetricValueType> metrics;
++  for (auto &c : counters) {
++    if (endValues.count(c.name) && state.startValues.count(c.name)) {
++      uint64_t diff = endValues[c.name] - state.startValues[c.name];
++      metrics[c.name] = static_cast<double>(diff);
++      std::cout << "[Proton Debug] Scope " << scope.name << " " << c.name
++                << ": " << diff << std::endl;
++    }
++  }
++
++  // Report metrics to all data objects using the saved dataScopeIdMap
++  if (!metrics.empty()) {
++    std::cout << "[Proton] Reporting metrics for scope " << scope.name
++              << " (dataScopeIdMap size: " << state.dataScopeIdMap.size() << ")"
++              << std::endl;
++    // Use current valid DataSet instead of saved pointers to avoid dangling pointers
++    for (auto *data : getDataSet()) {
++      auto it = state.dataScopeIdMap.find(data);
++      if (it != state.dataScopeIdMap.end()) {
++        std::cout << "[Proton Debug] Adding metrics to data for internalScopeId="
++                  << it->second << std::endl;
++        data->addMetrics(it->second, metrics);
++      }
++    }
++  } else {
++    std::cerr << "[Proton] No metrics recorded for scope " << scope.name << std::endl;
++  }
++
++  std::cout << "[Proton Debug] exitScope done, stack depth now="
++            << scopeStack.size() << std::endl;
++}
++
++} // namespace proton
+diff --git a/third_party/proton/csrc/lib/Runtime/CMakeLists.txt b/third_party/proton/csrc/lib/Runtime/CMakeLists.txt
+index 8c8e93e35..513052068 100644
+--- a/third_party/proton/csrc/lib/Runtime/CMakeLists.txt
++++ b/third_party/proton/csrc/lib/Runtime/CMakeLists.txt
+@@ -1,4 +1,18 @@
+-add_proton_library(ProtonRuntime
+-  CudaRuntime.cpp
+-  HipRuntime.cpp
+-)
++# Runtime sources - conditionally compiled based on GPU support
++set(RUNTIME_SOURCES)
++
++if(PROTON_ENABLE_CUDA)
++  list(APPEND RUNTIME_SOURCES CudaRuntime.cpp)
++endif()
++
++if(PROTON_ENABLE_ROCTRACER)
++  list(APPEND RUNTIME_SOURCES HipRuntime.cpp)
++endif()
++
++# Only create library if there are sources
++if(RUNTIME_SOURCES)
++  add_proton_library(ProtonRuntime ${RUNTIME_SOURCES})
++else()
++  # Create an empty interface library when no GPU support
++  add_library(ProtonRuntime INTERFACE)
++endif()
+diff --git a/third_party/proton/csrc/lib/Runtime/CpuRuntime.cpp b/third_party/proton/csrc/lib/Runtime/CpuRuntime.cpp
+new file mode 100644
+index 000000000..010c507d4
+--- /dev/null
++++ b/third_party/proton/csrc/lib/Runtime/CpuRuntime.cpp
+@@ -0,0 +1,5 @@
++#include "Runtime/CpuRuntime.h"
++
++namespace proton {
++// Instantiation
++}
+diff --git a/third_party/proton/csrc/lib/Session/Session.cpp b/third_party/proton/csrc/lib/Session/Session.cpp
+index f73a0f184..0cec77129 100644
+--- a/third_party/proton/csrc/lib/Session/Session.cpp
++++ b/third_party/proton/csrc/lib/Session/Session.cpp
+@@ -3,9 +3,14 @@
+ #include "Context/Shadow.h"
+ #include "Data/TraceData.h"
+ #include "Data/TreeData.h"
++#ifdef PROTON_ENABLE_CUDA
+ #include "Profiler/Cupti/CuptiProfiler.h"
+ #include "Profiler/Instrumentation/InstrumentationProfiler.h"
++#endif
++#ifdef PROTON_ENABLE_ROCTRACER
+ #include "Profiler/Roctracer/RoctracerProfiler.h"
++#endif
++#include "Profiler/Cpu/CpuProfiler.h"
+ #include "Utility/String.h"
 
-        namespace proton {
-  @ @-13, 13 + 18, 21 @ @ namespace proton {
-    namespace {
+ namespace proton {
+@@ -13,13 +18,21 @@ namespace proton {
+ namespace {
 
-    Profiler *makeProfiler(const std::string &name) {
-      +#ifdef PROTON_ENABLE_CUDA if (proton::toLower(name) == "cupti") {
-        return &CuptiProfiler::instance();
-        -
-      }
-      else if (proton::toLower(name) == "roctracer") {
-        -return &RoctracerProfiler::instance();
-      }
-      else if (proton::toLower(name) == "instrumentation") {
-        return &InstrumentationProfiler::instance();
-      }
-      +#endif + #ifdef PROTON_ENABLE_ROCTRACER +
-          if (proton::toLower(name) == "roctracer") {
-        +return &RoctracerProfiler::instance();
-        +
-      }
-      +#endif + if (proton::toLower(name) == "cpu") {
-        +return &CpuProfiler::instance();
-        +
-      }
-      throw std::runtime_error("Unknown profiler: " + name);
-    }
+ Profiler *makeProfiler(const std::string &name) {
++#ifdef PROTON_ENABLE_CUDA
+   if (proton::toLower(name) == "cupti") {
+     return &CuptiProfiler::instance();
+-  } else if (proton::toLower(name) == "roctracer") {
+-    return &RoctracerProfiler::instance();
+   } else if (proton::toLower(name) == "instrumentation") {
+     return &InstrumentationProfiler::instance();
+   }
++#endif
++#ifdef PROTON_ENABLE_ROCTRACER
++  if (proton::toLower(name) == "roctracer") {
++    return &RoctracerProfiler::instance();
++  }
++#endif
++  if (proton::toLower(name) == "cpu") {
++    return &CpuProfiler::instance();
++  }
+   throw std::runtime_error("Unknown profiler: " + name);
+ }
 
-    diff-- git a / third_party / proton / proton / language.py b / third_party /
-            proton / proton /
-            language.py index 278593819..4638b4173 100644 -- -a / third_party /
-            proton / proton / language.py++ +
-        b / third_party / proton / proton / language.py @ @-34,
-        11 + 34,
-        14 @ @def disable_semantic(semantic_name : str)
-        :
+diff --git a/third_party/proton/proton/language.py b/third_party/proton/proton/language.py
+index 278593819..4638b4173 100644
+--- a/third_party/proton/proton/language.py
++++ b/third_party/proton/proton/language.py
+@@ -34,11 +34,14 @@ def disable_semantic(semantic_name: str):
 
-          def record(is_start : tl.constexpr, scope_name : tl.constexpr,
-                     semantic)
-        : +print(f "[DEBUG] record called: is_start={is_start}, "
-                   "scope_name={scope_name}, "
-                   "instrumentation_on={flags.instrumentation_on}") if not flags
-              .instrumentation_on
-        : +print(f "[DEBUG] instrumentation_on is False, "
-                   "skipping") return _check_supported_semantic(semantic)
-              is_start = tl._unwrap_if_constexpr(is_start) scope_name =
-            tl._unwrap_if_constexpr(scope_name) +
-            print(f "[DEBUG] creating proton record op") return tl.tensor(
-                triton_proton.create_proton_record(semantic.builder, is_start,
-                                                   scope_name),
-                tl.void)
+
+ def record(is_start: tl.constexpr, scope_name: tl.constexpr, semantic):
++    print(f"[DEBUG] record called: is_start={is_start}, scope_name={scope_name}, instrumentation_on={flags.instrumentation_on}")
+     if not flags.instrumentation_on:
++        print(f"[DEBUG] instrumentation_on is False, skipping")
+         return
+     _check_supported_semantic(semantic)
+     is_start = tl._unwrap_if_constexpr(is_start)
+     scope_name = tl._unwrap_if_constexpr(scope_name)
++    print(f"[DEBUG] creating proton record op")
+     return tl.tensor(triton_proton.create_proton_record(semantic.builder, is_start, scope_name), tl.void)
+
+
