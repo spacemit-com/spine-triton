@@ -1013,6 +1013,23 @@ private:
     auto alloc = memref::AllocOp::create(
         rewriter, loc, MemRefType::get(tensorType.getShape(), elemType));
 
+    // Keep masked-load default semantics: masked-out lanes read as zero
+    // when `other` is not provided. Place fill immediately after alloc.
+    if (!op.getOther()) {
+      Value zeroValue;
+      if (auto floatType = dyn_cast<FloatType>(elemType)) {
+        const llvm::fltSemantics &semantics = floatType.getFloatSemantics();
+        zeroValue = arith::ConstantFloatOp::create(rewriter, loc, floatType,
+                                                   APFloat::getZero(semantics));
+      } else if (auto intType = dyn_cast<IntegerType>(elemType)) {
+        zeroValue = arith::ConstantIntOp::create(rewriter, loc, intType, 0);
+      } else {
+        llvm_unreachable("Unsupported element type used for fill");
+      }
+      linalg::FillOp::create(rewriter, loc, ValueRange{zeroValue},
+                             ValueRange{alloc});
+    }
+
     SmallVector<OpFoldResult> mixedDims = op.getMixedMaskDims();
 
     // Fill load destination with other value

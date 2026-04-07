@@ -485,6 +485,17 @@ public:
     auto alloc = memref::AllocOp::create(
         rewriter, loc, MemRefType::get(type.getShape(), type.getElementType()));
 
+    // Initialize masked-load temporary buffer eagerly when `other` is absent.
+    // This preserves Triton semantics where masked-out lanes read as zero.
+    if (mask && !other) {
+      auto zero =
+          arith::ConstantOp::create(rewriter, loc,
+                                    rewriter.getZeroAttr(type.getElementType()))
+              .getResult();
+      linalg::FillOp::create(rewriter, loc, ValueRange{zero},
+                             ValueRange{alloc});
+    }
+
     if (!mask) {
       assert(!other && "other value used in non-masked load");
       if (auto unrealizedCast =
@@ -2828,7 +2839,7 @@ private:
   std::unordered_map<std::string, OpInfo> opMap;
 };
 
-class ConvertExternIsNaNOrInf
+class ConvertExternSpecialMath
     : public OpConversionPattern<triton::ExternElementwiseOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
@@ -2843,8 +2854,9 @@ public:
     bool isFinite = (symbol == "math.isfinite");
     bool isCos = (symbol == "math.cos");
     bool isSin = (symbol == "math.sin");
+    bool isTrunc = (symbol == "math.trunc");
 
-    if (!isIsNaN && !isIsInf && !isFinite && !isCos && !isSin) {
+    if (!isIsNaN && !isIsInf && !isFinite && !isCos && !isSin && !isTrunc) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
         diag << "unsupported extern operation: " << symbol;
       });
@@ -2866,10 +2878,12 @@ public:
     }
     auto outputElemType = outputType.getElementType();
 
-    if ((isCos || isSin) && (!isa<FloatType>(outputElemType) ||
-                             outputElemType != inputType.getElementType())) {
+    if ((isCos || isSin || isTrunc) &&
+        (!isa<FloatType>(outputElemType) ||
+         outputElemType != inputType.getElementType())) {
       return rewriter.notifyMatchFailure(
-          op, "math.sin/math.cos lowering requires float output element type "
+          op, "math.sin/math.cos/math.trunc lowering requires float output "
+              "element type "
               "matching input element type");
     }
 
@@ -2924,6 +2938,8 @@ public:
             }
           } else if (isCos) {
             outputVal = math::CosOp::create(b, loc, inputVal);
+          } else if (isTrunc) {
+            outputVal = math::TruncOp::create(b, loc, inputVal);
           } else {
             assert(isSin && "expected math.sin path");
             outputVal = math::SinOp::create(b, loc, inputVal);

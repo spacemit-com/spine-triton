@@ -260,7 +260,12 @@ def tan(arg0, _semantic=None):
 
 @core.extern
 def trunc(arg0, _semantic=None):
-    return core.tensor(_semantic.create_trunc(arg0.handle), arg0.type)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.trunc", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.trunc", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.trunc", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
