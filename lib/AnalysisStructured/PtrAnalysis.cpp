@@ -798,7 +798,22 @@ LogicalResult PtrAnalysis::visitOperandRem(arith::RemSIOp remOp,
       return failure();
   }
 
+  auto rebuildModuloAsGatherScatter = [&](int nonContinuousDim) {
+    if (!enableMakeGatherScatterTensorPtr)
+      return failure();
+    return state.rebuildAsGatherScatter(remOp.getResult(), nonContinuousDim);
+  };
+
   if (state.getRank() == 1) {
+    // Preserve the modulo expression itself for tile-like accesses.
+    // Lowering it only into shape information loses the explicit remsi
+    // semantics, which later turns wraparound addressing into contiguous
+    // slice/copy behavior.
+    if (succeeded(rebuildModuloAsGatherScatter(0))) {
+      state.origiOffsets = state.offsets;
+      return success();
+    }
+
     // Apply the modulo before expanding shape, the common pattern is
     // offs_am = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
     // a_ptrs = a_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] *
@@ -814,8 +829,16 @@ LogicalResult PtrAnalysis::visitOperandRem(arith::RemSIOp remOp,
     // In both cases, we apply the modulo to the non-singleton dimension.
     auto shape = cast<TensorType>(remOp.getResult().getType()).getShape();
     if (shape[0] == 1) {
+      if (succeeded(rebuildModuloAsGatherScatter(1))) {
+        state.origiOffsets = state.offsets;
+        return success();
+      }
       state.shape[1] = rhsState.scalar;
     } else if (shape[1] == 1) {
+      if (succeeded(rebuildModuloAsGatherScatter(0))) {
+        state.origiOffsets = state.offsets;
+        return success();
+      }
       state.shape[0] = rhsState.scalar;
     } else {
       remOp->emitRemark(

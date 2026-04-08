@@ -199,8 +199,13 @@ def atanh(arg0, _semantic=None):
 
 
 @core.extern
-def atan2(arg0, _semantic=None):
-    return core.tensor(_semantic.create_atan2(arg0.handle), arg0.type)
+def atan2(arg0, arg1, _semantic=None):
+    return core.extern_elementwise(
+        "", "", [arg0, arg1], {
+            (core.dtype("fp32"), core.dtype("fp32")): ("math.atan2", core.dtype("fp32")),
+            (core.dtype("fp64"), core.dtype("fp64")): ("math.atan2", core.dtype("fp64")),
+            (core.dtype("fp16"), core.dtype("fp16")): ("math.atan2", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern

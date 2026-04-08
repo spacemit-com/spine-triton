@@ -5,27 +5,25 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
-#include "mlir/Pass/Pass.h"
-#include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton-shared/Conversion/TritonToLinalgExperimental/ConvertScanOp.h"
-#include "triton/Dialect/Triton/IR/Types.h"
-#include "triton/Conversion/MLIRTypes.h"
-#include "triton/Dialect/Triton/IR/Types.h"
-#include "mlir/Transforms/DialectConversion.h"
-#include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
+#include "mlir/Transforms/DialectConversion.h"
+#include "triton-shared/Conversion/TritonToLinalgExperimental/ConvertScanOp.h"
+#include "triton/Conversion/MLIRTypes.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Types.h"
 #include <numeric>
-
 
 using namespace mlir;
 using namespace triton;
@@ -109,7 +107,7 @@ struct ReduceScanOpConversionBase : public OpConversionPattern<OpT> {
       auto resElems = lower1DInput(subInputs, op, rewriter);
       for (size_t i = 0; i < res.size(); ++i) {
         res[i] = vector::InsertOp::create(rewriter, loc, resElems[i], res[i],
-                                                   indices);
+                                          indices);
       }
     }
 
@@ -151,8 +149,8 @@ struct ReduceScanOpConversionBase : public OpConversionPattern<OpT> {
           });
       auto resVecs = lowerLeadingDimension(subInputs, op, rewriter);
       for (size_t i = 0; i < res.size(); ++i) {
-        res[i] =
-            vector::InsertOp::create(rewriter, loc, resVecs[i], res[i], indices);
+        res[i] = vector::InsertOp::create(rewriter, loc, resVecs[i], res[i],
+                                          indices);
       }
     }
 
@@ -221,7 +219,8 @@ struct ReduceScanOpConversionBase : public OpConversionPattern<OpT> {
       if (!res) {
         auto ip = rewriter.saveInsertionPoint();
         rewriter.setInsertionPointAfterValue(val);
-        res = tensor::SplatOp::create(rewriter, val.getLoc(), VectorType::get(shape, val.getType()), val);
+        res = vector::BroadcastOp::create(
+            rewriter, val.getLoc(), VectorType::get(shape, val.getType()), val);
         invariantsMap.map(val, res);
         rewriter.restoreInsertionPoint(ip);
       }
@@ -235,7 +234,9 @@ struct ReduceScanOpConversionBase : public OpConversionPattern<OpT> {
     // Initialize results to zero values.
     SmallVector<Value> res;
     for (auto ty : resTypes) {
-      res.push_back(arith::ConstantOp::create(rewriter, loc, rewriter.getZeroAttr(getTypeConverter()->convertType(ty))));
+      res.push_back(arith::ConstantOp::create(
+          rewriter, loc,
+          rewriter.getZeroAttr(getTypeConverter()->convertType(ty))));
     }
     return res;
   }
@@ -249,7 +250,8 @@ struct ReduceScanOpConversionBase : public OpConversionPattern<OpT> {
     SmallVector<int64_t, 1> dummyShape({1});
     for (auto val : inputs) {
       auto ty = cast<VectorType>(val.getType());
-      shuffleDummies.push_back(arith::ConstantOp::create(rewriter, loc,
+      shuffleDummies.push_back(arith::ConstantOp::create(
+          rewriter, loc,
           rewriter.getZeroAttr(ty.cloneWith(dummyShape, ty.getElementType()))));
     }
     return shuffleDummies;
@@ -280,7 +282,7 @@ TritonToTritonLinalgTypeConverter::TritonToTritonLinalgTypeConverter() {
   // Converted ops produce vectors instead of tensors. Provide conversion
   // here for users.
   addSourceMaterialization([&](OpBuilder &builder, Type type, ValueRange inputs,
-                               Location loc) ->mlir::Value {
+                               Location loc) -> mlir::Value {
     return UnrealizedConversionCastOp::create(builder, loc, type, inputs)
         .getResult(0);
   });
@@ -318,7 +320,6 @@ public:
 
     addIllegalOp<triton::ScanOp>();
   }
-
 };
 
 struct ScanOpConversion
@@ -346,7 +347,8 @@ struct ScanOpConversion
       }
       SmallVector<Value> shuffledInput;
       for (auto [val, dummy] : llvm::zip(res, dummies)) {
-        shuffledInput.push_back(vector::ShuffleOp::create(rewriter, loc, val, dummy, shuffleIndices));
+        shuffledInput.push_back(vector::ShuffleOp::create(
+            rewriter, loc, val, dummy, shuffleIndices));
       }
 
       auto newRes = accumulate(res, shuffledInput, combineOp, rewriter);
@@ -359,7 +361,8 @@ struct ScanOpConversion
       } else {
         std::fill(maskVals.begin(), maskVals.begin() + stride, false);
       }
-      Value mask = arith::ConstantOp::create(rewriter, loc, maskTy, rewriter.getBoolVectorAttr(maskVals));
+      Value mask = arith::ConstantOp::create(
+          rewriter, loc, maskTy, rewriter.getBoolVectorAttr(maskVals));
       for (size_t i = 0; i < res.size(); ++i) {
         res[i] = vector::selectPassthru(rewriter, mask, newRes[i], res[i]);
       }
@@ -387,10 +390,10 @@ struct ScanOpConversion
     int64_t step = reverse ? -1 : 1;
     for (int64_t idx = start; idx != end; idx += step) {
       SmallVector<Value> subInputs(inputs.size());
-      std::transform(inputs.begin(), inputs.end(), subInputs.begin(),
-                     [&](auto val) {
-                       return vector::ExtractOp::create(rewriter, loc, val, idx);
-                     });
+      std::transform(
+          inputs.begin(), inputs.end(), subInputs.begin(), [&](auto val) {
+            return vector::ExtractOp::create(rewriter, loc, val, idx);
+          });
 
       acc = accumulate(subInputs, acc, combineOp, rewriter);
 
@@ -402,7 +405,8 @@ struct ScanOpConversion
   }
 };
 
-class TensorToVectorCastConverter : public OpRewritePattern<UnrealizedConversionCastOp> {
+class TensorToVectorCastConverter
+    : public OpRewritePattern<UnrealizedConversionCastOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
 
@@ -422,15 +426,14 @@ public:
     Location loc = op.getLoc();
     Value memref;
 
-    Operation* definingOp = input.getDefiningOp();
+    Operation *definingOp = input.getDefiningOp();
     if (definingOp && isa<bufferization::ToTensorOp>(definingOp)) {
       memref = definingOp->getOperand(0);
     } else {
-      auto memrefType = MemRefType::get(
-          tensorType.getShape(),
-          tensorType.getElementType()
-      );
-      memref = bufferization::ToBufferOp::create(rewriter, loc, memrefType, input);
+      auto memrefType =
+          MemRefType::get(tensorType.getShape(), tensorType.getElementType());
+      memref =
+          bufferization::ToBufferOp::create(rewriter, loc, memrefType, input);
     }
 
     SmallVector<Value> indices;
@@ -442,20 +445,18 @@ public:
     }
 
     Attribute zeroAttr = rewriter.getZeroAttr(tensorType.getElementType());
-    Value padding = arith::ConstantOp::create(rewriter, loc,
-        tensorType.getElementType(),
-        cast<TypedAttr>(zeroAttr)
-    );
+    Value padding = arith::ConstantOp::create(
+        rewriter, loc, tensorType.getElementType(), cast<TypedAttr>(zeroAttr));
 
-    rewriter.replaceOpWithNewOp<vector::TransferReadOp>(
-        op, vectorType, memref, indices, padding
-    );
+    rewriter.replaceOpWithNewOp<vector::TransferReadOp>(op, vectorType, memref,
+                                                        indices, padding);
 
     return success();
   }
 };
 
-class VectorToTensorCastConverter : public OpRewritePattern<UnrealizedConversionCastOp> {
+class VectorToTensorCastConverter
+    : public OpRewritePattern<UnrealizedConversionCastOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
 
@@ -476,8 +477,8 @@ public:
       return failure();
 
     Location loc = op.getLoc();
-    MemRefType memRefType = MemRefType::get(vectorType.getShape(),
-                                            vectorType.getElementType());
+    MemRefType memRefType =
+        MemRefType::get(vectorType.getShape(), vectorType.getElementType());
     Value alloc = memref::AllocOp::create(rewriter, loc, memRefType);
 
     SmallVector<Value> indices;
@@ -486,10 +487,12 @@ public:
       indices.push_back(arith::ConstantIndexOp::create(rewriter, loc, 0));
     }
 
-    vector::TransferWriteOp::create(rewriter, loc, input, alloc, ValueRange{indices});
+    vector::TransferWriteOp::create(rewriter, loc, input, alloc,
+                                    ValueRange{indices});
 
-    auto toTensor = bufferization::ToTensorOp::create(rewriter, loc, tensorType, alloc,
-        /*restrict=*/true, /*writable=*/true);
+    auto toTensor =
+        bufferization::ToTensorOp::create(rewriter, loc, tensorType, alloc,
+                                          /*restrict=*/true, /*writable=*/true);
 
     rewriter.replaceOp(op, toTensor.getResult());
     return success();
@@ -518,14 +521,15 @@ struct ConvertScanOpPass : public ConvertScanOpBase<ConvertScanOpPass> {
       return signalPassFailure();
 
     RewritePatternSet patternsCast(&getContext());
-    patternsCast.add<TensorToVectorCastConverter, VectorToTensorCastConverter>(&getContext());
-    if (failed(applyPartialConversion(mod, convTarget, std::move(patternsCast))))
+    patternsCast.add<TensorToVectorCastConverter, VectorToTensorCastConverter>(
+        &getContext());
+    if (failed(
+            applyPartialConversion(mod, convTarget, std::move(patternsCast))))
       return signalPassFailure();
   }
 };
 
 } // namespace
-
 
 std::unique_ptr<OperationPass<ModuleOp>> triton::createConvertScanOpPass() {
   return std::make_unique<ConvertScanOpPass>();

@@ -5,7 +5,6 @@ import subprocess
 import platform
 import importlib.util
 import sys
-import functools
 from dataclasses import dataclass
 from pathlib import Path
 import time
@@ -14,22 +13,13 @@ from triton.runtime.cache import get_cache_manager
 from triton.runtime.build import compile_module_from_src
 from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
-from . import (
-    get_spine_triton_opt_path,
-    dump_ir_if_needed,
-    get_llvm_bin_path,
-    get_spine_mlir_opt_path,
-    extract_kernel_name,
-    get_cpu_name_from_arch_id,
-    get_spine_mlir_cc_debug
-)
-
+from . import (get_cpu_name_from_arch_id, get_spine_mlir_cc_debug)
 
 dirname = os.path.dirname(os.path.realpath(__file__))
 include_dir = os.path.join(dirname, "include")
 
-
 # -------------------- Utility Functions ----------------------------
+
 
 def _ty_to_cpp(ty):
     if ty[0] == "*":
@@ -85,30 +75,18 @@ def _generate_launcher(constants, signature, smt_parallel_inside=False, kernel_n
     # Check if kernel-level proton capture is enabled at compile time
     enable_proton_kernel_capture = os.environ.get("PROTON_KERNEL_CAPTURE", "0") != "0"
 
-    arg_decls = ", ".join(
-        f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
-    args_format = "".join(
-        [_format_of(_extracted_type(ty)) for ty in signature.values()]
-    )
+    arg_decls = ", ".join(f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
+    args_format = "".join([_format_of(_extracted_type(ty)) for ty in signature.values()])
     format = "iiiKKOOOO" + args_format
-    args_list = (
-        ", " + ", ".join(f"&_arg{i}" for i, ty in signature.items())
-        if len(signature) > 0
-        else ""
-    )
+    args_list = (", " + ", ".join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else "")
 
     kernel_arg_decls = ", ".join(
-        _ty_to_cpp(ty) if ty[0] != "*" else f"int64_t, void*"
-        for i, ty in signature.items()
-        if ty != "constexpr"
-    )
+        _ty_to_cpp(ty) if ty[0] != "*" else "int64_t, void*" for i, ty in signature.items() if ty != "constexpr")
     kernel_arg_decls += ", " if kernel_arg_decls else ""
 
-    kernel_parameters = ", ".join(
-        f"static_cast<{_ty_to_cpp(ty)}>(arg{i})" if ty[0] != "*" else f"0, &ptr_arg{i}"
-        for i, ty in signature.items()
-        if ty != "constexpr"
-    )
+    kernel_parameters = ", ".join(f"static_cast<{_ty_to_cpp(ty)}>(arg{i})" if ty[0] != "*" else f"0, &ptr_arg{i}"
+                                  for i, ty in signature.items()
+                                  if ty != "constexpr")
     kernel_parameters += ", " if kernel_parameters else ""
 
     smt_parallel_inside_arg = "constexpr bool smt_parallel_inside = {};".format(
@@ -129,6 +107,7 @@ def _generate_launcher(constants, signature, smt_parallel_inside=False, kernel_n
 #include <stdexcept>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <string.h>
 #include "ExecutionEngine/CRunnerUtils.h"
 #include "ExecutionEngine/CRunnerUtils.cpp"
 
@@ -211,28 +190,44 @@ static void _launch(int gridX, int gridY, int gridZ, int64_t stream, kernel_ptr_
   {'proton_enter_kernel(KERNEL_NAME, gridX, gridY, gridZ);' if enable_proton_kernel_capture else ''}
   int64_t stream_threads = spine_get_stream_threads();
   int64_t gridX_out = (gridX + stream_threads - 1) / stream_threads;
+  const char* force_nested_dispatch_1d_env = getenv("SPINE_TRITON_FORCE_NESTED_DISPATCH_1D");
+  bool force_nested_dispatch_1d =
+      force_nested_dispatch_1d_env != nullptr && strcmp(force_nested_dispatch_1d_env, "0") != 0;
+  // 1D grid kernels are sensitive to pid(0) mapping; keep a safe one-level mapping by default.
+  bool use_safe_pid_mapping = (gridY == 1 && gridZ == 1 && !force_nested_dispatch_1d);
   {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
             for i, ty in signature.items() if i not in constants and ty[0] == "*")}
-  if constexpr (!smt_parallel_inside) {{
-    mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
-      int x_out = block[0];
-      int y_out = block[1];
-      int z_out = block[2];
-      int64_t current_stream = spine_require_stream();
-      mlir::speir::spineStreamDispatch(reinterpret_cast<void*>(current_stream),
-      [&] (const std::array<int64_t, 3> & cur_grid) {{
-        int x = cur_grid[0] + x_out * stream_threads;
-        if (x >= gridX) {{
-            return;
-        }}
-        (*kernel_ptr)({kernel_parameters}
-                   gridX, gridY, gridZ, x, y_out, z_out);
-      }},
-        {{stream_threads, 1, 1}});
+    if constexpr (!smt_parallel_inside) {{
+        if (use_safe_pid_mapping) {{
+            mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
+                int x = block[0];
+                int y = block[1];
+                int z = block[2];
+                (*kernel_ptr)({kernel_parameters}
+                                     gridX, gridY, gridZ, x, y, z);
+            }},
+             {{gridX, gridY, gridZ}});
+        }} else {{
+            mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
+                int x_out = block[0];
+                int y_out = block[1];
+                int z_out = block[2];
+                int64_t current_stream = spine_require_stream();
+                mlir::speir::spineStreamDispatch(reinterpret_cast<void*>(current_stream),
+                [&] (const std::array<int64_t, 3> & cur_grid) {{
+                    int x = cur_grid[0] + x_out * stream_threads;
+                    if (x >= gridX) {{
+                            return;
+                    }}
+                    (*kernel_ptr)({kernel_parameters}
+                                         gridX, gridY, gridZ, x, y_out, z_out);
+                }},
+                    {{stream_threads, 1, 1}});
 
-      spine_release_stream(current_stream);
-    }},
-       {{gridX_out, gridY, gridZ}});
+                spine_release_stream(current_stream);
+            }},
+                 {{gridX_out, gridY, gridZ}});
+        }}
   }} else {{
     mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
       int x = block[0];
@@ -332,9 +327,7 @@ def compile_module(src, name):
     if platform.system() == "Windows":
         py_include_dir = os.path.join(sys.base_prefix, "include")
         py_lib_dir = os.path.join(sys.base_prefix, "libs")
-        py_lib = "{name}{major}{minor}.lib".format(
-            name="python", major=py_version.major, minor=py_version.minor
-        )
+        py_lib = "{name}{major}{minor}.lib".format(name="python", major=py_version.major, minor=py_version.minor)
     else:
         py_include_dir = os.path.join(
             sys.base_prefix,
@@ -342,9 +335,7 @@ def compile_module(src, name):
             f"python{sys.version_info.major}.{sys.version_info.minor}",
         )
         py_lib_dir = os.path.join(sys.base_prefix, "lib")
-        py_lib = "{name}{major}.{minor}".format(
-            name="python", major=py_version.major, minor=py_version.minor
-        )
+        py_lib = "{name}{major}.{minor}".format(name="python", major=py_version.major, minor=py_version.minor)
     cpu_backend_path = Path(__file__).resolve().parent
     include_dir = os.path.join(cpu_backend_path, "include")
     spine_opt_debug = get_spine_mlir_cc_debug()
@@ -362,21 +353,19 @@ def compile_module(src, name):
                 so_path = os.path.join(tmpdir, "kernel.pyd")
                 Path(launcher_src_path).write_text(src)
                 # Compile it together.
-                subprocess.check_call(
-                    [
-                        "cl",
-                        "/LD",
-                        "/std:c++17",
-                        launcher_src_path,
-                        f"-I{py_include_dir}",
-                        f"-I{include_dir}",
-                        "/link",
-                        f"/LIBPATH:{py_lib_dir}",
-                        "/link",
-                        f"{py_lib}",
-                        f"/OUT:{so_path}",
-                    ]
-                )
+                subprocess.check_call([
+                    "cl",
+                    "/LD",
+                    "/std:c++17",
+                    launcher_src_path,
+                    f"-I{py_include_dir}",
+                    f"-I{include_dir}",
+                    "/link",
+                    f"/LIBPATH:{py_lib_dir}",
+                    "/link",
+                    f"{py_lib}",
+                    f"/OUT:{so_path}",
+                ])
             else:
                 launcher_src_path = os.path.join(tmpdir, "main.cxx")
                 so_path = os.path.join(tmpdir, "kernel.so")
@@ -384,15 +373,11 @@ def compile_module(src, name):
                 Path(launcher_src_path).write_text(src)
 
                 with open(launcher_src_path, "rb") as f:
-                    launcher_src_path = cache.put(
-                        f.read(), os.path.basename(launcher_src_path), binary=False
-                    )
+                    launcher_src_path = cache.put(f.read(), os.path.basename(launcher_src_path), binary=False)
 
                 gcc_flags = []
                 if cpu_arch == "riscv64":
-                    gcc_flags.extend(
-                        ["-march=rv64gcv_zfh_zba_zicbop_zihintpause", "-mabi=lp64d"]
-                    )
+                    gcc_flags.extend(["-march=rv64gcv_zfh_zba_zicbop_zihintpause", "-mabi=lp64d"])
                 if spine_opt_debug:
                     gcc_flags.append("-g")
                     gcc_flags.append("-O0")
@@ -400,22 +385,20 @@ def compile_module(src, name):
                     gcc_flags.append("-O3")
 
                 # Compile it together.
-                subprocess.check_call(
-                    [
-                        "g++",
-                        "-std=c++17",
-                        *gcc_flags,
-                        launcher_src_path,
-                        f"-I{py_include_dir}",
-                        f"-I{include_dir}",
-                        f"-L{py_lib_dir}",
-                        "-shared",
-                        f"-l{py_lib}",
-                        "-fPIC",
-                        "-o",
-                        so_path,
-                    ]
-                )
+                subprocess.check_call([
+                    "g++",
+                    "-std=c++17",
+                    *gcc_flags,
+                    launcher_src_path,
+                    f"-I{py_include_dir}",
+                    f"-I{include_dir}",
+                    f"-L{py_lib_dir}",
+                    "-shared",
+                    f"-l{py_lib}",
+                    "-fPIC",
+                    "-o",
+                    so_path,
+                ])
 
             with open(so_path, "rb") as f:
                 cache_path = cache.put(f.read(), filename, binary=True)
@@ -440,6 +423,7 @@ class AICPUTarget(GPUTarget):
 
 
 class CPUUtils(object):
+
     def __new__(cls):
         if not hasattr(cls, "instance"):
             cls.instance = super(CPUUtils, cls).__new__(cls)
@@ -481,18 +465,19 @@ class CPUUtils(object):
 
 
 class CPULauncher(object):
+
     def __init__(self, src, metadata):
         constants = src.constants if hasattr(src, "constants") else dict()
-        def cst_key(i): return src.fn.arg_names.index(
-            i) if isinstance(i, str) else i
+
+        def cst_key(i):
+            return src.fn.arg_names.index(i) if isinstance(i, str) else i
+
         constants = {cst_key(key): value for key, value in constants.items()}
-        signature = {cst_key(key): value for key,
-                     value in src.signature.items()}
+        signature = {cst_key(key): value for key, value in src.signature.items()}
         smt_parallel_inside = metadata.smt_parallel_inside
         # Get kernel name for auto proton capture
         kernel_name = src.fn.__name__ if hasattr(src, 'fn') and hasattr(src.fn, '__name__') else "unknown_kernel"
-        launcher_src = _generate_launcher(
-            constants, signature, smt_parallel_inside, kernel_name)
+        launcher_src = _generate_launcher(constants, signature, smt_parallel_inside, kernel_name)
         mod = compile_module(launcher_src, "__spine_triton_kernel_launcher")
         self.launch = mod.launch
 
@@ -537,9 +522,7 @@ class CPUDeviceInterface:
 
     def enable_hook_timing(self):
         self.use_hooks = True
-        triton.compiler.CompiledKernel.launch_enter_hook = (
-            lambda arg: self._enter_hook()
-        )
+        triton.compiler.CompiledKernel.launch_enter_hook = (lambda arg: self._enter_hook())
         triton.compiler.CompiledKernel.launch_exit_hook = lambda arg: self._exit_hook()
 
     def synchronize(self):
@@ -597,11 +580,8 @@ class CPUDriver(DriverBase):
         return
 
     def get_current_target(self):
-        return AICPUTarget("cpu", self.cpu_arch, 0, self.num_cores,
-                           self.num_of_stream_threads,
-                           self.current_arch_id,
-                           self.num_of_stream_threads,
-                           self.force_vector_interleave)
+        return AICPUTarget("cpu", self.cpu_arch, 0, self.num_cores, self.num_of_stream_threads, self.current_arch_id,
+                           self.num_of_stream_threads, self.force_vector_interleave)
 
     def get_active_torch_device(self):
         import torch

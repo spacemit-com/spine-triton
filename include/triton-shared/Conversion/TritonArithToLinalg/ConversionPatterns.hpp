@@ -2844,6 +2844,135 @@ class ConvertExternSpecialMath
 public:
   using OpConversionPattern::OpConversionPattern;
 
+private:
+  enum class DivRoundingMode { RN, RZ, RD, RU };
+
+  static std::optional<DivRoundingMode> getDivRoundingMode(StringRef symbol) {
+    return llvm::StringSwitch<std::optional<DivRoundingMode>>(symbol)
+        .Case("linalg.div_rn", DivRoundingMode::RN)
+        .Case("linalg.div_rz", DivRoundingMode::RZ)
+        .Case("linalg.div_rd", DivRoundingMode::RD)
+        .Case("linalg.div_ru", DivRoundingMode::RU)
+        .Default(std::nullopt);
+  }
+
+  static LogicalResult
+  validateBinaryFloatOp(triton::ExternElementwiseOp op, ValueRange operands,
+                        RankedTensorType outputType,
+                        ConversionPatternRewriter &rewriter, StringRef opName) {
+    if (operands.size() != 2) {
+      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+        diag << opName << " expects exactly two inputs";
+      });
+    }
+
+    auto lhsType = dyn_cast<RankedTensorType>(operands[0].getType());
+    auto rhsType = dyn_cast<RankedTensorType>(operands[1].getType());
+    if (!lhsType || !rhsType) {
+      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+        diag << opName << " lowering requires ranked tensor operands";
+      });
+    }
+
+    if (lhsType.getShape() != rhsType.getShape() ||
+        lhsType.getShape() != outputType.getShape()) {
+      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+        diag << opName << " lowering requires matching operand/result shapes";
+      });
+    }
+
+    auto lhsElemType = lhsType.getElementType();
+    auto rhsElemType = rhsType.getElementType();
+    auto outputElemType = outputType.getElementType();
+    if (lhsElemType != rhsElemType || lhsElemType != outputElemType) {
+      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+        diag << opName
+             << " lowering requires matching operand/result element types";
+      });
+    }
+
+    if (!isa<FloatType>(lhsElemType)) {
+      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+        diag << opName << " lowering only supports float element types";
+      });
+    }
+
+    return success();
+  }
+
+  static LogicalResult validateDivLikeOp(triton::ExternElementwiseOp op,
+                                         ValueRange operands,
+                                         RankedTensorType outputType,
+                                         ConversionPatternRewriter &rewriter) {
+    if (operands.size() != 2) {
+      return rewriter.notifyMatchFailure(
+          op, "linalg.div_r* expects exactly two inputs");
+    }
+
+    auto lhsType = dyn_cast<RankedTensorType>(operands[0].getType());
+    auto rhsType = dyn_cast<RankedTensorType>(operands[1].getType());
+    if (!lhsType || !rhsType) {
+      return rewriter.notifyMatchFailure(
+          op, "linalg.div_r* lowering requires ranked tensor operands");
+    }
+
+    if (lhsType.getShape() != rhsType.getShape() ||
+        lhsType.getShape() != outputType.getShape()) {
+      return rewriter.notifyMatchFailure(
+          op, "linalg.div_r* lowering requires matching operand/result "
+              "shapes");
+    }
+
+    auto lhsElemType = lhsType.getElementType();
+    auto rhsElemType = rhsType.getElementType();
+    auto outputElemType = outputType.getElementType();
+    if (lhsElemType != rhsElemType || lhsElemType != outputElemType) {
+      return rewriter.notifyMatchFailure(
+          op, "linalg.div_r* lowering requires matching operand/result "
+              "element types");
+    }
+
+    if (!isa<FloatType, IntegerType>(lhsElemType)) {
+      return rewriter.notifyMatchFailure(
+          op, "linalg.div_r* lowering only supports integer or float "
+              "element types");
+    }
+
+    return success();
+  }
+
+  static Value buildIntegerDivOp(OpBuilder &b, Location loc, Value lhs,
+                                 Value rhs, IntegerType intType) {
+    if (intType.isUnsigned()) {
+      return arith::DivUIOp::create(b, loc, lhs, rhs);
+    }
+    return arith::DivSIOp::create(b, loc, lhs, rhs);
+  }
+
+  static Value buildFloatDivOp(OpBuilder &b, Location loc, Value lhs, Value rhs,
+                               DivRoundingMode mode) {
+    Value quotient = arith::DivFOp::create(b, loc, lhs, rhs);
+    switch (mode) {
+    case DivRoundingMode::RN:
+      return quotient;
+    case DivRoundingMode::RZ:
+      return math::TruncOp::create(b, loc, quotient);
+    case DivRoundingMode::RD:
+      return math::FloorOp::create(b, loc, quotient);
+    case DivRoundingMode::RU:
+      return math::CeilOp::create(b, loc, quotient);
+    }
+    llvm_unreachable("unsupported div rounding mode");
+  }
+
+  static Value buildDivLikeOp(OpBuilder &b, Location loc, Value lhs, Value rhs,
+                              DivRoundingMode mode) {
+    if (auto intType = dyn_cast<IntegerType>(lhs.getType())) {
+      return buildIntegerDivOp(b, loc, lhs, rhs, intType);
+    }
+    return buildFloatDivOp(b, loc, lhs, rhs, mode);
+  }
+
   LogicalResult
   matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -2855,15 +2984,20 @@ public:
     bool isCos = (symbol == "math.cos");
     bool isSin = (symbol == "math.sin");
     bool isTrunc = (symbol == "math.trunc");
+    bool isAtan2 = (symbol == "math.atan2");
+    auto divRoundingMode = getDivRoundingMode(symbol);
+    bool isDivLike = divRoundingMode.has_value();
 
-    if (!isIsNaN && !isIsInf && !isFinite && !isCos && !isSin && !isTrunc) {
+    if (!isIsNaN && !isIsInf && !isFinite && !isCos && !isSin && !isTrunc &&
+        !isAtan2 && !isDivLike) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
         diag << "unsupported extern operation: " << symbol;
       });
     }
 
     Location loc = op.getLoc();
-    Value input = adaptor.getOperands().front();
+    auto operands = adaptor.getOperands();
+    Value input = operands.front();
 
     auto inputType = dyn_cast<RankedTensorType>(input.getType());
     if (!inputType) {
@@ -2872,11 +3006,13 @@ public:
     }
 
     auto outputType = cast<RankedTensorType>(op.getType());
-    auto floatType = dyn_cast<FloatType>(inputType.getElementType());
-    if (!floatType) {
+    auto outputElemType = outputType.getElementType();
+    auto inputElemType = inputType.getElementType();
+    auto floatType = dyn_cast<FloatType>(inputElemType);
+
+    if (!isDivLike && !floatType) {
       return rewriter.notifyMatchFailure(op, "element type is not float");
     }
-    auto outputElemType = outputType.getElementType();
 
     if ((isCos || isSin || isTrunc) &&
         (!isa<FloatType>(outputElemType) ||
@@ -2887,12 +3023,25 @@ public:
               "matching input element type");
     }
 
+    if (isDivLike) {
+      if (failed(validateDivLikeOp(op, operands, outputType, rewriter))) {
+        return failure();
+      }
+    } else if (isAtan2) {
+      if (failed(validateBinaryFloatOp(op, operands, outputType, rewriter,
+                                       "math.atan2"))) {
+        return failure();
+      }
+    }
+
     Value outputTensor = tensor::EmptyOp::create(
         rewriter, loc, outputType.getShape(), outputElemType);
 
     AffineMap identityMap = AffineMap::getMultiDimIdentityMap(
         inputType.getRank(), rewriter.getContext());
-    SmallVector<AffineMap> indexingMaps = {identityMap, identityMap};
+    SmallVector<AffineMap> indexingMaps;
+    indexingMaps.append(operands.size(), identityMap);
+    indexingMaps.push_back(identityMap);
 
     SmallVector<utils::IteratorType> iteratorTypes(
         inputType.getRank(), utils::IteratorType::parallel);
@@ -2902,7 +3051,7 @@ public:
     linalg::GenericOp::build(
         rewriter, state,
         /*resultTensorTypes=*/TypeRange{outputType},
-        /*inputs=*/ValueRange{input},
+        /*inputs=*/operands,
         /*outputs=*/ValueRange{outputTensor},
         /*indexingMaps=*/indexingMaps,
         /*iteratorTypes=*/iteratorTypes,
@@ -2940,6 +3089,11 @@ public:
             outputVal = math::CosOp::create(b, loc, inputVal);
           } else if (isTrunc) {
             outputVal = math::TruncOp::create(b, loc, inputVal);
+          } else if (isAtan2) {
+            outputVal = math::Atan2Op::create(b, loc, args[0], args[1]);
+          } else if (isDivLike) {
+            outputVal =
+                buildDivLikeOp(b, loc, args[0], args[1], *divRoundingMode);
           } else {
             assert(isSin && "expected math.sin path");
             outputVal = math::SinOp::create(b, loc, inputVal);

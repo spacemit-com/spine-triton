@@ -197,6 +197,39 @@ static Value rewriteGatherScatterPtrElement(
   return castOp.getResult();
 }
 
+static bool hasWraparoundGatherOffset(tts::MakeGatherScatterTensorPtrOp op,
+                                      int gatherDim,
+                                      ConversionPatternRewriter &rewriter) {
+  Value gatherOffset = op.getGatherScatterOffset();
+  if (!gatherOffset)
+    return false;
+
+  auto offsetTy = dyn_cast<RankedTensorType>(gatherOffset.getType());
+  if (!offsetTy || offsetTy.getRank() != 1)
+    return false;
+
+  auto fromElements = gatherOffset.getDefiningOp<tensor::FromElementsOp>();
+  if (!fromElements)
+    return false;
+
+  auto mixedSizes = op.getMixedSizes();
+  if (gatherDim >= static_cast<int>(mixedSizes.size()))
+    return false;
+  Value gatherDimSize = getValueOrCreateConstantIndexOp(rewriter, op.getLoc(),
+                                                        mixedSizes[gatherDim]);
+
+  bool sawRem = false;
+  for (Value element : fromElements.getElements()) {
+    auto rem = element.getDefiningOp<arith::RemSIOp>();
+    if (!rem)
+      return false;
+    if (rem.getRhs() != gatherDimSize)
+      return false;
+    sawRem = true;
+  }
+  return sawRem;
+}
+
 // Fill load destination with other value for mask.
 static void fillWithValue(Location loc, Value alloc, Value other,
                           ArrayRef<int64_t> shape,
@@ -1115,6 +1148,7 @@ private:
             .getResult();
 
     int gatherDim = ptr.getGatherScatterDim();
+    bool hasWraparound = hasWraparoundGatherOffset(ptr, gatherDim, rewriter);
 
     auto offsets = ptr.getMixedOffsets();
     auto strides = ptr.getMixedStrides();
@@ -1182,6 +1216,27 @@ private:
     Value inductionVar = loop.getInductionVar();
     auto gatherOffsetElt = tensor::ExtractOp::create(
         rewriter, loc, gatherOffset, ValueRange{inductionVar});
+
+    if (hasWraparound) {
+      SmallVector<Value> srcIndices;
+      auto baseMixedOffsets = ptr.getMixedOffsets();
+      for (int i = 0, e = ptr.getSizes().size(); i < e; ++i) {
+        Value idx =
+            getValueOrCreateConstantIndexOp(rewriter, loc, baseMixedOffsets[i]);
+        if (i == gatherDim)
+          idx = arith::AddIOp::create(rewriter, loc, idx,
+                                      gatherOffsetElt.getResult());
+        srcIndices.push_back(idx);
+      }
+
+      SmallVector<Value> dstIndices(resultType.getRank(), lowerBound);
+      dstIndices[gatherDim] = inductionVar;
+
+      Value loaded =
+          memref::LoadOp::create(rewriter, loc, memRefPtr, srcIndices);
+      memref::StoreOp::create(rewriter, loc, loaded, alloc, dstIndices);
+      return success();
+    }
 
     // reinterpret_cast to current row as memRefPtr[gatherOffsetElt].
     Value srcPtr = rewriteGatherScatterPtrElement(staticSizes, ptr, memRefPtr,
@@ -1277,6 +1332,7 @@ private:
             .getResult();
 
     int gatherDim = ptr.getGatherScatterDim();
+    bool hasWraparound = hasWraparoundGatherOffset(ptr, gatherDim, rewriter);
 
     auto offsets = ptr.getMixedOffsets();
     auto strides = ptr.getMixedStrides();
@@ -1325,6 +1381,29 @@ private:
 
     auto gatherOffsetElt = tensor::ExtractOp::create(
         rewriter, loc, gatherOffset, ValueRange{inductionVar});
+
+    if (hasWraparound) {
+      SmallVector<Value> srcIndices(
+          cast<RankedTensorType>(stVal.getType()).getRank(), lowerBound);
+      srcIndices[gatherDim] = inductionVar;
+      Value storeVal =
+          tensor::ExtractOp::create(rewriter, loc, stVal, srcIndices);
+
+      SmallVector<Value> dstIndices;
+      auto baseMixedOffsets = ptr.getMixedOffsets();
+      for (int i = 0, e = ptr.getSizes().size(); i < e; ++i) {
+        Value idx =
+            getValueOrCreateConstantIndexOp(rewriter, loc, baseMixedOffsets[i]);
+        if (i == gatherDim)
+          idx = arith::AddIOp::create(rewriter, loc, idx,
+                                      gatherOffsetElt.getResult());
+        dstIndices.push_back(idx);
+      }
+
+      memref::StoreOp::create(rewriter, loc, storeVal, memRefPtr, dstIndices);
+      rewriter.eraseOp(op);
+      return success();
+    }
 
     // Create extract_slice stVal[inductionVar].
     unsigned rank = ptr.getSizes().size();
