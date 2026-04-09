@@ -34,8 +34,11 @@
 using namespace mlir;
 using namespace triton;
 
-#define GEN_PASS_CLASSES
+namespace mlir::triton {
+#define GEN_PASS_DECL
+#define GEN_PASS_DEF_RECONCILEPTRCASTS
 #include "triton-shared/Conversion/TritonToLinalgExperimental/Passes.h.inc"
+} // namespace mlir::triton
 
 namespace {
 
@@ -61,7 +64,8 @@ struct SimplifyUnrealizedCast
       }
 
       auto prevInput = unrealizedCast.getInputs().front();
-      auto newCast = UnrealizedConversionCastOp::create(rewriter, op->getLoc(), op->getResultTypes(), ValueRange{prevInput});
+      auto newCast = UnrealizedConversionCastOp::create(
+          rewriter, op->getLoc(), op->getResultTypes(), ValueRange{prevInput});
 
       rewriter.replaceOp(op, newCast);
       return success();
@@ -89,9 +93,11 @@ struct FromMemrefConverter
     if (unrankedInput && isa<triton::PointerType, ptr::PtrType>(outType)) {
       // from_memref only takes ranked memref, cast the unranked memref to
       // ranked memref first.
-      auto rankedMemref = memref::CastOp::create(rewriter, op.getLoc(), MemRefType::get({1}, unrankedInput.getElementType()),
-          input);
-      auto memrefToPtr = tptr::FromMemrefOp::create(rewriter, op->getLoc(),
+      auto rankedMemref = memref::CastOp::create(
+          rewriter, op.getLoc(),
+          MemRefType::get({1}, unrankedInput.getElementType()), input);
+      auto memrefToPtr = tptr::FromMemrefOp::create(
+          rewriter, op->getLoc(),
           ptr::PtrType::get(
               rewriter.getContext(),
               tptr::DefaultMemorySpaceAttr::get(rewriter.getContext())),
@@ -125,12 +131,15 @@ struct ToMemrefConverter : public OpRewritePattern<UnrealizedConversionCastOp> {
       // to_memref can only cast to ranked static shape memref, we have to cast
       // the resulting memref back to unranked
       auto elemType = outUnrankedMemrefType.getElementType();
-      auto ptrToMemref = tptr::ToMemrefOp::create(rewriter, op->getLoc(), MemRefType::get({1}, elemType), input);
+      auto ptrToMemref = tptr::ToMemrefOp::create(
+          rewriter, op->getLoc(), MemRefType::get({1}, elemType), input);
 
       SmallVector<OpFoldResult> sizes = {rewriter.getIndexAttr(1)};
       SmallVector<OpFoldResult> newStrides = {rewriter.getIndexAttr(1)};
-      auto newUnrankedMemref = memref::ReinterpretCastOp::create(rewriter, op->getLoc(), MemRefType::get({ShapedType::kDynamic}, elemType),
-          ptrToMemref, rewriter.getIndexAttr(0), sizes, newStrides);
+      auto newUnrankedMemref = memref::ReinterpretCastOp::create(
+          rewriter, op->getLoc(),
+          MemRefType::get({ShapedType::kDynamic}, elemType), ptrToMemref,
+          rewriter.getIndexAttr(0), sizes, newStrides);
 
       rewriter.replaceAllUsesWith(output, newUnrankedMemref);
       rewriter.eraseOp(op);
@@ -142,7 +151,7 @@ struct ToMemrefConverter : public OpRewritePattern<UnrealizedConversionCastOp> {
 };
 
 class ReconcilePtrCastsPass
-    : public ReconcilePtrCastsBase<ReconcilePtrCastsPass> {
+    : public triton::impl::ReconcilePtrCastsBase<ReconcilePtrCastsPass> {
 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {

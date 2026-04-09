@@ -1,75 +1,77 @@
 //===----------------------------------------------------------------------===//
 //
 // SPDX-FileCopyrightText: Copyright (c) 2025 SpacemiT. ALL rights reserved.
-// SPDX-FileCopyrightText: Copyright (c) Microsoft Corporation. All rights reserved.
-// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) Microsoft Corporation. All rights
+// reserved. SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Ptr/IR/PtrDialect.h"
+#include "proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
+#include "triton-shared/Conversion/AddTargetDescription/AddTargetDescription.h"
 #include "triton-shared/Conversion/StructuredToMemref/StructuredToMemref.h"
 #include "triton-shared/Conversion/TritonArithToLinalg/TritonArithToLinalg.h"
 #include "triton-shared/Conversion/TritonPtrToMemref/TritonPtrToMemref.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/CollapseShape.h"
-#include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcilePtrCasts.h"
+#include "triton-shared/Conversion/TritonToLinalgExperimental/ConvertScanOp.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcileLlvmPtrCasts.h"
+#include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcilePtrCasts.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ScfbufferStandardized.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimental.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/TritonToPtr.h"
 #include "triton-shared/Conversion/TritonToStructured/TritonToStructured.h"
 #include "triton-shared/Conversion/TritonToUnstructured/TritonToUnstructured.h"
 #include "triton-shared/Conversion/UnstructuredToMemref/UnstructuredToMemref.h"
+#include "triton-shared/Conversion/XSMTToLinalg/XSMTToLinalg.h"
 #include "triton-shared/Dialect/TPtr/IR/TPtrDialect.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
-#include "triton-shared/Conversion/AddTargetDescription/AddTargetDescription.h"
-#include "triton-shared/Conversion/TritonToLinalgExperimental/ConvertScanOp.h"
-#include "triton-shared/Conversion/XSMTToLinalg/XSMTToLinalg.h"
-#include "mlir/Dialect/DLTI/DLTI.h"
-#include "proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
 
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Pass/PassManager.h"
-#include "mlir/Transforms/Passes.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Support/LLVM.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Support/LLVM.h"
+#include "mlir/Transforms/Passes.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 
 using namespace mlir;
 using namespace triton;
 
-#define GEN_PASS_CLASSES
+namespace mlir::triton {
+#define GEN_PASS_DECL_TRITONTOLINALGEXPERIMENTAL
+#define GEN_PASS_DEF_TRITONTOLINALGEXPERIMENTAL
 #include "triton-shared/Conversion/TritonToLinalgExperimental/Passes.h.inc"
+} // namespace mlir::triton
 
 namespace {
 
 class TritonToLinalgExperimentalPass
-    : public TritonToLinalgExperimentalBase<TritonToLinalgExperimentalPass> {
+    : public triton::impl::TritonToLinalgExperimentalBase<
+          TritonToLinalgExperimentalPass> {
 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry
-        .insert<func::FuncDialect, arith::ArithDialect, math::MathDialect,
-                linalg::LinalgDialect, affine::AffineDialect,
-                scf::SCFDialect, tensor::TensorDialect,
-                bufferization::BufferizationDialect, memref::MemRefDialect,
-                ttx::TritonTilingExtDialect, tts::TritonStructuredDialect,
-                tptr::TPtrDialect, ptr::PtrDialect, DLTIDialect, LLVM::LLVMDialect,
-                vector::VectorDialect, xsmt::XSMTDialect,
-                triton::proton::ProtonDialect>();
+    registry.insert<func::FuncDialect, arith::ArithDialect, math::MathDialect,
+                    linalg::LinalgDialect, affine::AffineDialect,
+                    scf::SCFDialect, tensor::TensorDialect,
+                    bufferization::BufferizationDialect, memref::MemRefDialect,
+                    ttx::TritonTilingExtDialect, tts::TritonStructuredDialect,
+                    tptr::TPtrDialect, ptr::PtrDialect, DLTIDialect,
+                    LLVM::LLVMDialect, vector::VectorDialect, xsmt::XSMTDialect,
+                    triton::proton::ProtonDialect>();
   }
 
   void runOnOperation() override {
     auto moduleOp = getOperation();
     PassManager pm(&getContext(), moduleOp.getOperationName());
 
-    pm.addPass(createTritonToStructuredPass(
-        enableMakeGatherScatterTensorPtr));
+    pm.addPass(createTritonToStructuredPass(enableMakeGatherScatterTensorPtr));
 
     // Erase dead code and fold constants created during lowering
     pm.addPass(createCSEPass());
@@ -123,7 +125,6 @@ public:
       if (op->use_empty())
         op->erase();
     }
-
   }
 };
 } // namespace

@@ -26,8 +26,11 @@
 using namespace mlir;
 using namespace triton;
 
-#define GEN_PASS_CLASSES
+namespace mlir::triton {
+#define GEN_PASS_DECL
+#define GEN_PASS_DEF_TRITONTOLINALG
 #include "triton-shared/Conversion/TritonToLinalg/Passes.h.inc"
+} // namespace mlir::triton
 
 namespace {
 
@@ -49,7 +52,8 @@ public:
   }
 };
 
-class TritonToLinalgPass : public TritonToLinalgBase<TritonToLinalgPass> {
+class TritonToLinalgPass
+    : public triton::impl::TritonToLinalgBase<TritonToLinalgPass> {
 
   static auto constexpr LAUNCH_GRID_RANK = getMaxEnumValForProgramIDDim() + 1;
   static unsigned int constexpr TRITON_PROGRAM_INFO_ARG_COUNT =

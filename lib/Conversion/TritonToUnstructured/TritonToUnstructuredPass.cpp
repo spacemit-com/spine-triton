@@ -177,8 +177,11 @@
 using namespace mlir;
 using namespace triton;
 
-#define GEN_PASS_CLASSES
+namespace mlir::triton {
+#define GEN_PASS_DECL
+#define GEN_PASS_DEF_TRITONTOUNSTRUCTURED
 #include "triton-shared/Conversion/TritonToUnstructured/Passes.h.inc"
+} // namespace mlir::triton
 
 namespace {
 
@@ -217,7 +220,7 @@ static unsigned int getBitWidth(Type type) {
 }
 
 class TritonToUnstructuredPass
-    : public TritonToUnstructuredBase<TritonToUnstructuredPass> {
+    : public triton::impl::TritonToUnstructuredBase<TritonToUnstructuredPass> {
 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -252,7 +255,8 @@ public:
         }
 
         OpBuilder b(func->getRegion(0));
-        Value zero = arith::ConstantOp::create(b, arg.getLoc(),
+        Value zero = arith::ConstantOp::create(
+            b, arg.getLoc(),
             b.getIntegerAttr(IntegerType::get(&getContext(), defaultBitWidth),
                              0));
 
@@ -270,7 +274,8 @@ public:
       }
       auto res = op.getResult();
       OpBuilder b(op);
-      Value zero = arith::ConstantOp::create(b, op.getLoc(),
+      Value zero = arith::ConstantOp::create(
+          b, op.getLoc(),
           b.getIntegerAttr(IntegerType::get(&getContext(), defaultBitWidth),
                            0));
 
@@ -302,7 +307,8 @@ public:
                   // We are converting a pointer to an integer here,
                   // materialized the pointer using the accumulated offset
                   // that we have stored so far.
-                  auto materializedAddPtr = triton::AddPtrOp::create(b, op->getLoc(), offsetInfo.ptrType, offsetInfo.ptr,
+                  auto materializedAddPtr = triton::AddPtrOp::create(
+                      b, op->getLoc(), offsetInfo.ptrType, offsetInfo.ptr,
                       offsetInfo.offset);
 
                   // Change the op to use the "simplified" pointer above.
@@ -318,10 +324,10 @@ public:
                   // if the pointer returning from both branches will have the
                   // same source
                   if (addptr->getParentOfType<scf::IfOp>()) {
-                      Value basePtr = addptr.getPtr();
-                      if (!ptrArgs.contains(basePtr)) {
-                          return failure();
-                      }
+                    Value basePtr = addptr.getPtr();
+                    if (!ptrArgs.contains(basePtr)) {
+                      return failure();
+                    }
                   }
 
                   OpBuilder b{addptr};
@@ -337,16 +343,19 @@ public:
                   auto resWidth = std::max(lhsWidth, rhsWidth);
 
                   if (lhsWidth < resWidth) {
-                    prevOff = arith::ExtSIOp::create(b, loc, getPtrOffsetType(offsetInfo.ptrType, resWidth),
+                    prevOff = arith::ExtSIOp::create(
+                        b, loc, getPtrOffsetType(offsetInfo.ptrType, resWidth),
                         prevOff);
                   }
 
                   if (rhsWidth < resWidth) {
-                    off = arith::ExtSIOp::create(b, loc, getPtrOffsetType(offsetInfo.ptrType, resWidth),
+                    off = arith::ExtSIOp::create(
+                        b, loc, getPtrOffsetType(offsetInfo.ptrType, resWidth),
                         off);
                   }
 
-                  auto accumulatedOff = arith::AddIOp::create(b, loc, getPtrOffsetType(addptr.getType(), resWidth),
+                  auto accumulatedOff = arith::AddIOp::create(
+                      b, loc, getPtrOffsetType(addptr.getType(), resWidth),
                       prevOff, off);
 
                   PtrOffset newOffsetInfo{offsetInfo.ptr, addptr.getType(),
@@ -488,7 +497,8 @@ public:
                   }
                 }
 
-                auto gather = tts::GatherOp::create(b, loc, load.getType(), offsetInfo.ptr, offsetInfo.offset,
+                auto gather = tts::GatherOp::create(
+                    b, loc, load.getType(), offsetInfo.ptr, offsetInfo.offset,
                     load.getMask(), other);
 
                 load->replaceAllUsesWith(gather->getResults());
@@ -497,8 +507,9 @@ public:
               })
               .Case<triton::StoreOp>([&](triton::StoreOp store) {
                 auto offsetInfo = offsetMap.at(store.getPtr());
-                tts::ScatterOp::create(b, loc, offsetInfo.ptr, offsetInfo.offset,
-                                         store.getValue(), store.getMask());
+                tts::ScatterOp::create(b, loc, offsetInfo.ptr,
+                                       offsetInfo.offset, store.getValue(),
+                                       store.getMask());
                 store->erase();
                 return success();
               })
@@ -522,24 +533,26 @@ public:
 
                 if (baseOffType != currOffType) {
                   if (currOffType.isIndex()) {
-                    baseOffset = arith::IndexCastOp::create(b, loc, b.getIndexType(), baseOffset);
+                    baseOffset = arith::IndexCastOp::create(
+                        b, loc, b.getIndexType(), baseOffset);
                   } else if (currOffType.isInteger()) {
                     if (baseOffType.getIntOrFloatBitWidth() <
                         currOffType.getIntOrFloatBitWidth()) {
                       baseOffset = arith::ExtSIOp::create(b, loc, currOffType,
-                                                            baseOffset);
+                                                          baseOffset);
                     } else {
                       // MakeTensorPtrOp only takes i32 offsets, so we need
                       // to truncate if the offsets were already in i64
                       makeTensorPtr.emitWarning(
                           "truncating offsets which may result in data loss");
                       baseOffset = arith::TruncIOp::create(b, loc, currOffType,
-                                                             baseOffset);
+                                                           baseOffset);
                     }
                   }
                 }
 
-                auto accumulatedOffset = arith::AddIOp::create(b, loc, currOffset.getType(), baseOffset, currOffset);
+                auto accumulatedOffset = arith::AddIOp::create(
+                    b, loc, currOffset.getType(), baseOffset, currOffset);
 
                 offsetOpnd.set(accumulatedOffset);
 

@@ -30,8 +30,11 @@
 
 using namespace mlir;
 
-#define GEN_PASS_CLASSES
+namespace mlir::triton {
+#define GEN_PASS_DECL
+#define GEN_PASS_DEF_RECONCILELLVMPTRCASTS
 #include "triton-shared/Conversion/TritonToLinalgExperimental/Passes.h.inc"
+} // namespace mlir::triton
 
 namespace {
 
@@ -126,7 +129,8 @@ private:
 };
 
 class ReconcileLlvmPtrCastsPass
-    : public ReconcileLlvmPtrCastsBase<ReconcileLlvmPtrCastsPass> {
+    : public triton::impl::ReconcileLlvmPtrCastsBase<
+          ReconcileLlvmPtrCastsPass> {
 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {

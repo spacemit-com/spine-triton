@@ -50,7 +50,6 @@
 using namespace mlir;
 using namespace mlir::triton;
 
-#define GEN_PASS_CLASSES
 #include "triton-shared/Conversion/TritonArithToLinalg/Passes.h.inc"
 
 static const std::string WRAP_SIDE_BY_SIDE = "wrap_side_by_side";

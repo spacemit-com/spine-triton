@@ -21,7 +21,6 @@ def Triton_Structured_Dialect : Dialect {
     "triton::TritonDialect"
   ];
 
-  let usePropertiesForAttributes = 1;
 }
 
 //

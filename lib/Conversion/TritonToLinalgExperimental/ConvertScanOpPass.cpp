@@ -28,8 +28,10 @@
 using namespace mlir;
 using namespace triton;
 
-#define GEN_PASS_CLASSES
+namespace mlir::triton {
+#define GEN_PASS_DEF_CONVERTSCANOP
 #include "triton-shared/Conversion/TritonToLinalgExperimental/Passes.h.inc"
+} // namespace mlir::triton
 
 namespace {
 
@@ -499,7 +501,8 @@ public:
   }
 };
 
-struct ConvertScanOpPass : public ConvertScanOpBase<ConvertScanOpPass> {
+struct ConvertScanOpPass
+    : public triton::impl::ConvertScanOpBase<ConvertScanOpPass> {
   using ConvertScanOpBase::ConvertScanOpBase;
 
   ConvertScanOpPass() : ConvertScanOpBase() {}

@@ -37,8 +37,11 @@
 using namespace mlir;
 using namespace triton;
 
-#define GEN_PASS_CLASSES
+namespace mlir::triton {
+#define GEN_PASS_DECL
+#define GEN_PASS_DEF_TRITONPTRTOMEMREF
 #include "triton-shared/Conversion/TritonPtrToMemref/Passes.h.inc"
+} // namespace mlir::triton
 
 namespace {
 
@@ -60,9 +63,9 @@ public:
     });
 
     auto createUnrealizedCast = [&](OpBuilder &builder, Type resultType,
-                                    ValueRange inputs,
-                                    Location loc) -> Value {
-      return UnrealizedConversionCastOp::create(builder, loc, resultType, inputs)
+                                    ValueRange inputs, Location loc) -> Value {
+      return UnrealizedConversionCastOp::create(builder, loc, resultType,
+                                                inputs)
           .getResult(0);
     };
     addSourceMaterialization(createUnrealizedCast);
@@ -70,7 +73,7 @@ public:
 };
 
 class TritonPtrToMemrefPass
-    : public TritonPtrToMemrefBase<TritonPtrToMemrefPass> {
+    : public triton::impl::TritonPtrToMemrefBase<TritonPtrToMemrefPass> {
 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {

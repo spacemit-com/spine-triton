@@ -23,8 +23,11 @@
 using namespace mlir;
 using namespace triton;
 
-#define GEN_PASS_CLASSES
+namespace mlir::triton {
+#define GEN_PASS_DECL
+#define GEN_PASS_DEF_SCFBUFFERSTANDARDIZED
 #include "triton-shared/Conversion/TritonToLinalgExperimental/Passes.h.inc"
+} // namespace mlir::triton
 
 namespace {
 
@@ -57,17 +60,21 @@ struct ConvertFillI1ToI8 : public OpRewritePattern<linalg::FillOp> {
 
     Value extendedInput = arith::ExtUIOp::create(rewriter, loc, i8Type, input);
 
-    auto newFillOp = linalg::FillOp::create(rewriter, loc, ValueRange{extendedInput}, ValueRange{emptyI8});
+    auto newFillOp = linalg::FillOp::create(
+        rewriter, loc, ValueRange{extendedInput}, ValueRange{emptyI8});
     Value filledTensor = newFillOp.getResult(0);
 
-    Value emptyI1 = tensor::EmptyOp::create(rewriter, loc, outputType, dynSizes);
+    Value emptyI1 =
+        tensor::EmptyOp::create(rewriter, loc, outputType, dynSizes);
 
-    Value zeroI8 = arith::ConstantOp::create(rewriter, loc, rewriter.getIntegerAttr(i8Type, 0));
+    Value zeroI8 = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getIntegerAttr(i8Type, 0));
 
     AffineMap identityMap = AffineMap::getMultiDimIdentityMap(
         outputType.getRank(), rewriter.getContext());
 
-    auto genericOp = linalg::GenericOp::create(rewriter, loc,
+    auto genericOp = linalg::GenericOp::create(
+        rewriter, loc,
         /*resultTensorTypes=*/TypeRange{outputType},
         /*inputs=*/ValueRange{filledTensor},
         /*outputs=*/ValueRange{emptyI1},
@@ -77,7 +84,7 @@ struct ConvertFillI1ToI8 : public OpRewritePattern<linalg::FillOp> {
                                          utils::IteratorType::parallel),
         [&](OpBuilder &b, Location loc, ValueRange args) {
           Value cmp = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ne,
-                                              args[0], zeroI8);
+                                            args[0], zeroI8);
           linalg::YieldOp::create(b, loc, cmp);
         });
 
@@ -87,7 +94,8 @@ struct ConvertFillI1ToI8 : public OpRewritePattern<linalg::FillOp> {
 };
 
 struct ScfbufferStandardizedPass
-    : public ScfbufferStandardizedBase<ScfbufferStandardizedPass> {
+    : public triton::impl::ScfbufferStandardizedBase<
+          ScfbufferStandardizedPass> {
 public:
   void runOnOperation() override {
     Operation *module = getOperation();

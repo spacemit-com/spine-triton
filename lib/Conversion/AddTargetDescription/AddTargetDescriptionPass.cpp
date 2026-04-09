@@ -25,13 +25,15 @@
 
 using namespace mlir;
 
-#define GEN_PASS_CLASSES
+namespace mlir::triton {
+#define GEN_PASS_DEF_ADDTARGETDESCRIPTION
 #include "triton-shared/Conversion/AddTargetDescription/Passes.h.inc"
+} // namespace mlir::triton
 
 namespace {
 
 class AddTargetDescriptionPass
-    : public AddTargetDescriptionBase<AddTargetDescriptionPass> {
+    : public triton::impl::AddTargetDescriptionBase<AddTargetDescriptionPass> {
 
 public:
   void runOnOperation() override {
@@ -55,8 +57,9 @@ public:
     moduleOp->removeAttr("tt.arch_id");
 
     SmallVector<mlir::DataLayoutEntryInterface> dlEntries;
-    dlEntries.push_back(mlir::DataLayoutEntryAttr::get(
-        mlir::StringAttr::get(ctx, "arch_id"), mlir::StringAttr::get(ctx, arch_id)));
+    dlEntries.push_back(
+        mlir::DataLayoutEntryAttr::get(mlir::StringAttr::get(ctx, "arch_id"),
+                                       mlir::StringAttr::get(ctx, arch_id)));
     dlEntries.push_back(mlir::DataLayoutEntryAttr::get(
         mlir::StringAttr::get(ctx, "num_threads"),
         mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32), num_threads)));
