@@ -130,7 +130,7 @@ def TTS_MakeTensorPtrOp
   //let hasCanonicalizer = 1;
 }
 
-def TT_IndexTensorLike : AnyTypeOf<[I32Tensor, I64Tensor]>;
+def TT_IndexTensorLike : AnyTypeOf<[I16Tensor, I32Tensor, I64Tensor]>;
 
 def TTS_MakeGatherScatterTensorPtrOp
   : TTS_Op<"make_gather_scatter_tptr", [AttrSizedOperandSegments, Pure]> {
@@ -232,8 +232,8 @@ def TTS_GetStructuredStateOp : TTS_Op<"get_structured_state", [AttrSizedResultSe
   let summary = "Placeholder for the structured pointer states computed during PtrAnalysis.";
   let description = "Used to pass the offsets, origiOffsets, and strides to scf.for op to simplify IR rewrites.";
 
-  let arguments = (ins AnyTypeOf<[TT_PtrLike, I32Tensor, I64Tensor, I1Tensor]>:$input);
-  let results = (outs AnyTypeOf<[TT_PtrLike, I32Tensor, I64Tensor, I1Tensor]>:$structured, Variadic<Index>:$offsets, Variadic<Index>:$origiOffsets, Variadic<Index>:$strides);
+  let arguments = (ins AnyTypeOf<[TT_PtrLike, TT_IndexTensorLike, I1Tensor]>:$input);
+  let results = (outs AnyTypeOf<[TT_PtrLike, TT_IndexTensorLike, I1Tensor]>:$structured, Variadic<Index>:$offsets, Variadic<Index>:$origiOffsets, Variadic<Index>:$strides);
 
   let builders = [
     OpBuilder<(ins "Value":$input)>,

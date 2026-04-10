@@ -23,7 +23,9 @@
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Ptr/IR/PtrAttrs.h"
 #include "mlir/Dialect/Ptr/IR/PtrDialect.h"
+#include "mlir/Dialect/Ptr/IR/PtrOps.h"
 #include "mlir/Dialect/Ptr/IR/PtrTypes.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
@@ -49,7 +51,6 @@
 #include "triton-shared/Analysis/OpFoldResultUtils.h"
 #include "triton-shared/AnalysisStructured/PtrAnalysis.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/TritonToPtr.h"
-#include "triton-shared/Dialect/TPtr/IR/TPtrDialect.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Utils/Utils.h"
 
@@ -58,9 +59,48 @@
 
 #include "llvm/ADT/STLExtras.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+
 #define DEBUG_TYPE "triton-to-ptr"
 
 using namespace mlir;
+
+static ptr::MemorySpaceAttrInterface
+getGenericMemorySpace(MLIRContext *context) {
+  return ptr::GenericSpaceAttr::get(context);
+}
+
+static ptr::MemorySpaceAttrInterface getByteMemorySpace(MLIRContext *context) {
+  return ptr::GenericSpaceAttr::get(context);
+}
+
+static ptr::MemorySpaceAttrInterface getMemorySpaceForTritonPtr(Type type) {
+  if (auto shaped = dyn_cast<ShapedType>(type))
+    type = shaped.getElementType();
+  if (auto ptrType = dyn_cast<triton::PointerType>(type)) {
+    Type pointeeType = ptrType.getPointeeType();
+    if (auto intType = dyn_cast<IntegerType>(pointeeType)) {
+      if (intType.getWidth() == 1)
+        return getByteMemorySpace(type.getContext());
+    }
+    return getGenericMemorySpace(type.getContext());
+  }
+  if (auto memrefType = dyn_cast<BaseMemRefType>(type)) {
+    if (auto memorySpace = dyn_cast_if_present<ptr::MemorySpaceAttrInterface>(
+            memrefType.getMemorySpace()))
+      return memorySpace;
+    return getGenericMemorySpace(type.getContext());
+  }
+  return getGenericMemorySpace(type.getContext());
+}
+
+static ptr::PtrType getPtrTypeForTritonPtr(Type type) {
+  return ptr::PtrType::get(type.getContext(), getMemorySpaceForTritonPtr(type));
+}
+
+static ptr::PtrType getGenericPtrType(MLIRContext *context) {
+  return ptr::PtrType::get(context, getGenericMemorySpace(context));
+}
 
 namespace {
 
@@ -97,10 +137,7 @@ struct EmptyTensorConverter : public OpConversionPattern<tensor::EmptyOp> {
   matchAndRewrite(tensor::EmptyOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     rewriter.replaceOpWithNewOp<tensor::EmptyOp>(
-        op, op.getType().getShape(),
-        ptr::PtrType::get(
-            rewriter.getContext(),
-            tptr::DefaultMemorySpaceAttr::get(rewriter.getContext())));
+        op, op.getType().getShape(), getGenericPtrType(rewriter.getContext()));
     return success();
   }
 };
@@ -189,16 +226,13 @@ struct AddPtrConverter : public OpConversionPattern<triton::AddPtrOp> {
     auto loc = op->getLoc();
     auto pointeeType = cast<triton::PointerType>(op.getType()).getPointeeType();
     auto offsetType = op.getOffset().getType();
-    auto pointeeSizeInBytes =
-        tptr::TypeOffsetOp::create(rewriter, loc, offsetType, pointeeType);
-    auto scaledOffset =
-        arith::MulIOp::create(rewriter, loc, op.getOffset(), pointeeSizeInBytes);
-    rewriter.replaceOpWithNewOp<tptr::PtrAddOp>(
-        op,
-        ptr::PtrType::get(
-            rewriter.getContext(),
-            tptr::DefaultMemorySpaceAttr::get(rewriter.getContext())),
-        adaptor.getPtr(), scaledOffset);
+    auto pointeeSizeInBytes = ptr::TypeOffsetOp::create(
+        rewriter, loc, offsetType, TypeAttr::get(pointeeType));
+    auto scaledOffset = arith::MulIOp::create(rewriter, loc, op.getOffset(),
+                                              pointeeSizeInBytes);
+    rewriter.replaceOpWithNewOp<ptr::PtrAddOp>(
+        op, getPtrTypeForTritonPtr(op.getType()), adaptor.getPtr(),
+        scaledOffset);
     return success();
   }
 };
@@ -222,15 +256,21 @@ struct LoadConverter : public OpConversionPattern<triton::LoadOp> {
     auto pointeeType =
         cast<triton::PointerType>(ptr.getType()).getPointeeType();
 
-    auto memref = tptr::ToMemrefOp::create(rewriter, op->getLoc(), MemRefType::get({1}, pointeeType), adaptor.getPtr());
+    auto memrefType =
+        MemRefType::get({1}, pointeeType, AffineMap(),
+                        getMemorySpaceForTritonPtr(ptr.getType()));
+    auto memref = ptr::FromPtrOp::create(rewriter, op->getLoc(), memrefType,
+                                         adaptor.getPtr(), Value());
 
     auto zero = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 0);
 
     if (op.getMask()) {
-      auto ifOp = scf::IfOp::create(rewriter, op->getLoc(), op.getMask(),
+      auto ifOp = scf::IfOp::create(
+          rewriter, op->getLoc(), op.getMask(),
           [&](OpBuilder &b, Location loc) {
             // Truthy case, load from the index.
-            Value memrefLoad = memref::LoadOp::create(rewriter, op->getLoc(), memref, ValueRange{zero});
+            Value memrefLoad = memref::LoadOp::create(rewriter, op->getLoc(),
+                                                      memref, ValueRange{zero});
             scf::YieldOp::create(b, loc, memrefLoad);
           },
           [&](OpBuilder &b, Location loc) {
@@ -248,7 +288,7 @@ struct LoadConverter : public OpConversionPattern<triton::LoadOp> {
       rewriter.replaceOp(op, ifOp);
     } else {
       auto memrefLoad = memref::LoadOp::create(rewriter, op->getLoc(), memref,
-                                                        ValueRange{zero});
+                                               ValueRange{zero});
 
       rewriter.replaceOp(op, memrefLoad);
     }
@@ -278,16 +318,20 @@ struct StoreConverter : public OpConversionPattern<triton::StoreOp> {
     IRRewriter::InsertionGuard g(rewriter);
     if (op.getMask()) {
       auto ifOp = scf::IfOp::create(rewriter, op->getLoc(), op.getMask(),
-                                             /*withElseRegion*/ false);
+                                    /*withElseRegion*/ false);
       rewriter.setInsertionPointToStart(
           &ifOp.getThenRegion().getBlocks().front());
     }
 
-    auto memref = tptr::ToMemrefOp::create(rewriter, op->getLoc(), MemRefType::get({1}, pointeeType), adaptor.getPtr());
+    auto memrefType =
+        MemRefType::get({1}, pointeeType, AffineMap(),
+                        getMemorySpaceForTritonPtr(ptr.getType()));
+    auto memref = ptr::FromPtrOp::create(rewriter, op->getLoc(), memrefType,
+                                         adaptor.getPtr(), Value());
     auto zero = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 0);
 
     memref::StoreOp::create(rewriter, op->getLoc(), op.getValue(), memref,
-                                     ValueRange{zero});
+                            ValueRange{zero});
 
     rewriter.eraseOp(op);
 
@@ -308,7 +352,7 @@ struct PtrToIntConverter : public OpConversionPattern<triton::PtrToIntOp> {
     if (isa<ShapedType>(op.getType())) {
       return failure();
     }
-    rewriter.replaceOpWithNewOp<tptr::PtrToIntOp>(op, op.getType(),
+    rewriter.replaceOpWithNewOp<LLVM::PtrToIntOp>(op, op.getType(),
                                                   adaptor.getSrc());
     return success();
   }
@@ -327,12 +371,8 @@ struct IntToPtrConverter : public OpConversionPattern<triton::IntToPtrOp> {
     if (isa<ShapedType>(op.getType())) {
       return failure();
     }
-    rewriter.replaceOpWithNewOp<tptr::IntToPtrOp>(
-        op,
-        ptr::PtrType::get(
-            rewriter.getContext(),
-            tptr::DefaultMemorySpaceAttr::get(rewriter.getContext())),
-        adaptor.getSrc());
+    rewriter.replaceOpWithNewOp<LLVM::IntToPtrOp>(
+        op, getPtrTypeForTritonPtr(op.getType()), adaptor.getSrc());
     return success();
   }
 };
@@ -357,8 +397,10 @@ struct LinalgPtrConverter : public OpConversionPattern<linalg::GenericOp> {
       return failure();
     }
 
-    auto replacement = linalg::GenericOp::create(rewriter, op.getLoc(), convertedTypes, adaptor.getInputs(), adaptor.getOutputs(),
-        op.getIndexingMapsArray(), op.getIteratorTypesArray());
+    auto replacement = linalg::GenericOp::create(
+        rewriter, op.getLoc(), convertedTypes, adaptor.getInputs(),
+        adaptor.getOutputs(), op.getIndexingMapsArray(),
+        op.getIteratorTypesArray());
 
     Region &region = op.getRegion();
     Block &block = region.front();
@@ -419,22 +461,20 @@ class TritonPtrTypeConverter : public TypeConverter {
 public:
   TritonPtrTypeConverter(MLIRContext *context) {
     addConversion([](Type type) { return type; });
-    addConversion([context](triton::PointerType ptrType) {
-      return ptr::PtrType::get(context,
-                               tptr::DefaultMemorySpaceAttr::get(context));
+    addConversion([](triton::PointerType ptrType) {
+      return getPtrTypeForTritonPtr(ptrType);
     });
-    addConversion([context](RankedTensorType tensorType) {
+    addConversion([](RankedTensorType tensorType) {
       if (isa<triton::PointerType>(tensorType.getElementType())) {
-        return RankedTensorType::get(
-            tensorType.getShape(),
-            ptr::PtrType::get(context,
-                              tptr::DefaultMemorySpaceAttr::get(context)));
+        return RankedTensorType::get(tensorType.getShape(),
+                                     getPtrTypeForTritonPtr(tensorType));
       }
       return tensorType;
     });
     auto createCast = [&](OpBuilder &builder, Type resultType,
                           ValueRange inputs, Location loc) -> Value {
-      return UnrealizedConversionCastOp::create(builder, loc, resultType, inputs)
+      return UnrealizedConversionCastOp::create(builder, loc, resultType,
+                                                inputs)
           .getResult(0);
     };
     addTargetMaterialization(createCast);
@@ -449,7 +489,7 @@ public:
     registry.insert<
         arith::ArithDialect, math::MathDialect, affine::AffineDialect,
         scf::SCFDialect, tensor::TensorDialect, triton::TritonDialect,
-        tts::TritonStructuredDialect, ptr::PtrDialect, tptr::TPtrDialect>();
+        tts::TritonStructuredDialect, ptr::PtrDialect, LLVM::LLVMDialect>();
   }
 
   void runOnOperation() override {
@@ -462,9 +502,15 @@ public:
     target.addIllegalOp<triton::AddPtrOp, triton::BitcastOp, triton::IntToPtrOp,
                         triton::PtrToIntOp>();
 
-    // We do not want to lower triton load and store on block pointers
+    // This pass only lowers scalar-pointer tt.load/tt.store. Keep block
+    // pointers and tensor-of-pointers legal so this pass doesn't fail when
+    // earlier passes intentionally leave those forms.
     target.addDynamicallyLegalOp<triton::LoadOp, triton::StoreOp>([](auto op) {
       auto ptrType = op->getOperand(0).getType();
+      if (auto shaped = dyn_cast<ShapedType>(ptrType)) {
+        if (isa<triton::PointerType>(shaped.getElementType()))
+          return true;
+      }
       if (triton::isTensorPointerType(ptrType)) {
         return true;
       }
@@ -482,7 +528,8 @@ public:
 
     target.addLegalDialect<arith::ArithDialect, linalg::LinalgDialect,
                            tensor::TensorDialect, affine::AffineDialect,
-                           tptr::TPtrDialect, memref::MemRefDialect>();
+                           ptr::PtrDialect, memref::MemRefDialect,
+                           LLVM::LLVMDialect>();
 
     patterns
         .add<AddPtrConverter, BitCastConverter, StoreConverter, LoadConverter,

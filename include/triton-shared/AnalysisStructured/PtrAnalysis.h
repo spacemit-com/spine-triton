@@ -16,9 +16,9 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
+#include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
-#include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 
 #include <cstddef>
 #include <set>
@@ -48,9 +48,9 @@ const extern std::string ptrAnalysisAttr;
 // address, it will be collapsed to 1D. To support gather/scatter access, treat
 // the unstructured offset as a whole offset instead of decoding the pointer
 // arithmetic on it except scalar mul.
-// The stride is set to 1 when there's no scalar mul so it still matches the offset *
-// stride formula. When there're scalar muls, the stride is set to the multiplication
-// of all the scalar strides.
+// The stride is set to 1 when there's no scalar mul so it still matches the
+// offset * stride formula. When there're scalar muls, the stride is set to the
+// multiplication of all the scalar strides.
 struct PtrState {
   SmallVector<OpFoldResult> offsets;
   SmallVector<OpFoldResult> origiOffsets;
@@ -125,9 +125,8 @@ struct PtrState {
 
   LogicalResult mergeUnstructuredState(const PtrState &other, Operation *op);
 
-  tts::MakeTensorPtrOp createTTSMakeTensorPtrOp(OpBuilder &builder,
-                                                SmallVector<OpFoldResult> origiOffsets,
-                                                Location loc);
+  tts::MakeTensorPtrOp createTTSMakeTensorPtrOp(
+      OpBuilder &builder, SmallVector<OpFoldResult> origiOffsets, Location loc);
   tts::MakeGatherScatterTensorPtrOp
   createTTSMakeGatherScatterTensorPtrOp(OpBuilder &builder, Location loc);
 };
@@ -325,23 +324,30 @@ public:
   // Operand is the result of tt.int_to_ptr.
   // Expected result:
   //  Directly grab op result
-  LogicalResult visitOperandIntToPtr(triton::IntToPtrOp intToPtrOp, PtrState &state,
-                                     const Location loc, OpBuilder &builder);
+  LogicalResult visitOperandIntToPtr(triton::IntToPtrOp intToPtrOp,
+                                     PtrState &state, const Location loc,
+                                     OpBuilder &builder);
 
   // Operand is the result of tt.bitcast.
   // Expected result:
-  //  Directly grab op result
-  LogicalResult visitOperandBitcast(triton::BitcastOp bitcastOp, PtrState &state,
-                                    const Location loc, OpBuilder &builder);
+  //  For pointer-preserving bitcasts (scalar or tensor of triton pointers),
+  //  continue visiting the source so pointer-sequence reconstruction can see
+  //  through no-op pointee reinterpretation such as !tt.ptr<i1> -> !tt.ptr<i8>.
+  //  For non-pointer bitcasts, fall back to the bitcast result itself.
+  LogicalResult visitOperandBitcast(triton::BitcastOp bitcastOp,
+                                    PtrState &state, const Location loc,
+                                    OpBuilder &builder);
 
   LogicalResult visitOperandAlloc(xsmt::AllocOp allocOp, PtrState &state,
-                                    const Location loc, OpBuilder &builder);
+                                  const Location loc, OpBuilder &builder);
 
   LogicalResult visitOperandView(xsmt::ViewPtrOp viewOp, PtrState &state,
-                                    const Location loc, OpBuilder &builder);
+                                 const Location loc, OpBuilder &builder);
 
-  LogicalResult visitOperandBufferTensorViewOp(xsmt::BufferTensorViewOp BufferTensorViewOp, PtrState &state,
-                                    const Location loc, OpBuilder &builder);
+  LogicalResult
+  visitOperandBufferTensorViewOp(xsmt::BufferTensorViewOp BufferTensorViewOp,
+                                 PtrState &state, const Location loc,
+                                 OpBuilder &builder);
 
   // Get the computed PtrState for the forOp's init-arg at the provided index.
   FailureOr<PtrState> getLoopInitArgPtrState(scf::ForOp forOp, size_t index);
@@ -362,7 +368,9 @@ public:
   // PtrState for knownPtrs.
   LogicalResult rewriteAddptrOp(triton::AddPtrOp op);
 
-  LogicalResult rewriteMakeTensorPtrOp(triton::MakeTensorPtrOp op, llvm::DenseMap<Value, SmallVector<OpFoldResult>> offsetMap);
+  LogicalResult rewriteMakeTensorPtrOp(
+      triton::MakeTensorPtrOp op,
+      llvm::DenseMap<Value, SmallVector<OpFoldResult>> offsetMap);
 
   LogicalResult rewriteAdvanceOp(triton::AdvanceOp op);
 

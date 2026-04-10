@@ -16,6 +16,9 @@
 
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Ptr/IR/PtrAttrs.h"
+#include "mlir/Dialect/Ptr/IR/PtrDialect.h"
+#include "mlir/Dialect/Ptr/IR/PtrOps.h"
 #include "mlir/Dialect/Ptr/IR/PtrTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinDialect.h"
@@ -29,10 +32,38 @@
 #include "triton/Dialect/Triton/IR/Types.h"
 
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcilePtrCasts.h"
-#include "triton-shared/Dialect/TPtr/IR/TPtrDialect.h"
 
 using namespace mlir;
 using namespace triton;
+
+static ptr::MemorySpaceAttrInterface
+getMemorySpaceForMemref(BaseMemRefType memrefType) {
+  if (auto memorySpace = dyn_cast_if_present<ptr::MemorySpaceAttrInterface>(
+          memrefType.getMemorySpace()))
+    return memorySpace;
+  return ptr::GenericSpaceAttr::get(memrefType.getContext());
+}
+
+static ptr::PtrType getPtrTypeForMemref(BaseMemRefType memrefType) {
+  return ptr::PtrType::get(memrefType.getContext(),
+                           getMemorySpaceForMemref(memrefType));
+}
+
+static MemRefType getRankedMemrefTypeForPtrCast(BaseMemRefType memrefType) {
+  return MemRefType::get({1}, memrefType.getElementType(), AffineMap(),
+                         getMemorySpaceForMemref(memrefType));
+}
+
+static ptr::MemorySpaceAttrInterface getMemorySpaceForPtr(Type ptrType) {
+  if (auto ptrPtrType = dyn_cast<ptr::PtrType>(ptrType))
+    return ptrPtrType.getMemorySpace();
+  return ptr::GenericSpaceAttr::get(ptrType.getContext());
+}
+
+static Type getMemrefElementTypeForPtrCast(Type ptrType,
+                                           Type fallbackElemType) {
+  return fallbackElemType;
+}
 
 namespace mlir::triton {
 #define GEN_PASS_DECL
@@ -91,16 +122,26 @@ struct FromMemrefConverter
     auto outType = output.getType();
 
     if (unrankedInput && isa<triton::PointerType, ptr::PtrType>(outType)) {
+      // ptr.to_ptr requires the ptr-like memory space and ptr memory space to
+      // match. Missing memref memory space must be treated as an IR error.
+      if (!unrankedInput.getMemorySpace()) {
+        op.emitError()
+            << "cannot lower unrealized memref->ptr cast without explicit "
+               "memory space on memref type: "
+            << unrankedInput;
+        return failure();
+      }
+
       // from_memref only takes ranked memref, cast the unranked memref to
       // ranked memref first.
-      auto rankedMemref = memref::CastOp::create(
-          rewriter, op.getLoc(),
-          MemRefType::get({1}, unrankedInput.getElementType()), input);
-      auto memrefToPtr = tptr::FromMemrefOp::create(
-          rewriter, op->getLoc(),
-          ptr::PtrType::get(
-              rewriter.getContext(),
-              tptr::DefaultMemorySpaceAttr::get(rewriter.getContext())),
+      auto rankedType = getRankedMemrefTypeForPtrCast(unrankedInput);
+      SmallVector<OpFoldResult> sizes = {rewriter.getIndexAttr(1)};
+      SmallVector<OpFoldResult> strides = {rewriter.getIndexAttr(1)};
+      auto rankedMemref = memref::ReinterpretCastOp::create(
+          rewriter, op.getLoc(), rankedType, input, rewriter.getIndexAttr(0),
+          sizes, strides);
+      auto memrefToPtr = ptr::ToPtrOp::create(
+          rewriter, op->getLoc(), getPtrTypeForMemref(rankedMemref.getType()),
           rankedMemref);
 
       rewriter.replaceAllUsesWith(output, memrefToPtr);
@@ -128,18 +169,33 @@ struct ToMemrefConverter : public OpRewritePattern<UnrealizedConversionCastOp> {
     auto outUnrankedMemrefType = dyn_cast<UnrankedMemRefType>(output.getType());
     if (isa<triton::PointerType, ptr::PtrType>(inType) &&
         outUnrankedMemrefType) {
+      // ptr.from_ptr requires matching memory spaces. Missing target memref
+      // memory space must be treated as an IR error.
+      if (!outUnrankedMemrefType.getMemorySpace()) {
+        op.emitError()
+            << "cannot lower unrealized ptr->memref cast without explicit "
+               "memory space on target memref type: "
+            << outUnrankedMemrefType;
+        return failure();
+      }
+
       // to_memref can only cast to ranked static shape memref, we have to cast
       // the resulting memref back to unranked
-      auto elemType = outUnrankedMemrefType.getElementType();
-      auto ptrToMemref = tptr::ToMemrefOp::create(
-          rewriter, op->getLoc(), MemRefType::get({1}, elemType), input);
+      auto elemType = getMemrefElementTypeForPtrCast(
+          inType, outUnrankedMemrefType.getElementType());
+      Attribute outMemSpace = outUnrankedMemrefType.getMemorySpace();
+      auto ptrToMemrefType =
+          MemRefType::get({1}, elemType, AffineMap(), outMemSpace);
+      auto ptrToMemref = ptr::FromPtrOp::create(
+          rewriter, op->getLoc(), ptrToMemrefType, input, Value());
 
       SmallVector<OpFoldResult> sizes = {rewriter.getIndexAttr(1)};
       SmallVector<OpFoldResult> newStrides = {rewriter.getIndexAttr(1)};
       auto newUnrankedMemref = memref::ReinterpretCastOp::create(
           rewriter, op->getLoc(),
-          MemRefType::get({ShapedType::kDynamic}, elemType), ptrToMemref,
-          rewriter.getIndexAttr(0), sizes, newStrides);
+          MemRefType::get({ShapedType::kDynamic}, elemType, AffineMap(),
+                          outMemSpace),
+          ptrToMemref, rewriter.getIndexAttr(0), sizes, newStrides);
 
       rewriter.replaceAllUsesWith(output, newUnrankedMemref);
       rewriter.eraseOp(op);
@@ -155,7 +211,7 @@ class ReconcilePtrCastsPass
 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<tptr::TPtrDialect, memref::MemRefDialect, BuiltinDialect>();
+    registry.insert<ptr::PtrDialect, memref::MemRefDialect, BuiltinDialect>();
   }
 
   void runOnOperation() override {

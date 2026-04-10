@@ -24,7 +24,6 @@
 #include "triton-shared/Conversion/TritonToUnstructured/TritonToUnstructured.h"
 #include "triton-shared/Conversion/UnstructuredToMemref/UnstructuredToMemref.h"
 #include "triton-shared/Conversion/XSMTToLinalg/XSMTToLinalg.h"
-#include "triton-shared/Dialect/TPtr/IR/TPtrDialect.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 
@@ -57,14 +56,14 @@ class TritonToLinalgExperimentalPass
 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<func::FuncDialect, arith::ArithDialect, math::MathDialect,
-                    linalg::LinalgDialect, affine::AffineDialect,
-                    scf::SCFDialect, tensor::TensorDialect,
-                    bufferization::BufferizationDialect, memref::MemRefDialect,
-                    ttx::TritonTilingExtDialect, tts::TritonStructuredDialect,
-                    tptr::TPtrDialect, ptr::PtrDialect, DLTIDialect,
-                    LLVM::LLVMDialect, vector::VectorDialect, xsmt::XSMTDialect,
-                    triton::proton::ProtonDialect>();
+    registry
+        .insert<func::FuncDialect, arith::ArithDialect, math::MathDialect,
+                linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
+                tensor::TensorDialect, bufferization::BufferizationDialect,
+                memref::MemRefDialect, ttx::TritonTilingExtDialect,
+                tts::TritonStructuredDialect, ptr::PtrDialect, DLTIDialect,
+                LLVM::LLVMDialect, vector::VectorDialect, xsmt::XSMTDialect,
+                triton::proton::ProtonDialect>();
   }
 
   void runOnOperation() override {

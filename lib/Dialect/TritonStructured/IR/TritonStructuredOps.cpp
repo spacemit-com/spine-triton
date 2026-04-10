@@ -31,7 +31,7 @@ namespace tts {
 namespace utils {
 // Extract a scalar value from v.
 // If v is a scalar, return that directly. Otherwise, parse through operations
-// (currently only support splat, sitofp, and truncf) that produce it to
+// (currently support splat and a small cast subset) that produce it to
 // extract the underlying scalar value. We then reconstruct the chain of
 // operations that can produce this constant with the original type. If no
 // scalar value can be extracted, a nullptr is returned.
@@ -54,6 +54,27 @@ Value getScalarValue(Value operand, Location loc, OpBuilder &builder) {
                     resType = shapedType.getElementType();
                   }
                   return arith::TruncFOp::create(builder, loc, resType, src);
+                })
+                .Case<arith::ExtSIOp>([&](Operation *op) {
+                  auto resType = op->getResults()[0].getType();
+                  if (auto shapedType = dyn_cast<ShapedType>(resType)) {
+                    resType = shapedType.getElementType();
+                  }
+                  return arith::ExtSIOp::create(builder, loc, resType, src);
+                })
+                .Case<arith::ExtUIOp>([&](Operation *op) {
+                  auto resType = op->getResults()[0].getType();
+                  if (auto shapedType = dyn_cast<ShapedType>(resType)) {
+                    resType = shapedType.getElementType();
+                  }
+                  return arith::ExtUIOp::create(builder, loc, resType, src);
+                })
+                .Case<arith::TruncIOp>([&](Operation *op) {
+                  auto resType = op->getResults()[0].getType();
+                  if (auto shapedType = dyn_cast<ShapedType>(resType)) {
+                    resType = shapedType.getElementType();
+                  }
+                  return arith::TruncIOp::create(builder, loc, resType, src);
                 })
                 .Default([](Operation *op) {
                   llvm_unreachable("unsupported op in generating ");
@@ -87,6 +108,15 @@ Value getScalarValue(Value operand, Location loc, OpBuilder &builder) {
     } else if (auto op = operand.getDefiningOp<arith::TruncFOp>()) {
       ops.push_back(op.getOperation());
       operand = op.getIn();
+    } else if (auto op = operand.getDefiningOp<arith::ExtSIOp>()) {
+      ops.push_back(op.getOperation());
+      operand = op.getIn();
+    } else if (auto op = operand.getDefiningOp<arith::ExtUIOp>()) {
+      ops.push_back(op.getOperation());
+      operand = op.getIn();
+    } else if (auto op = operand.getDefiningOp<arith::TruncIOp>()) {
+      ops.push_back(op.getOperation());
+      operand = op.getIn();
     } else {
       InFlightDiagnostic diag = emitError(loc)
                                 << "other value used in masked load produced "
@@ -95,6 +125,45 @@ Value getScalarValue(Value operand, Location loc, OpBuilder &builder) {
     }
   }
   return nullptr;
+}
+
+Value castScalarToType(Value scalar, Type targetType, Location loc,
+                       OpBuilder &builder) {
+  auto srcType = scalar.getType();
+  if (srcType == targetType)
+    return scalar;
+
+  if (isa<IntegerType>(srcType) && isa<IntegerType>(targetType)) {
+    auto srcInt = cast<IntegerType>(srcType);
+    auto dstInt = cast<IntegerType>(targetType);
+    unsigned srcWidth = srcInt.getWidth();
+    unsigned dstWidth = dstInt.getWidth();
+    if (srcWidth == dstWidth)
+      return scalar;
+    if (srcWidth < dstWidth)
+      return arith::ExtUIOp::create(builder, loc, targetType, scalar);
+    return arith::TruncIOp::create(builder, loc, targetType, scalar);
+  }
+
+  if (isa<FloatType>(srcType) && isa<FloatType>(targetType)) {
+    auto srcFloat = cast<FloatType>(srcType);
+    auto dstFloat = cast<FloatType>(targetType);
+    unsigned srcWidth = srcFloat.getWidth();
+    unsigned dstWidth = dstFloat.getWidth();
+    if (srcWidth == dstWidth)
+      return scalar;
+    if (srcWidth < dstWidth)
+      return arith::ExtFOp::create(builder, loc, targetType, scalar);
+    return arith::TruncFOp::create(builder, loc, targetType, scalar);
+  }
+
+  if (isa<IntegerType>(srcType) && isa<FloatType>(targetType))
+    return arith::SIToFPOp::create(builder, loc, targetType, scalar);
+
+  if (isa<FloatType>(srcType) && isa<IntegerType>(targetType))
+    return arith::FPToSIOp::create(builder, loc, targetType, scalar);
+
+  return scalar;
 }
 
 } // namespace utils
@@ -106,11 +175,14 @@ void MakeTensorPtrOp::build(OpBuilder &b, OperationState &state, Value base,
                             ArrayRef<OpFoldResult> originalOffsets,
                             ArrayRef<OpFoldResult> shape,
                             ArrayRef<int32_t> order) {
-  SmallVector<int64_t> staticStrides, staticOffsets, staticOriginalOffsets, staticShape;
-  SmallVector<Value> dynamicStrides, dynamicOffsets, dynamicOriginalOffsets, dynamicShape;
+  SmallVector<int64_t> staticStrides, staticOffsets, staticOriginalOffsets,
+      staticShape;
+  SmallVector<Value> dynamicStrides, dynamicOffsets, dynamicOriginalOffsets,
+      dynamicShape;
 
   dispatchIndexOpFoldResults(offsets, dynamicOffsets, staticOffsets);
-  dispatchIndexOpFoldResults(originalOffsets, dynamicOriginalOffsets, staticOriginalOffsets);
+  dispatchIndexOpFoldResults(originalOffsets, dynamicOriginalOffsets,
+                             staticOriginalOffsets);
   dispatchIndexOpFoldResults(strides, dynamicStrides, staticStrides);
   dispatchIndexOpFoldResults(shape, dynamicShape, staticShape);
 
@@ -127,18 +199,20 @@ void MakeTensorPtrOp::build(OpBuilder &b, OperationState &state, Value base,
                                        basePtr.getAddressSpace());
   }
 
-  build(b, state, resType, base, sizes, dynamicStrides, dynamicOffsets, dynamicOriginalOffsets,
-        dynamicShape, b.getDenseI64ArrayAttr(staticStrides),
+  build(b, state, resType, base, sizes, dynamicStrides, dynamicOffsets,
+        dynamicOriginalOffsets, dynamicShape,
+        b.getDenseI64ArrayAttr(staticStrides),
         b.getDenseI64ArrayAttr(staticOffsets),
         b.getDenseI64ArrayAttr(staticOriginalOffsets),
         b.getDenseI64ArrayAttr(staticShape), order);
 }
 
 void MakeGatherScatterTensorPtrOp::build(OpBuilder &b, OperationState &state,
-                                    Value base, Value gatherScatterOffset,
-                                    int gatherScatterDim, ArrayRef<int64_t> sizes,
-                                    ArrayRef<OpFoldResult> strides,
-                                    ArrayRef<OpFoldResult> offsets) {
+                                         Value base, Value gatherScatterOffset,
+                                         int gatherScatterDim,
+                                         ArrayRef<int64_t> sizes,
+                                         ArrayRef<OpFoldResult> strides,
+                                         ArrayRef<OpFoldResult> offsets) {
   SmallVector<int64_t> staticStrides, staticOffsets;
   SmallVector<Value> dynamicStrides, dynamicOffsets;
   for (auto [i, offset] : llvm::enumerate(offsets)) {
@@ -163,7 +237,9 @@ void MakeGatherScatterTensorPtrOp::build(OpBuilder &b, OperationState &state,
 }
 
 void LoadOp::build(OpBuilder &b, OperationState &state, Value ptr,
-                   ArrayRef<OpFoldResult> dims, Value other, ArrayRef<int32_t> boundaryCheck,  std::optional<mlir::triton::PaddingOption> padding) {
+                   ArrayRef<OpFoldResult> dims, Value other,
+                   ArrayRef<int32_t> boundaryCheck,
+                   std::optional<mlir::triton::PaddingOption> padding) {
   SmallVector<int64_t> staticDims;
   SmallVector<Value> dynamicDims;
 
@@ -181,9 +257,17 @@ void LoadOp::build(OpBuilder &b, OperationState &state, Value ptr,
     resType = RankedTensorType::get(ptrTensorType.getShape(), elemType);
 
   } else if (tensorPtrType) {
-    auto tensorType = cast<ShapedType>(tensorPtrType.getPointeeType());
-    resType = RankedTensorType::get(tensorType.getShape(),
-                                    tensorType.getElementType());
+    auto pointeeType = tensorPtrType.getPointeeType();
+    if (auto tensorType = dyn_cast<ShapedType>(pointeeType)) {
+      resType = RankedTensorType::get(tensorType.getShape(),
+                                      tensorType.getElementType());
+    } else {
+      SmallVector<int64_t> resultShape;
+      resultShape.reserve(staticDims.size());
+      for (int64_t dim : staticDims)
+        resultShape.push_back(dim);
+      resType = RankedTensorType::get(resultShape, pointeeType);
+    }
   }
   auto paddingAttr =
       padding.has_value()
@@ -194,13 +278,15 @@ void LoadOp::build(OpBuilder &b, OperationState &state, Value ptr,
 }
 
 void StoreOp::build(OpBuilder &b, OperationState &state, Value ptr, Value value,
-                    ArrayRef<OpFoldResult> dims, ArrayRef<int32_t> boundaryCheck) {
+                    ArrayRef<OpFoldResult> dims,
+                    ArrayRef<int32_t> boundaryCheck) {
   SmallVector<int64_t> staticDims;
   SmallVector<Value> dynamicDims;
 
   dispatchIndexOpFoldResults(dims, dynamicDims, staticDims);
 
-  build(b, state, ptr, value, dynamicDims, b.getDenseI64ArrayAttr(staticDims), boundaryCheck);
+  build(b, state, ptr, value, dynamicDims, b.getDenseI64ArrayAttr(staticDims),
+        boundaryCheck);
 }
 
 LogicalResult GetStructuredStateOp::verify() {
@@ -228,12 +314,15 @@ void GetStructuredStateOp::build(OpBuilder &b, OperationState &state,
   // The invalid op will be rejected by the verifier later.
   auto [offsetTypes, OrigoffsetTypes, strideTypes] =
       getOffsetAndStrideTypes(b.getContext(), type)
-          .value_or(std::make_tuple(SmallVector<Type>{}, SmallVector<Type>{}, SmallVector<Type>{}));
+          .value_or(std::make_tuple(SmallVector<Type>{}, SmallVector<Type>{},
+                                    SmallVector<Type>{}));
 
-  build(b, state, val.getType(), offsetTypes, OrigoffsetTypes, strideTypes, val);
+  build(b, state, val.getType(), offsetTypes, OrigoffsetTypes, strideTypes,
+        val);
 }
 
-std::optional<std::tuple<SmallVector<Type>, SmallVector<Type>, SmallVector<Type>>>
+std::optional<
+    std::tuple<SmallVector<Type>, SmallVector<Type>, SmallVector<Type>>>
 GetStructuredStateOp::getOffsetAndStrideTypes(MLIRContext *context, Type type) {
   auto sizes = getOffsetAndStrideSegmentSizes(type);
   if (!sizes.has_value()) {
@@ -259,13 +348,15 @@ GetStructuredStateOp::getOffsetAndStrideSegmentSizes(Type type) {
       // We only care about tensor of index / int (in addition to pointer type)
       // because only values of int and index type can potentially be part of a
       // pointer arithmetic sequence.
-      offsetSegmentSize = origiOffsetSegmentSize = strideSegmentSize = tensorType.getRank();
+      offsetSegmentSize = origiOffsetSegmentSize = strideSegmentSize =
+          tensorType.getRank();
     } else if (auto ptrType =
                    dyn_cast<triton::PointerType>(tensorType.getElementType())) {
       // Unstructured pointers (tensor<!tt.ptr<type>>)
       // Each tensor of rank k gets k values for its offsets and k values for
       // its strides, all of which has Index type.
-      offsetSegmentSize = origiOffsetSegmentSize = strideSegmentSize = tensorType.getRank();
+      offsetSegmentSize = origiOffsetSegmentSize = strideSegmentSize =
+          tensorType.getRank();
     }
   }
   // Block pointers (!tt.ptr<tensor<type>> or !tt.ptr<type>)
@@ -274,7 +365,8 @@ GetStructuredStateOp::getOffsetAndStrideSegmentSizes(Type type) {
             llvm::dyn_cast<RankedTensorType>(ptrType.getPointeeType())) {
       // Each tensor of rank k gets k values for its offsets and k values for
       // its strides, all of which has Index type.
-      offsetSegmentSize = origiOffsetSegmentSize = strideSegmentSize = tensorType.getRank();
+      offsetSegmentSize = origiOffsetSegmentSize = strideSegmentSize =
+          tensorType.getRank();
     } else {
       // The only relevant state that can be updated in loops for scalar
       // pointers are offset. No need to include stride here.
@@ -284,7 +376,8 @@ GetStructuredStateOp::getOffsetAndStrideSegmentSizes(Type type) {
     return std::nullopt;
   }
 
-  return std::make_tuple(offsetSegmentSize, origiOffsetSegmentSize, strideSegmentSize);
+  return std::make_tuple(offsetSegmentSize, origiOffsetSegmentSize,
+                         strideSegmentSize);
 }
 
 } // namespace tts

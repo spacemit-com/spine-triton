@@ -122,6 +122,46 @@ static Value getScalarValue(Value operand, Location loc,
   return nullptr;
 }
 
+static Value castScalarToElementType(Value scalar, Type elementType,
+                                     Location loc,
+                                     ConversionPatternRewriter &rewriter) {
+  auto srcType = scalar.getType();
+  if (srcType == elementType)
+    return scalar;
+
+  if (isa<IntegerType>(srcType) && isa<IntegerType>(elementType)) {
+    auto srcInt = cast<IntegerType>(srcType);
+    auto dstInt = cast<IntegerType>(elementType);
+    unsigned srcWidth = srcInt.getWidth();
+    unsigned dstWidth = dstInt.getWidth();
+    if (srcWidth == dstWidth)
+      return scalar;
+    if (srcWidth < dstWidth)
+      return arith::ExtUIOp::create(rewriter, loc, elementType, scalar);
+    return arith::TruncIOp::create(rewriter, loc, elementType, scalar);
+  }
+
+  if (isa<FloatType>(srcType) && isa<FloatType>(elementType)) {
+    auto srcFloat = cast<FloatType>(srcType);
+    auto dstFloat = cast<FloatType>(elementType);
+    unsigned srcWidth = srcFloat.getWidth();
+    unsigned dstWidth = dstFloat.getWidth();
+    if (srcWidth == dstWidth)
+      return scalar;
+    if (srcWidth < dstWidth)
+      return arith::ExtFOp::create(rewriter, loc, elementType, scalar);
+    return arith::TruncFOp::create(rewriter, loc, elementType, scalar);
+  }
+
+  if (isa<IntegerType>(srcType) && isa<FloatType>(elementType))
+    return arith::SIToFPOp::create(rewriter, loc, elementType, scalar);
+
+  if (isa<FloatType>(srcType) && isa<IntegerType>(elementType))
+    return arith::FPToSIOp::create(rewriter, loc, elementType, scalar);
+
+  return scalar;
+}
+
 // if order is empty, transpose the last two dimensions
 // otherwise, use the provided order.
 // The order must be a permutation of the source rank.
@@ -546,6 +586,8 @@ public:
       auto scalarOther = getScalarValue(other, loc, rewriter);
       assert(scalarOther && "other value used in masked load produced by "
                             "unsupported instruction");
+      scalarOther = castScalarToElementType(scalarOther, type.getElementType(),
+                                            loc, rewriter);
 
       // For each dimension check if mstate.dims[i] < shape[i], or-accumulate
       // the result
@@ -751,16 +793,30 @@ struct SplatConverter : public OpConversionPattern<triton::SplatOp> {
   LogicalResult
   matchAndRewrite(triton::SplatOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto opType = cast<TensorType>(op.getType());
+    auto opType = cast<RankedTensorType>(op.getType());
     auto loc = op.getLoc();
 
     auto init = tensor::EmptyOp::create(rewriter, loc, opType.getShape(),
                                         opType.getElementType());
 
-    auto filledTensor =
-        linalg::FillOp::create(rewriter, loc, ValueRange{adaptor.getSrc()},
-                               ValueRange{init})
-            .result();
+    Value filledTensor;
+    if (isa<triton::PointerType>(adaptor.getSrc().getType())) {
+      SmallVector<AffineMap> indexingMaps = {
+          rewriter.getMultiDimIdentityMap(opType.getRank())};
+      auto linalgOp = linalg::GenericOp::create(
+          rewriter, loc, op->getResultTypes(), ValueRange{}, ValueRange{init},
+          indexingMaps, getNParallelLoopsAttrs(opType.getRank()),
+          [&](OpBuilder &nestedBuilder, Location nestedLoc,
+              ValueRange blockArgs) {
+            linalg::YieldOp::create(nestedBuilder, nestedLoc, adaptor.getSrc());
+          });
+      filledTensor = linalgOp.getResult(0);
+    } else {
+      filledTensor =
+          linalg::FillOp::create(rewriter, loc, ValueRange{adaptor.getSrc()},
+                                 ValueRange{init})
+              .result();
+    }
 
     rewriter.replaceOp(op, filledTensor);
     return success();

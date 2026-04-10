@@ -8,7 +8,6 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "triton-shared/Conversion/XSMTToLinalg/XSMTToLinalg.h"
-#include "triton-shared/Dialect/TPtr/IR/TPtrDialect.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
@@ -28,8 +27,8 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
-#include "triton/Dialect/Triton/IR/Types.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "triton/Dialect/Triton/IR/Types.h"
 
 #define DEBUG_TYPE "xsmt-to-linalg"
 
@@ -48,6 +47,7 @@ namespace {
 class XSMTToLinalgPass
     : public triton::impl::XSMTToLinalgBase<XSMTToLinalgPass> {
   using XSMTToLinalgBase<XSMTToLinalgPass>::XSMTToLinalgBase;
+
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
     registry
@@ -64,7 +64,8 @@ public:
 
     bool hasXSMTUser = false;
     moduleOp.walk([&](Operation *op) {
-      if (op->getName().getStringRef().starts_with("xsmt.") || op->getName().getStringRef().starts_with("xsmt_async."))  {
+      if (op->getName().getStringRef().starts_with("xsmt.") ||
+          op->getName().getStringRef().starts_with("xsmt_async.")) {
         hasXSMTUser = true;
         return WalkResult::interrupt();
       }
@@ -86,7 +87,6 @@ public:
     RewritePatternSet patterns4(&getContext());
     RewritePatternSet patterns5(&getContext());
     RewritePatternSet patterns6(&getContext());
-
 
     triton::populateXSMTOptimizationAndValidationPatterns(patterns0);
     if (failed(applyPatternsGreedily(moduleOp, std::move(patterns0)))) {
@@ -122,14 +122,11 @@ public:
     if (failed(applyPatternsGreedily(moduleOp, std::move(patterns6)))) {
       signalPassFailure();
     }
-
   }
-
 };
 
 } // namespace
 
-std::unique_ptr<OperationPass<ModuleOp>>
-triton::createXSMTToLinalgPass() {
+std::unique_ptr<OperationPass<ModuleOp>> triton::createXSMTToLinalgPass() {
   return std::make_unique<XSMTToLinalgPass>();
 }

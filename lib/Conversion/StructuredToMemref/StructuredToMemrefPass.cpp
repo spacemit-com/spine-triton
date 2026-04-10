@@ -9,7 +9,6 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "triton-shared/Conversion/StructuredToMemref/StructuredToMemref.h"
-#include "triton-shared/Dialect/TPtr/IR/TPtrDialect.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
@@ -28,6 +27,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Ptr/IR/PtrAttrs.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Dialect/Triton/IR/Types.h"
@@ -45,6 +45,10 @@ namespace triton {
 } // namespace mlir
 
 namespace {
+
+static ptr::MemorySpaceAttrInterface getPtrBridgeMemorySpace(MLIRContext *ctx) {
+  return ptr::GenericSpaceAttr::get(ctx);
+}
 
 class PtrToMemrefConverter : public TypeConverter {
 public:
@@ -66,7 +70,8 @@ public:
       auto layout = StridedLayoutAttr::get(ctx, /*offset=*/ShapedType::kDynamic,
                                            dynStrides);
 
-      return MemRefType::get(shape, pointeeType, layout, /*memorySpace=*/0);
+      return MemRefType::get(shape, pointeeType, layout,
+                             getPtrBridgeMemorySpace(ctx));
     });
     addConversion([](triton::PointerType ptrType) -> Type {
       MLIRContext *ctx = ptrType.getContext();
@@ -81,10 +86,11 @@ public:
         auto layout = StridedLayoutAttr::get(
             ctx, /*offset=*/ShapedType::kDynamic, dynStrides);
 
-        return MemRefType::get(shape, elementType, layout, /*memorySpace=*/0);
+        return MemRefType::get(shape, elementType, layout,
+                               getPtrBridgeMemorySpace(ctx));
       }
 
-      return UnrankedMemRefType::get(pointeeType, /*memorySpace=*/0);
+      return UnrankedMemRefType::get(pointeeType, getPtrBridgeMemorySpace(ctx));
     });
     addConversion([](xsmt::BufferType bufTy) -> Type {
       MLIRContext *ctx = bufTy.getContext();
@@ -147,13 +153,12 @@ class StructuredToMemrefPass
 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry
-        .insert<tptr::TPtrDialect, func::FuncDialect, arith::ArithDialect,
-                math::MathDialect, linalg::LinalgDialect, affine::AffineDialect,
-                scf::SCFDialect, tensor::TensorDialect,
-                bufferization::BufferizationDialect, triton::TritonDialect,
-                ttx::TritonTilingExtDialect, memref::MemRefDialect,
-                xsmt::XSMTDialect, xsmt_async::XSMTAsyncDialect>();
+    registry.insert<func::FuncDialect, arith::ArithDialect, math::MathDialect,
+                    linalg::LinalgDialect, affine::AffineDialect,
+                    scf::SCFDialect, tensor::TensorDialect,
+                    bufferization::BufferizationDialect, triton::TritonDialect,
+                    ttx::TritonTilingExtDialect, memref::MemRefDialect,
+                    xsmt::XSMTDialect, xsmt_async::XSMTAsyncDialect>();
   }
 
   void runOnOperation() override {

@@ -55,9 +55,51 @@ using namespace mlir::triton;
 static const std::string WRAP_SIDE_BY_SIDE = "wrap_side_by_side";
 static const std::string WRAP_STACKED = "wrap_stacked";
 
+static Value unwrapSubviewSource(Value source) {
+  while (true) {
+    if (auto castOp = source.getDefiningOp<memref::CastOp>()) {
+      source = castOp.getSource();
+      continue;
+    }
+    if (auto unrealizedCast =
+            source.getDefiningOp<UnrealizedConversionCastOp>()) {
+      if (unrealizedCast.getInputs().size() == 1 &&
+          !unrealizedCast->hasAttr(WRAP_SIDE_BY_SIDE) &&
+          !unrealizedCast->hasAttr(WRAP_STACKED)) {
+        Type inType = unrealizedCast.getInputs()[0].getType();
+        Type outType = unrealizedCast.getResult(0).getType();
+        // Only peel no-op memref<->memref materialization casts. If the cast
+        // is bridging from a non-memref type (for example ptr-like) to memref,
+        // keep it, otherwise getSubview may receive a non-memref source and
+        // crash on cast<MemRefType>.
+        if (isa<BaseMemRefType>(inType) && isa<BaseMemRefType>(outType)) {
+          source = unrealizedCast.getInputs()[0];
+          continue;
+        }
+      }
+    }
+    break;
+  }
+  return source;
+}
+
 static memref::SubViewOp getSubview(int rank, ArrayRef<OpFoldResult> dims,
                                     Value source, Location loc, OpBuilder &b) {
-  auto sourceType = cast<MemRefType>(source.getType());
+  source = unwrapSubviewSource(source);
+  auto sourceBaseType = dyn_cast<BaseMemRefType>(source.getType());
+  assert(sourceBaseType && "getSubview expects a memref-typed source");
+
+  MemRefType sourceType;
+  if (auto rankedType = dyn_cast<MemRefType>(sourceBaseType)) {
+    sourceType = rankedType;
+  } else {
+    auto unrankedType = cast<UnrankedMemRefType>(sourceBaseType);
+    SmallVector<int64_t> dynamicShape(rank, ShapedType::kDynamic);
+    sourceType = MemRefType::get(dynamicShape, unrankedType.getElementType(),
+                                 AffineMap(), unrankedType.getMemorySpace());
+    source = memref::CastOp::create(b, loc, sourceType, source);
+  }
+
   SmallVector<OpFoldResult> offsets(rank, b.getIndexAttr(0));
   SmallVector<OpFoldResult> strides(rank, b.getIndexAttr(1));
   auto dstType =
@@ -850,7 +892,8 @@ private:
     if (auto unrealizedCast =
             dyn_cast_or_null<UnrealizedConversionCastOp>(ptrDefiningOp)) {
       if (!unrealizedCast->hasAttr(WRAP_SIDE_BY_SIDE) &&
-          !unrealizedCast->hasAttr(WRAP_STACKED)) {
+          !unrealizedCast->hasAttr(WRAP_STACKED) &&
+          isa<BaseMemRefType>(unrealizedCast.getInputs()[0].getType())) {
         // Unwrap to use the source memref directly. Do NOT erase the
         // unrealized materialization created by the conversion framework;
         // removing it can cause assertion failures when it is an
@@ -1077,7 +1120,8 @@ private:
     if (auto unrealizedCast =
             dyn_cast_or_null<UnrealizedConversionCastOp>(ptrDefiningOp)) {
       if (!unrealizedCast->hasAttr(WRAP_SIDE_BY_SIDE) &&
-          !unrealizedCast->hasAttr(WRAP_STACKED)) {
+          !unrealizedCast->hasAttr(WRAP_STACKED) &&
+          isa<BaseMemRefType>(unrealizedCast.getInputs()[0].getType())) {
         // Unwrap to the source memref; do NOT erase the unrealized
         // conversion materialization here.
         ptr = unrealizedCast.getInputs()[0];

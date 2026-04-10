@@ -1164,6 +1164,27 @@ LogicalResult PtrAnalysis::visitOperandBitcast(triton::BitcastOp op,
                                                const Location loc,
                                                OpBuilder &builder) {
   auto resType = op.getResult().getType();
+  auto srcType = op.getSrc().getType();
+  auto isPtrTypeLikeLocal = [](Type t) {
+    if (auto tensor = dyn_cast<RankedTensorType>(t)) {
+      return isa<triton::PointerType>(tensor.getElementType());
+    }
+    return isa<triton::PointerType>(t);
+  };
+
+  // Pointer bitcasts should not terminate pointer-sequence analysis.  After
+  // the official ptr migration, scalar patterns such as:
+  //   %p1 = tt.addptr %base, %off : !tt.ptr<i1>, i64
+  //   %p2 = tt.bitcast %p1 : !tt.ptr<i1> -> !tt.ptr<i8>
+  //   tt.store %p2, ...
+  // are expected to behave like a no-op cast on the pointer value.  If we
+  // treat the bitcast result as a fresh source pointer, downstream rewriting
+  // sees an unexpected op in the pointer sequence and fails to recover the
+  // original addptr chain.
+  if (isPtrTypeLikeLocal(srcType) && isPtrTypeLikeLocal(resType)) {
+    return visitOperand(op.getSrc(), state, loc, builder);
+  }
+
   if (isa<ShapedType>(resType)) {
     return visitOperand(op.getSrc(), state, loc, builder);
   }
@@ -1293,6 +1314,17 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
     } else {
       state.source = operand;
       return success();
+    }
+  }
+
+  if (auto tensorType = dyn_cast<RankedTensorType>(operand.getType())) {
+    if (isa<triton::PointerType>(tensorType.getElementType())) {
+      if (!operand.getDefiningOp()) {
+        if (Value rewritten = ptrMap.lookupOrNull(operand)) {
+          state.source = rewritten;
+          return success();
+        }
+      }
     }
   }
 
@@ -1761,10 +1793,7 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
   }
 
   auto ptrType = dyn_cast<triton::PointerType>(ptr.getType());
-  if (ptrType && !isa<ShapedType>(ptrType.getPointeeType())) {
-    op->emitRemark("PtrAnalysis: scalar loadOp will not be rewritten");
-    return failure();
-  }
+  bool isScalarPtr = ptrType && !isa<ShapedType>(ptrType.getPointeeType());
 
   ArrayRef<OpFoldResult> dims;
   mlir::triton::MaskState mstate(useUnsafeMask);
@@ -1801,10 +1830,22 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
                      "unsupported instruction");
       return failure();
     }
+
+    Type targetType;
+    if (auto tensorTy = dyn_cast<RankedTensorType>(op.getType()))
+      targetType = tensorTy.getElementType();
+    else
+      targetType = op.getType();
+    scalarOther =
+        utils::castScalarToType(scalarOther, targetType, loc, builder);
   }
   auto paddingOpt = op.getPadding();
 
-  if (paddingOpt.has_value()) {
+  if (isScalarPtr) {
+    SmallVector<OpFoldResult> scalarDims{builder.getIndexAttr(1)};
+    newOp = tts::LoadOp::create(builder, loc, ptr, scalarDims, scalarOther,
+                                boundaryCheck, paddingOpt);
+  } else if (paddingOpt.has_value()) {
     newOp = tts::LoadOp::create(builder, loc, ptr, dims, scalarOther,
                                 boundaryCheck, paddingOpt);
   } else {
@@ -1915,10 +1956,7 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
   }
 
   auto ptrType = dyn_cast<triton::PointerType>(ptr.getType());
-  if (ptrType && !isa<ShapedType>(ptrType.getPointeeType())) {
-    op->emitRemark("PtrAnalysis: scalar storeOp will not be rewritten");
-    return failure();
-  }
+  bool isScalarPtr = ptrType && !isa<ShapedType>(ptrType.getPointeeType());
 
   ArrayRef<OpFoldResult> dims;
   mlir::triton::MaskState mstate(useUnsafeMask);
@@ -1943,6 +1981,35 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
       return failure();
     }
     dims = mstate.dims;
+  }
+
+  if (isScalarPtr) {
+    Value scalarVal = utils::getScalarValue(val, loc, builder);
+    if (!scalarVal) {
+      op->emitRemark("store value produced by unsupported instruction");
+      return failure();
+    }
+
+    Type targetType = ptrType.getPointeeType();
+    scalarVal = utils::castScalarToType(scalarVal, targetType, loc, builder);
+
+    auto tensorTy = RankedTensorType::get({}, targetType);
+    scalarVal = tensor::FromElementsOp::create(builder, loc, tensorTy,
+                                               ValueRange{scalarVal})
+                    .getResult();
+
+    newOp =
+        tts::StoreOp::create(builder, loc, ptr, scalarVal, dims, boundaryCheck);
+
+    auto storeOp = cast<tts::StoreOp>(newOp);
+
+    LLVM_DEBUG({
+      llvm::dbgs() << "creating scalar tts::store:\n";
+      storeOp->dump();
+    });
+
+    op->erase();
+    return success();
   }
 
   newOp = tts::StoreOp::create(builder, loc, ptr, val, dims, boundaryCheck);
@@ -1987,54 +2054,52 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
         .Case<triton::AddPtrOp>([&](auto addptr) {
           if (rewriteAddptrOp(addptr).failed()) {
             addptr->emitRemark("PtrAnalysis: Failed to rewrite AddPtrOp");
+          } else {
+            auto isPtrTypeLike = [](Type t) {
+              if (auto shaped = dyn_cast<ShapedType>(t))
+                return isa<triton::PointerType>(shaped.getElementType());
+              return isa<triton::PointerType>(t);
+            };
+
+            Value srcPtr = addptr.getPtr();
+            if (isPtrTypeLike(srcPtr.getType()) &&
+                isPtrTypeLike(addptr.getResult().getType())) {
+              if (Value rewrittenSrc = ptrMap.lookupOrNull(srcPtr))
+                ptrMap.map(addptr.getResult(), rewrittenSrc);
+            }
           }
           return WalkResult::advance();
         })
         .Case<triton::BitcastOp>([&](auto bitcast) {
-          // For tensor of pointers bitcast, normally propagate the ptrMap
-          // from source to result so subsequent load/store ops can find
-          // the rewritten pointer. However, skip propagation for
-          // ptr<i1> -> ptr<i8> bitcasts (common mask bitcast pattern),
-          // because propagating in that case causes loads to change their
-          // result element type from i8 to i1 while other users (e.g.,
-          // an existing arith.cmpi) still expect i8, producing type
-          // mismatches. See discussion in issue reports.
-          if (isa<ShapedType>(bitcast.getType())) {
-            Value src = bitcast.getSrc();
-
-            // Helper: extract pointee integer width if value is tensor/ptr
-            auto getPointeeIntWidth = [&](Type t) -> std::optional<int> {
-              if (auto shaped = dyn_cast<ShapedType>(t))
-                t = shaped.getElementType();
-              if (auto ptrTy = dyn_cast<triton::PointerType>(t)) {
-                if (auto intTy = dyn_cast<IntegerType>(ptrTy.getPointeeType()))
-                  return intTy.getWidth();
-              }
-              return std::nullopt;
-            };
-
-            Type srcTy = src.getType();
-            Type dstTy = bitcast.getType();
-            auto srcWidth = getPointeeIntWidth(srcTy);
-            auto dstWidth = getPointeeIntWidth(dstTy);
-
-            bool isBoolToBytecast = false;
-            if (srcWidth.has_value() && dstWidth.has_value()) {
-              if (srcWidth.value() == 1 && dstWidth.value() == 8)
-                isBoolToBytecast = true;
+          // Propagate rewritten pointer state across pointer-only bitcasts so
+          // subsequent load/store rewrites can still resolve the original
+          // tts.make_tptr chain. This must work for both tensor and scalar
+          // pointer casts, including the common ptr<i1> -> ptr<i8> store path.
+          auto isPtrTypeLike = [](Type t) {
+            if (auto shaped = dyn_cast<ShapedType>(t))
+              return isa<triton::PointerType>(shaped.getElementType());
+            return isa<triton::PointerType>(t);
+          };
+          Value src = bitcast.getSrc();
+          if (isPtrTypeLike(src.getType()) &&
+              isPtrTypeLike(bitcast.getType())) {
+            if (Value rewrittenSrc = ptrMap.lookupOrNull(src)) {
+              ptrMap.map(bitcast.getResult(), rewrittenSrc);
             }
-
-            if (isBoolToBytecast) {
-              LLVM_DEBUG({
-                llvm::dbgs() << "Skipping ptrMap propagation for bool->byte "
-                                "bitcast at: ";
-                bitcast->dump();
-              });
-            } else {
-              if (Value rewrittenSrc = ptrMap.lookupOrNull(src)) {
-                ptrMap.map(bitcast.getResult(), rewrittenSrc);
-              }
-            }
+          }
+          return WalkResult::advance();
+        })
+        .Case<triton::SplatOp>([&](auto splat) {
+          auto isPtrTypeLike = [](Type t) {
+            if (auto shaped = dyn_cast<ShapedType>(t))
+              return isa<triton::PointerType>(shaped.getElementType());
+            return isa<triton::PointerType>(t);
+          };
+          Value src = splat.getSrc();
+          if (isPtrTypeLike(src.getType()) &&
+              isPtrTypeLike(splat.getResult().getType())) {
+            if (Value rewrittenSrc = ptrMap.lookupOrNull(src))
+              ptrMap.map(splat.getResult(), rewrittenSrc);
           }
           return WalkResult::advance();
         })

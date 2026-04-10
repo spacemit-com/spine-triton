@@ -12,7 +12,9 @@ namespace tts {
 namespace utils {
 mlir::Value getScalarValue(mlir::Value operand, mlir::Location loc,
                            mlir::OpBuilder &builder);
-}
+mlir::Value castScalarToType(mlir::Value scalar, mlir::Type targetType,
+                             mlir::Location loc, mlir::OpBuilder &builder);
+} // namespace utils
 } // namespace tts
 } // namespace mlir
 

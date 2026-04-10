@@ -17,6 +17,7 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Ptr/IR/PtrAttrs.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
@@ -46,12 +47,18 @@ namespace mlir::triton {
 
 namespace {
 
+static ptr::MemorySpaceAttrInterface getPtrBridgeMemorySpace(MLIRContext *ctx) {
+  return ptr::GenericSpaceAttr::get(ctx);
+}
+
 class PtrToUnrankedMemrefConverter : public TypeConverter {
 public:
   PtrToUnrankedMemrefConverter() {
     addConversion([](Type type) { return type; });
     addConversion([](triton::PointerType ptrType) {
-      return UnrankedMemRefType::get(ptrType.getPointeeType(), 0);
+      auto *ctx = ptrType.getContext();
+      return UnrankedMemRefType::get(ptrType.getPointeeType(),
+                                     getPtrBridgeMemorySpace(ctx));
     });
     addTargetMaterialization([&](OpBuilder &builder,
                                  UnrankedMemRefType resultType,
@@ -68,7 +75,8 @@ static MemRefType getMemrefTypeForScalarPtr(triton::PointerType ptrType,
   SmallVector<int64_t> strides{1};
   auto layout = StridedLayoutAttr::get(context, ShapedType::kDynamic, strides);
   auto elemType = ptrType.getPointeeType();
-  auto memrefType = MemRefType::get({1}, elemType, layout);
+  auto memrefType =
+      MemRefType::get({1}, elemType, layout, getPtrBridgeMemorySpace(context));
   return memrefType;
 }
 
@@ -191,10 +199,12 @@ struct GatherConverter : public OpConversionPattern<tts::GatherOp> {
     // Treat the base pointer (memref) as 1D because the offsets are all
     // relative to a single base pointer (already collapsed).
     auto baseMemref =
-        memref::CastOp::create(rewriter, loc,
-                               MemRefType::get({ShapedType::kDynamic},
-                                               resultType.getElementType()),
-                               ptr)
+        memref::CastOp::create(
+            rewriter, loc,
+            MemRefType::get({ShapedType::kDynamic}, resultType.getElementType(),
+                            AffineMap(),
+                            getPtrBridgeMemorySpace(rewriter.getContext())),
+            ptr)
             .getResult();
 
     auto baseTensor =
@@ -316,7 +326,9 @@ struct ScatterConverter : public OpConversionPattern<tts::ScatterOp> {
     auto baseMemref =
         memref::CastOp::create(
             rewriter, loc,
-            MemRefType::get({ShapedType::kDynamic}, valueType.getElementType()),
+            MemRefType::get({ShapedType::kDynamic}, valueType.getElementType(),
+                            AffineMap(),
+                            getPtrBridgeMemorySpace(rewriter.getContext())),
             ptr)
             .getResult();
 

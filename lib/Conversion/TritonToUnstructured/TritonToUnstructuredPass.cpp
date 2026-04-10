@@ -399,6 +399,29 @@ public:
 
                   return success();
                 })
+                .Case<triton::BitcastOp>([&](triton::BitcastOp op) {
+                  auto isPtrTypeLikeLocal = [](Type type) {
+                    if (auto tensorType = dyn_cast<RankedTensorType>(type))
+                      return isa<triton::PointerType>(
+                          tensorType.getElementType());
+                    return isa<triton::PointerType>(type);
+                  };
+
+                  if (!isPtrTypeLikeLocal(op.getSrc().getType()) ||
+                      !isPtrTypeLikeLocal(op.getResult().getType())) {
+                    op.emitError("unexpected op in ptr sequence");
+                    return failure();
+                  }
+
+                  auto offsetInfo = offsetMap.at(op.getSrc());
+                  PtrOffset newOffsetInfo{
+                      offsetInfo.ptr, op.getResult().getType(),
+                      offsetInfo.bitWidth, offsetInfo.offset};
+                  offsetMap.insert({op.getResult(), newOffsetInfo});
+                  workList.push(op.getResult());
+                  toDelete.push_back(op);
+                  return success();
+                })
                 .Case<tts::MakeGatherScatterTensorPtrOp>(
                     [&](Operation *op) { return success(); })
                 .Case<triton::LoadOp, triton::StoreOp, triton::MakeTensorPtrOp,
@@ -511,6 +534,21 @@ public:
                                        offsetInfo.offset, store.getValue(),
                                        store.getMask());
                 store->erase();
+                return success();
+              })
+              .Case<triton::BitcastOp>([&](triton::BitcastOp op) {
+                auto isPtrTypeLikeLocal = [](Type type) {
+                  if (auto tensorType = dyn_cast<RankedTensorType>(type))
+                    return isa<triton::PointerType>(
+                        tensorType.getElementType());
+                  return isa<triton::PointerType>(type);
+                };
+
+                if (!isPtrTypeLikeLocal(op.getSrc().getType()) ||
+                    !isPtrTypeLikeLocal(op.getResult().getType())) {
+                  op.emitError("unexpected op in ptr sequence");
+                  return failure();
+                }
                 return success();
               })
               .Case<triton::MakeTensorPtrOp,

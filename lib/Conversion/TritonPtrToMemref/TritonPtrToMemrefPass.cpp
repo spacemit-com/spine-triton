@@ -8,6 +8,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Ptr/IR/PtrAttrs.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -45,19 +46,26 @@ namespace mlir::triton {
 
 namespace {
 
+static ptr::MemorySpaceAttrInterface getPtrBridgeMemorySpace(MLIRContext *ctx) {
+  return ptr::GenericSpaceAttr::get(ctx);
+}
+
 class TritonFunctionSignatureConverter : public TypeConverter {
 public:
   TritonFunctionSignatureConverter() {
     // The order of type conversion is important: later ones are tried earlier.
     addConversion([](Type type) { return type; });
     addConversion([](triton::PointerType ptrType) {
+      auto *ctx = ptrType.getContext();
       return UnrankedMemRefType::get(ptrType.getPointeeType(),
-                                     /*memorySpace=*/0);
+                                     getPtrBridgeMemorySpace(ctx));
     });
     addConversion([](RankedTensorType tensorType) -> std::optional<Type> {
       if (auto ptrType =
               dyn_cast<triton::PointerType>(tensorType.getElementType())) {
-        return MemRefType::get(tensorType.getShape(), ptrType.getPointeeType());
+        auto *ctx = tensorType.getContext();
+        return MemRefType::get(tensorType.getShape(), ptrType.getPointeeType(),
+                               AffineMap(), getPtrBridgeMemorySpace(ctx));
       }
       return std::nullopt;
     });

@@ -15,6 +15,7 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Ptr/IR/PtrAttrs.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Passes.h"
@@ -34,18 +35,27 @@ namespace mlir::triton {
 
 namespace {
 
+static ptr::MemorySpaceAttrInterface getPtrBridgeMemorySpace(MLIRContext *ctx) {
+  return ptr::GenericSpaceAttr::get(ctx);
+}
+
 class TritonTypeConverter : public TypeConverter {
 public:
   TritonTypeConverter() {
     // The order of type conversion is important: later ones are tried earlier.
     addConversion([](Type type) { return type; });
     addConversion([](triton::PointerType ptrType) {
-      return UnrankedMemRefType::get(ptrType.getPointeeType(), 0);
+      auto *ctx = ptrType.getContext();
+      return UnrankedMemRefType::get(ptrType.getPointeeType(),
+                                     getPtrBridgeMemorySpace(ctx));
     });
     addConversion([](TensorType tensorType) -> Type {
       auto elemType = tensorType.getElementType();
       if (auto ptrType = dyn_cast<triton::PointerType>(elemType)) {
         elemType = ptrType.getPointeeType();
+        return MemRefType::get(
+            tensorType.getShape(), elemType, AffineMap(),
+            getPtrBridgeMemorySpace(tensorType.getContext()));
       }
       return MemRefType::get(tensorType.getShape(), elemType);
     });
