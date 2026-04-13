@@ -8,6 +8,7 @@
 #include "triton-shared/AnalysisStructured/PtrAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Visitors.h"
@@ -1299,6 +1300,9 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
       } else if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
         state.source = operand;
         return success();
+      } else if (auto selectOp = dyn_cast<arith::SelectOp>(op)) {
+        state.source = operand;
+        return success();
       } else if (auto allocOp = dyn_cast<xsmt::AllocOp>(op)) {
         return visitOperandAlloc(allocOp, state, loc, builder);
       } else if (auto BufferTensorViewOp =
@@ -1732,12 +1736,17 @@ PtrAnalysis::rewriteGetStructuredStateOp(tts::GetStructuredStateOp op) {
     // relevant state that could be updated by the loop.
     if (state.scalar) {
       replacements.push_back(state.scalar);
+      // origiOffset: use the same scalar value as the original offset
+      replacements.push_back(state.scalar);
     } else {
-      // This operand is a pointer directly from the kernel arguments.
+      // This operand is a pointer directly from the kernel arguments
+      // or produced by scf.if / arith.select.
       // Use offset 0.
-      assert(!tritonValue.getDefiningOp());
-      replacements.push_back(arith::ConstantOp::create(
-          builder, op.getLoc(), builder.getIndexAttr(0)));
+      auto zeroOffset = arith::ConstantOp::create(builder, op.getLoc(),
+                                                  builder.getIndexAttr(0));
+      replacements.push_back(zeroOffset);
+      // origiOffset
+      replacements.push_back(zeroOffset);
     }
   } else {
     for (auto [j, s] : llvm::enumerate(state.offsets)) {
@@ -1826,6 +1835,16 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
 
     scalarOther = utils::getScalarValue(other, loc, builder);
     if (!scalarOther) {
+      // Fallback: extract element from a single-element tensor.
+      if (auto otherTensorTy = dyn_cast<RankedTensorType>(other.getType())) {
+        if (otherTensorTy.getRank() == 1 && otherTensorTy.getDimSize(0) == 1) {
+          Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
+          scalarOther =
+              tensor::ExtractOp::create(builder, loc, other, ValueRange{zero});
+        }
+      }
+    }
+    if (!scalarOther) {
       op->emitRemark("other value used in masked load produced by "
                      "unsupported instruction");
       return failure();
@@ -1859,7 +1878,111 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
     loadOp->dump();
   });
 
-  op.replaceAllUsesWith(loadOp.getResult());
+  // When the pointer was rewritten through a tt.bitcast that changed the
+  // pointee type (e.g. ptr<i1> -> ptr<i8>), the tts.load result element type
+  // may differ from the original tt.load result element type.  Bridge the gap
+  // with an arith.extui / arith.trunci so that downstream ops see the expected
+  // type.
+  Value loadResult = loadOp.getResult();
+  Type origResultTy = op.getResult().getType();
+  if (loadResult.getType() != origResultTy) {
+    auto origTensorTy = dyn_cast<RankedTensorType>(origResultTy);
+    auto loadTensorTy = dyn_cast<RankedTensorType>(loadResult.getType());
+
+    // Handle scalar-ptr load: tts::LoadOp always produces a tensor (e.g.
+    // tensor<1xi64>) even for scalar pointer loads, but the original tt.load
+    // produced a scalar (e.g. i64).  Extract the single element so that
+    // downstream users see the expected scalar type.
+    if (!origTensorTy && loadTensorTy && loadTensorTy.getRank() == 1 &&
+        loadTensorTy.getDimSize(0) == 1) {
+      Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
+      loadResult =
+          tensor::ExtractOp::create(builder, loc, loadResult, ValueRange{zero});
+      // If the element type also differs (e.g. bitcast changed pointee),
+      // cast to the original scalar type.
+      if (loadResult.getType() != origResultTy) {
+        if (isa<IntegerType>(origResultTy) &&
+            isa<IntegerType>(loadResult.getType())) {
+          unsigned origBits = cast<IntegerType>(origResultTy).getWidth();
+          unsigned loadBits =
+              cast<IntegerType>(loadResult.getType()).getWidth();
+          if (origBits > loadBits)
+            loadResult =
+                arith::ExtSIOp::create(builder, loc, origResultTy, loadResult);
+          else
+            loadResult =
+                arith::TruncIOp::create(builder, loc, origResultTy, loadResult);
+        }
+      }
+    } else if (origTensorTy && loadTensorTy) {
+      // Handle shape mismatch: when the structured load produces a
+      // lower-rank tensor (e.g. tensor<1xi16> vs tensor<1x1xi16>),
+      // insert tensor.expand_shape to restore the original shape so
+      // that downstream ops see the expected type.
+      if (origTensorTy.getRank() > loadTensorTy.getRank() &&
+          origTensorTy.getElementType() == loadTensorTy.getElementType()) {
+        // Build reassociation indices: map each load dim to the
+        // corresponding group of original dims.  Unit dims in the
+        // original that are missing in the load are grouped with
+        // their nearest non-unit neighbor.
+        SmallVector<ReassociationIndices> reassociation;
+        int64_t loadRank = loadTensorTy.getRank();
+        int64_t origRank = origTensorTy.getRank();
+        auto origShape = origTensorTy.getShape();
+
+        // Simple strategy: greedily assign original dims to load dims.
+        // Each load dim absorbs consecutive original dims whose product
+        // equals the load dim size.
+        int64_t origIdx = 0;
+        for (int64_t loadIdx = 0; loadIdx < loadRank; ++loadIdx) {
+          ReassociationIndices group;
+          int64_t product = 1;
+          int64_t target = loadTensorTy.getDimSize(loadIdx);
+          while (origIdx < origRank && product < target) {
+            group.push_back(origIdx);
+            product *= origShape[origIdx];
+            ++origIdx;
+          }
+          if (product != target && origIdx < origRank) {
+            group.push_back(origIdx);
+            ++origIdx;
+          }
+          // Absorb trailing unit dims for the last load dim.
+          if (loadIdx == loadRank - 1) {
+            while (origIdx < origRank) {
+              group.push_back(origIdx);
+              ++origIdx;
+            }
+          }
+          if (group.empty()) {
+            group.push_back(origIdx > 0 ? origIdx - 1 : 0);
+          }
+          reassociation.push_back(group);
+        }
+
+        loadResult = tensor::ExpandShapeOp::create(builder, loc, origTensorTy,
+                                                   loadResult, reassociation);
+      }
+      // Handle element type mismatch (e.g. bitcast changed pointee type).
+      else if (origTensorTy.getShape() == loadTensorTy.getShape() &&
+               isa<IntegerType>(origTensorTy.getElementType()) &&
+               isa<IntegerType>(loadTensorTy.getElementType())) {
+        unsigned origBits =
+            cast<IntegerType>(origTensorTy.getElementType()).getWidth();
+        unsigned loadBits =
+            cast<IntegerType>(loadTensorTy.getElementType()).getWidth();
+        if (origBits > loadBits) {
+          loadResult =
+              arith::ExtUIOp::create(builder, loc, origResultTy, loadResult);
+        } else {
+          loadResult =
+              arith::TruncIOp::create(builder, loc, origResultTy, loadResult);
+        }
+      }
+    }
+  }
+
+  op.replaceAllUsesWith(loadResult);
   op->erase();
   return success();
 }
@@ -1986,6 +2109,18 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
   if (isScalarPtr) {
     Value scalarVal = utils::getScalarValue(val, loc, builder);
     if (!scalarVal) {
+      // getScalarValue could not trace through the op chain (e.g. the value
+      // is produced by arith.cmpi or another unsupported op).  For rank-1
+      // tensors with a single element we can fall back to tensor.extract.
+      if (auto valTensorTy = dyn_cast<RankedTensorType>(val.getType())) {
+        if (valTensorTy.getRank() == 1 && valTensorTy.getDimSize(0) == 1) {
+          Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
+          scalarVal =
+              tensor::ExtractOp::create(builder, loc, val, ValueRange{zero});
+        }
+      }
+    }
+    if (!scalarVal) {
       op->emitRemark("store value produced by unsupported instruction");
       return failure();
     }
@@ -2012,7 +2147,41 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
     return success();
   }
 
-  newOp = tts::StoreOp::create(builder, loc, ptr, val, dims, boundaryCheck);
+  // When the pointer was rewritten through a tt.bitcast that changed the
+  // pointee type (e.g. ptr<i8> -> ptr<i1>), the store value element type may
+  // differ from the pointer's pointee type.  Bridge the gap with an
+  // arith.extui / arith.trunci so that the tts.store sees matching types.
+  Value storeVal = val;
+  if (auto valTensorTy = dyn_cast<RankedTensorType>(val.getType())) {
+    // Determine the expected element type from the pointer.
+    Type ptrPointee;
+    if (ptrType) {
+      ptrPointee = ptrType.getPointeeType();
+    } else if (auto shapedPtrTy = dyn_cast<RankedTensorType>(ptr.getType())) {
+      if (auto innerPtr =
+              dyn_cast<triton::PointerType>(shapedPtrTy.getElementType()))
+        ptrPointee = innerPtr.getPointeeType();
+    }
+    if (ptrPointee && ptrPointee != valTensorTy.getElementType() &&
+        isa<IntegerType>(ptrPointee) &&
+        isa<IntegerType>(valTensorTy.getElementType())) {
+      auto targetTensorTy =
+          RankedTensorType::get(valTensorTy.getShape(), ptrPointee);
+      unsigned ptrBits = cast<IntegerType>(ptrPointee).getWidth();
+      unsigned valBits =
+          cast<IntegerType>(valTensorTy.getElementType()).getWidth();
+      if (ptrBits < valBits) {
+        storeVal =
+            arith::TruncIOp::create(builder, loc, targetTensorTy, storeVal);
+      } else {
+        storeVal =
+            arith::ExtUIOp::create(builder, loc, targetTensorTy, storeVal);
+      }
+    }
+  }
+
+  newOp =
+      tts::StoreOp::create(builder, loc, ptr, storeVal, dims, boundaryCheck);
 
   auto storeOp = cast<tts::StoreOp>(newOp);
 
@@ -2055,17 +2224,26 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
           if (rewriteAddptrOp(addptr).failed()) {
             addptr->emitRemark("PtrAnalysis: Failed to rewrite AddPtrOp");
           } else {
-            auto isPtrTypeLike = [](Type t) {
-              if (auto shaped = dyn_cast<ShapedType>(t))
-                return isa<triton::PointerType>(shaped.getElementType());
-              return isa<triton::PointerType>(t);
-            };
+            // Only propagate the source-pointer mapping as a fallback when
+            // rewriteAddptrOp did NOT already register a tts.make_tptr (or
+            // similar) for this result.  Without this guard the walk
+            // unconditionally overwrites the tensor-pointer mapping created
+            // inside rewriteAddptrOp with the *scalar* base pointer coming
+            // from tt.splat, which causes downstream tts.load to produce
+            // tensor<1xf32> instead of tensor<Nxf32>.
+            if (!ptrMap.lookupOrNull(addptr.getResult())) {
+              auto isPtrTypeLike = [](Type t) {
+                if (auto shaped = dyn_cast<ShapedType>(t))
+                  return isa<triton::PointerType>(shaped.getElementType());
+                return isa<triton::PointerType>(t);
+              };
 
-            Value srcPtr = addptr.getPtr();
-            if (isPtrTypeLike(srcPtr.getType()) &&
-                isPtrTypeLike(addptr.getResult().getType())) {
-              if (Value rewrittenSrc = ptrMap.lookupOrNull(srcPtr))
-                ptrMap.map(addptr.getResult(), rewrittenSrc);
+              Value srcPtr = addptr.getPtr();
+              if (isPtrTypeLike(srcPtr.getType()) &&
+                  isPtrTypeLike(addptr.getResult().getType())) {
+                if (Value rewrittenSrc = ptrMap.lookupOrNull(srcPtr))
+                  ptrMap.map(addptr.getResult(), rewrittenSrc);
+              }
             }
           }
           return WalkResult::advance();
@@ -2073,18 +2251,36 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
         .Case<triton::BitcastOp>([&](auto bitcast) {
           // Propagate rewritten pointer state across pointer-only bitcasts so
           // subsequent load/store rewrites can still resolve the original
-          // tts.make_tptr chain. This must work for both tensor and scalar
-          // pointer casts, including the common ptr<i1> -> ptr<i8> store path.
+          // tts.make_tptr chain.
+          //
+          // However, when the bitcast changes the pointee type (e.g.
+          // ptr<i1> -> ptr<i8>), do NOT propagate.  The structured store
+          // path would use the original pointee type, producing an i1 store
+          // instead of the intended i8 store.  Letting the store fall
+          // through to the unstructured path (TritonToUnstructured) is
+          // correct because that pass already bitcasts the base pointer.
           auto isPtrTypeLike = [](Type t) {
             if (auto shaped = dyn_cast<ShapedType>(t))
               return isa<triton::PointerType>(shaped.getElementType());
             return isa<triton::PointerType>(t);
           };
+          auto getPointeeType = [](Type t) -> Type {
+            if (auto shaped = dyn_cast<ShapedType>(t))
+              t = shaped.getElementType();
+            if (auto ptrTy = dyn_cast<triton::PointerType>(t))
+              return ptrTy.getPointeeType();
+            return {};
+          };
           Value src = bitcast.getSrc();
           if (isPtrTypeLike(src.getType()) &&
               isPtrTypeLike(bitcast.getType())) {
-            if (Value rewrittenSrc = ptrMap.lookupOrNull(src)) {
-              ptrMap.map(bitcast.getResult(), rewrittenSrc);
+            Type srcPointee = getPointeeType(src.getType());
+            Type dstPointee = getPointeeType(bitcast.getType());
+            // Only propagate when the pointee type is unchanged.
+            if (srcPointee && dstPointee && srcPointee == dstPointee) {
+              if (Value rewrittenSrc = ptrMap.lookupOrNull(src)) {
+                ptrMap.map(bitcast.getResult(), rewrittenSrc);
+              }
             }
           }
           return WalkResult::advance();

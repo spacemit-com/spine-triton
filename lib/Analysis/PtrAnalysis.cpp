@@ -43,8 +43,9 @@ MemRefType PtrState::getResultMemrefType(MLIRContext *context, int64_t offset,
   auto elementType = cast<BaseMemRefType>(source.getType()).getElementType();
   auto layout =
       StridedLayoutAttr::get(source.getContext(), offset, staticStrides);
+  auto memorySpace = cast<BaseMemRefType>(source.getType()).getMemorySpace();
 
-  return MemRefType::get(resultShape, elementType, layout);
+  return MemRefType::get(resultShape, elementType, layout, memorySpace);
 }
 
 OpFoldResult
@@ -210,7 +211,8 @@ PtrState::createStackedCastOps(ArrayRef<int64_t> resultShape,
   Value strideRow = ofrToIndexValue(strides[0], loc, rewriter);
   Value strideCol = ofrToIndexValue(strides[1], loc, rewriter);
 
-  Value modRow = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), modulos[0]->size);
+  Value modRow = arith::IndexCastOp::create(
+      rewriter, loc, rewriter.getIndexType(), modulos[0]->size);
 
   // First chunk
   Value wrappedAroundOff =
@@ -222,13 +224,15 @@ PtrState::createStackedCastOps(ArrayRef<int64_t> resultShape,
   d1 = arith::DivSIOp::create(rewriter, loc, d1, strideRow);
 
   SmallVector<Value> sizes1{d1, colSize};
-  memref::ReinterpretCastOp cast1 = memref::ReinterpretCastOp::create(rewriter, loc, resultType, source, targetOffset, sizes1,
+  memref::ReinterpretCastOp cast1 = memref::ReinterpretCastOp::create(
+      rewriter, loc, resultType, source, targetOffset, sizes1,
       ValueRange{strideRow, strideCol});
 
   // Second chunk
   Value d2 = arith::SubIOp::create(rewriter, loc, rowSize, d1);
   SmallVector<Value> sizes2{d2, colSize};
-  memref::ReinterpretCastOp cast2 = memref::ReinterpretCastOp::create(rewriter, loc, resultType, source, wrappedAroundOff, sizes2,
+  memref::ReinterpretCastOp cast2 = memref::ReinterpretCastOp::create(
+      rewriter, loc, resultType, source, wrappedAroundOff, sizes2,
       ValueRange{strideRow, strideCol});
 
   return {cast1, cast2};
@@ -296,8 +300,8 @@ PtrState::createSideBySideCastOps(ArrayRef<int64_t> resultShape,
   Value rowSize = ofrToIndexValue(sizes[0], loc, rewriter);
   Value colSize = ofrToIndexValue(sizes[1], loc, rewriter);
 
-  Value modN = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(),
-                                                   modulos[1]->size);
+  Value modN = arith::IndexCastOp::create(
+      rewriter, loc, rewriter.getIndexType(), modulos[1]->size);
 
   Value x = arith::RemSIOp::create(rewriter, loc, targetOffset, modN);
   Value y = arith::SubIOp::create(rewriter, loc, targetOffset, x);
@@ -310,13 +314,15 @@ PtrState::createSideBySideCastOps(ArrayRef<int64_t> resultShape,
   Value d1 = arith::SubIOp::create(rewriter, loc, clampedOffset, x);
   SmallVector<Value> sizes1{rowSize, d1};
 
-  auto cast1 = memref::ReinterpretCastOp::create(rewriter, loc, resultType, source, targetOffset, sizes1, strideVals);
+  auto cast1 = memref::ReinterpretCastOp::create(
+      rewriter, loc, resultType, source, targetOffset, sizes1, strideVals);
 
   // Second chunk
   Value d2 = arith::SubIOp::create(rewriter, loc, colSize, d1);
   SmallVector<Value> sizes2{rowSize, d2};
 
-  auto cast2 = memref::ReinterpretCastOp::create(rewriter, loc, resultType, source, y, sizes2, strideVals);
+  auto cast2 = memref::ReinterpretCastOp::create(rewriter, loc, resultType,
+                                                 source, y, sizes2, strideVals);
 
   return {cast1, cast2};
 }
@@ -336,7 +342,8 @@ PtrState::createCastOp(ArrayRef<int64_t> resultShape, const Location loc,
       getResultMemrefType(rewriter.getContext(), staticOffset[0], resultShape);
 
   // Create reinterpret cast
-  return memref::ReinterpretCastOp::create(rewriter, loc, resultType, source, targetOffset, sizes, strides);
+  return memref::ReinterpretCastOp::create(rewriter, loc, resultType, source,
+                                           targetOffset, sizes, strides);
 }
 
 void PtrAnalysis::visitOperandAdd(
@@ -642,7 +649,8 @@ void PtrAnalysis::visitOperand(
   }
 
   if (isa<IntegerType>(operand.getType())) {
-    auto castOp = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), operand);
+    auto castOp = arith::IndexCastOp::create(rewriter, loc,
+                                             rewriter.getIndexType(), operand);
     state.scalar = castOp.getResult();
     return;
   }
@@ -799,8 +807,9 @@ void PtrAnalysis::rewriteAddptrOp(
 
     UnrealizedConversionCastOp combinedCast =
         UnrealizedConversionCastOp::create(rewriter, op.getLoc(), resultType,
-            ValueRange{casts[0].getResult(), casts[1].getResult(),
-                       op.getResult()});
+                                           ValueRange{casts[0].getResult(),
+                                                      casts[1].getResult(),
+                                                      op.getResult()});
 
     combinedCast->setAttr(ModuloState::WraparoundAttr,
                           rewriter.getStringAttr(type));
@@ -850,14 +859,16 @@ void PtrAnalysis::rewriteAdvanceOp(
        llvm::zip(incrementOffsets, ptrState.offsets, ptrState.strides)) {
     Value offsetValue;
     if (auto offsetIntAttr = getIntAttr(offset)) {
-      auto constOp = arith::ConstantOp::create(rewriter, op.getLoc(), rewriter.getIndexAttr(0));
+      auto constOp = arith::ConstantOp::create(rewriter, op.getLoc(),
+                                               rewriter.getIndexAttr(0));
       offsetValue = constOp.getResult();
     } else {
       offsetValue = cast<Value>(offset);
     }
-    auto castOp = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), increment);
+    auto castOp = arith::IndexCastOp::create(
+        rewriter, loc, rewriter.getIndexType(), increment);
     auto mulOp = arith::MulIOp::create(rewriter, loc, castOp.getResult(),
-                                                cast<Value>(stride));
+                                       cast<Value>(stride));
     auto addOp =
         arith::AddIOp::create(rewriter, loc, mulOp.getResult(), offsetValue);
     newOffsets.push_back(addOp.getResult());
@@ -985,7 +996,8 @@ void PtrAnalysis::rewriteYieldOp(
       // zeroes.
       if (auto sIntAttr = getIntAttr(s)) {
         assert(sIntAttr.value() == 0 && "attribute offsets should be zeroes");
-        auto constOp = arith::ConstantOp::create(rewriter, op.getLoc(), rewriter.getIndexAttr(0));
+        auto constOp = arith::ConstantOp::create(rewriter, op.getLoc(),
+                                                 rewriter.getIndexAttr(0));
         operands.push_back(constOp.getResult());
       } else {
         operands.push_back(cast<Value>(s));
@@ -1155,7 +1167,8 @@ void PtrAnalysis::rewriteForOp(
     for (auto [j, s] : llvm::enumerate(state.offsets)) {
       auto sIntAttr = getIntAttr(s);
       if (sIntAttr) {
-        auto constOp = arith::ConstantOp::create(rewriter, op.getLoc(), rewriter.getIndexAttr(sIntAttr.value()));
+        auto constOp = arith::ConstantOp::create(
+            rewriter, op.getLoc(), rewriter.getIndexAttr(sIntAttr.value()));
         newInitArgs.push_back(constOp.getResult());
         state.offsets[j] = constOp.getResult();
       } else {
@@ -1166,7 +1179,8 @@ void PtrAnalysis::rewriteForOp(
     for (auto [j, s] : llvm::enumerate(state.strides)) {
       auto sIntAttr = getIntAttr(s);
       if (sIntAttr) {
-        auto constOp = arith::ConstantOp::create(rewriter, op.getLoc(), rewriter.getIndexAttr(sIntAttr.value()));
+        auto constOp = arith::ConstantOp::create(
+            rewriter, op.getLoc(), rewriter.getIndexAttr(sIntAttr.value()));
         newInitArgs.push_back(constOp.getResult());
         state.strides[j] = constOp.getResult();
       } else {
@@ -1227,8 +1241,10 @@ void PtrAnalysis::rewriteForOp(
   rewriter.restoreInsertionPoint(origIp);
 
   // Create a new scf::ForOp that uses updated init args and same loop body
-  auto newOp = scf::ForOp::create(rewriter, op.getLoc(), op.getLowerBound(), op.getUpperBound(), op.getStep(),
-      newInitArgs, [&](OpBuilder &b, Location loc, Value iv, ValueRange args) {
+  auto newOp = scf::ForOp::create(
+      rewriter, op.getLoc(), op.getLowerBound(), op.getUpperBound(),
+      op.getStep(), newInitArgs,
+      [&](OpBuilder &b, Location loc, Value iv, ValueRange args) {
         IRMapping mapping;
         mapping.map(op.getInductionVar(), iv);
         mapping.map(op.getInitArgs(), newInitArgs);
@@ -1260,8 +1276,9 @@ void PtrAnalysis::rewriteForOp(
             newReinterpretCasts.push_back(args[chunk.initArgIndex]);
           }
 
-          auto combinedCast = UnrealizedConversionCastOp::create(b, loc, unrealizedCastOp.getResult(0).getType(), newReinterpretCasts,
-              unrealizedCastOp->getAttrs());
+          auto combinedCast = UnrealizedConversionCastOp::create(
+              b, loc, unrealizedCastOp.getResult(0).getType(),
+              newReinterpretCasts, unrealizedCastOp->getAttrs());
 
           args[chunkData[0].initArgIndex].replaceUsesWithIf(
               combinedCast.getResult(0), [](OpOperand &operand) {

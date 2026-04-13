@@ -414,9 +414,42 @@ public:
                   }
 
                   auto offsetInfo = offsetMap.at(op.getSrc());
-                  PtrOffset newOffsetInfo{
-                      offsetInfo.ptr, op.getResult().getType(),
-                      offsetInfo.bitWidth, offsetInfo.offset};
+
+                  // When bitcast changes the pointee type (e.g. i1 -> i8),
+                  // we must also bitcast the base pointer so that downstream
+                  // scatter/gather ops see a base ptr with the correct
+                  // element type.  Otherwise UnstructuredToMemref will try
+                  // an illegal memref.cast (e.g. memref<*xi1> -> memref<?xi8>).
+                  Value newPtr = offsetInfo.ptr;
+                  auto getScalarPtrType = [](Type type) -> triton::PointerType {
+                    if (auto tensorType = dyn_cast<RankedTensorType>(type))
+                      return dyn_cast<triton::PointerType>(
+                          tensorType.getElementType());
+                    return dyn_cast<triton::PointerType>(type);
+                  };
+                  auto oldScalarPtrTy = getScalarPtrType(offsetInfo.ptrType);
+                  auto newScalarPtrTy =
+                      getScalarPtrType(op.getResult().getType());
+                  if (oldScalarPtrTy && newScalarPtrTy &&
+                      oldScalarPtrTy.getPointeeType() !=
+                          newScalarPtrTy.getPointeeType()) {
+                    // The base ptr is always a scalar !tt.ptr<oldElem>.
+                    // Create a tt.bitcast to !tt.ptr<newElem>.
+                    auto basePtrTy =
+                        dyn_cast<triton::PointerType>(newPtr.getType());
+                    if (basePtrTy) {
+                      auto newBasePtrTy = triton::PointerType::get(
+                          newScalarPtrTy.getPointeeType(),
+                          basePtrTy.getAddressSpace());
+                      OpBuilder b{op};
+                      newPtr = triton::BitcastOp::create(b, op->getLoc(),
+                                                         newBasePtrTy, newPtr);
+                    }
+                  }
+
+                  PtrOffset newOffsetInfo{newPtr, op.getResult().getType(),
+                                          offsetInfo.bitWidth,
+                                          offsetInfo.offset};
                   offsetMap.insert({op.getResult(), newOffsetInfo});
                   workList.push(op.getResult());
                   toDelete.push_back(op);
@@ -424,6 +457,26 @@ public:
                 })
                 .Case<tts::MakeGatherScatterTensorPtrOp>(
                     [&](Operation *op) { return success(); })
+                // tts.store / tts.load were already created by
+                // TritonToStructured; they may still reference a scalar
+                // tt.addptr result as their pointer operand but do not
+                // need unstructured rewriting.  Skip them.
+                .Case<tts::StoreOp, tts::LoadOp>([&](Operation *op) {
+                  // The pointer operand may be a tt.addptr that will be
+                  // erased later by the toDelete loop.  Materialize a
+                  // fresh tt.addptr(base, accumulated_offset) so the
+                  // tts op no longer depends on the old addptr.
+                  Value ptrOperand = op->getOperand(0);
+                  if (offsetMap.count(ptrOperand)) {
+                    auto offsetInfo = offsetMap.at(ptrOperand);
+                    OpBuilder b{op};
+                    auto materializedPtr = triton::AddPtrOp::create(
+                        b, op->getLoc(), offsetInfo.ptrType, offsetInfo.ptr,
+                        offsetInfo.offset);
+                    op->setOperand(0, materializedPtr);
+                  }
+                  return success();
+                })
                 .Case<triton::LoadOp, triton::StoreOp, triton::MakeTensorPtrOp,
                       tts::MakeTensorPtrOp>([&](Operation *op) {
                   // Special case:
@@ -486,6 +539,26 @@ public:
                   return success();
                 })
                 .Case<scf::YieldOp>([](auto) { return success(); })
+                .Case<arith::SelectOp>([&](arith::SelectOp selectOp) {
+                  auto res = selectOp.getResult();
+                  if (!triton::isPtrTypeLike(res.getType())) {
+                    return success();
+                  }
+                  // arith.select chooses between two pointers at runtime.
+                  // Treat the select result as a new base pointer with
+                  // offset 0 so that downstream addptr ops accumulate
+                  // offsets relative to whichever pointer is selected.
+                  OpBuilder b{selectOp};
+                  Value zero = arith::ConstantOp::create(
+                      b, selectOp->getLoc(),
+                      b.getIntegerAttr(
+                          IntegerType::get(&getContext(), defaultBitWidth), 0));
+                  PtrOffset newOffsetInfo{res, res.getType(), defaultBitWidth,
+                                          zero};
+                  offsetMap.insert({res, newOffsetInfo});
+                  workList.push(res);
+                  return success();
+                })
                 .Case<triton::CatOp>([](triton::CatOp op) {
                   op->emitError("Do not support gather / scatter with multiple "
                                 "bases yet");

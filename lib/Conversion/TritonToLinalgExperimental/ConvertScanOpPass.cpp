@@ -425,6 +425,10 @@ public:
     if (!tensorType || !vectorType)
       return failure();
 
+    if (tensorType.getElementType() != vectorType.getElementType() ||
+        tensorType.getShape() != vectorType.getShape())
+      return failure();
+
     Location loc = op.getLoc();
     Value memref;
 
@@ -508,7 +512,8 @@ struct ConvertScanOpPass
   ConvertScanOpPass() : ConvertScanOpBase() {}
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<vector::VectorDialect>();
+    registry.insert<vector::VectorDialect, bufferization::BufferizationDialect,
+                    memref::MemRefDialect, tensor::TensorDialect>();
   }
 
   void runOnOperation() override {

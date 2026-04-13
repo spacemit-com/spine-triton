@@ -70,6 +70,18 @@ public:
     auto moduleOp = getOperation();
     PassManager pm(&getContext(), moduleOp.getOperationName());
 
+    // Lower tt.scan before Triton-to-structured / PtrAnalysis.
+    //
+    // PtrAnalysis only understands a limited set of value-producing ops for
+    // masked load/store operands. When a masked tt.store consumes a tt.scan
+    // result directly, rewriteStoreOp ends up rejecting the value as produced
+    // by an unsupported instruction. Converting tt.scan early turns the scan
+    // into vector/scf/tensor ops before pointer analysis runs.
+    //
+    // This also avoids relying on later passes to legalize scans after the
+    // structured-pointer pipeline has already seen them.
+    pm.addPass(createConvertScanOpPass());
+
     pm.addPass(createTritonToStructuredPass(enableMakeGatherScatterTensorPtr));
 
     // Erase dead code and fold constants created during lowering
@@ -85,7 +97,6 @@ public:
     pm.addPass(createTritonPtrToMemrefPass());
     pm.addPass(createTritonToPtrPass());
     pm.addPass(createAddTargetDescriptionPass());
-    pm.addPass(createConvertScanOpPass());
     // Now that remove-dead-values fully works with linalg ops, clean up the IR
     // again, particularly unused loop iter-args that were created
     // during triton-to-structured.
