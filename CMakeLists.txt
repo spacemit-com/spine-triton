@@ -13,7 +13,7 @@ add_subdirectory(backend)
 add_subdirectory(test)
 add_subdirectory(tools/spine-triton-opt)
 
-add_triton_plugin(SpineTriton ${CMAKE_CURRENT_SOURCE_DIR}/triton_shared.cc LINK_LIBS TritonSharedAnalysis TritonToLinalg TritonTilingExtIR XSMTIR ProtonIR MLIRPtrDialect)
+add_triton_plugin(SpineTriton ${CMAKE_CURRENT_SOURCE_DIR}/triton_shared.cc LINK_LIBS TritonSharedAnalysis TritonToLinalg TritonTilingExtIR XSMTIR TLEIR TLEToLinalg ProtonIR MLIRPtrDialect)
 target_link_libraries(SpineTriton PRIVATE Python3::Module pybind11::headers ${Python3_LIBRARIES})
 
 # Explicitly declare tablegen dependencies to prevent race conditions in parallel builds
@@ -23,4 +23,6 @@ add_dependencies(SpineTriton
   TritonStructuredTableGen
   TritonTilingExtOpsIncGen
   TritonTilingExtInterfacesIncGen
+  TLETableGen
+  TLEToLinalgConversionPassIncGen
 )

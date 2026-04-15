@@ -39,5 +39,6 @@ add_triton_library(TritonToLinalgExperimental
   UnstructuredToMemref
   AddTargetDescription
   XSMTToLinalg
+  TLEToLinalg
   ProtonIR
 )

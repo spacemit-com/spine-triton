@@ -11,6 +11,7 @@
 #include "proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
 #include "triton-shared/Conversion/AddTargetDescription/AddTargetDescription.h"
 #include "triton-shared/Conversion/StructuredToMemref/StructuredToMemref.h"
+#include "triton-shared/Conversion/TLEToLinalg/TLEToLinalg.h"
 #include "triton-shared/Conversion/TritonArithToLinalg/TritonArithToLinalg.h"
 #include "triton-shared/Conversion/TritonPtrToMemref/TritonPtrToMemref.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/CollapseShape.h"
@@ -102,6 +103,7 @@ public:
     // during triton-to-structured.
     pm.addPass(createRemoveDeadValuesPass());
     pm.addPass(createXSMTToLinalgPass());
+    pm.addPass(createTLEToLinalgPass());
     pm.addPass(createReconcileUnrealizedCastsPass());
     pm.addPass(createReconcilePtrCastsPass());
     pm.addPass(createReconcileLlvmPtrCastsPass());

@@ -1,10 +1,12 @@
-﻿#include "include/triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
+﻿#include "include/triton-shared/Dialect/TLE/IR/TLEDialect.h"
+#include "include/triton-shared/Dialect/TLE/IR/TLEOps.h"
+#include "include/triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 #include "include/triton-shared/Dialect/XSMT/IR/XSMTOps.h"
 #include "include/triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
 #include "include/triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncOps.h"
-#include "proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
 #include "ir.h"
 #include "mlir/Pass/PassManager.h"
+#include "proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include <iostream>
 #include <mlir/IR/Builders.h>
@@ -19,6 +21,7 @@ using namespace ir;
 using namespace mlir;
 namespace xsmt = mlir::xsmt;
 namespace xsmt_async = mlir::xsmt_async;
+namespace tle = mlir::tle;
 
 void init_triton_xsmt_ir(py::module &&m) {
   auto *builder_cls = ir::getBuilderClass();
@@ -118,13 +121,13 @@ void init_triton_xsmt_ir(py::module &&m) {
 
              if (aShape[1] == bShape[0] && aShape[3] == bShape[2]) {
                outputShape = {
-                    aShape[0],
-                    bShape[1],
-                    aShape[2],
-                    bShape[3],
+                   aShape[0],
+                   bShape[1],
+                   aShape[2],
+                   bShape[3],
                };
                auto resultType =
-                 RankedTensorType::get(outputShape, aType.getElementType());
+                   RankedTensorType::get(outputShape, aType.getElementType());
 
                auto perm = std::vector<int>{1, 0, 3, 2};
                auto transbOp = self.create<mlir::triton::TransOp>(b, perm);
@@ -132,27 +135,28 @@ void init_triton_xsmt_ir(py::module &&m) {
 
                mlir::Value cValue;
                if (c.has_value()) {
-                    cValue = *c;
+                 cValue = *c;
                } else {
-                    cValue = Value();
+                 cValue = Value();
                }
 
-               return self.create<xsmt::MMT4DOp>(resultType, a, transbValue, cValue);
-             }else if (aShape[1] == bShape[1] && aShape[3] == bShape[3]) {
+               return self.create<xsmt::MMT4DOp>(resultType, a, transbValue,
+                                                 cValue);
+             } else if (aShape[1] == bShape[1] && aShape[3] == bShape[3]) {
                outputShape = {
-                    aShape[0],
-                    bShape[0],
-                    aShape[2],
-                    bShape[2],
+                   aShape[0],
+                   bShape[0],
+                   aShape[2],
+                   bShape[2],
                };
                auto resultType =
-                 RankedTensorType::get(outputShape, aType.getElementType());
+                   RankedTensorType::get(outputShape, aType.getElementType());
 
                mlir::Value cValue;
                if (c.has_value()) {
-                    cValue = *c;
+                 cValue = *c;
                } else {
-                    cValue = Value();
+                 cValue = Value();
                }
 
                return self.create<xsmt::MMT4DOp>(resultType, a, b, cValue);
@@ -231,16 +235,44 @@ void init_triton_xsmt_ir(py::module &&m) {
                  .getResult();
            });
 }
+
+// ============================================================================
+// TLE (Triton Language Extension) IR bindings
+// ============================================================================
+void init_triton_tle_ir(py::module &&m) {
+  auto *builder_cls = ir::getBuilderClass();
+  builder_cls
+      ->def(
+          "create_extract_tile",
+          [](TritonOpBuilder &self, Value &input, Value &index,
+             std::vector<int64_t> &tileShape) -> Value {
+            auto op = self.create<tle::ExtractTileOp>(input, index, tileShape);
+            return op.getResult();
+          },
+          py::arg("input"), py::arg("index"), py::arg("tileShape"),
+          "Create extract_tile operation")
+      .def(
+          "create_insert_tile",
+          [](TritonOpBuilder &self, Value &input, Value &tile,
+             Value &index) -> Value {
+            auto op = self.create<tle::InsertTileOp>(input, tile, index);
+            return op.getResult();
+          },
+          py::arg("input"), py::arg("tile"), py::arg("index"),
+          "Create insert_tile operation");
+}
+
 void init_triton_spine_triton(py::module &&m) {
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;
     registry.insert<mlir::xsmt::XSMTDialect, mlir::xsmt_async::XSMTAsyncDialect,
-                    tensor::TensorDialect,
-                    mlir::triton::proton::ProtonDialect>();
+                    tensor::TensorDialect, mlir::triton::proton::ProtonDialect,
+                    mlir::tle::TLEDialect>();
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });
 
   init_triton_xsmt_ir(m.def_submodule("xsmt_ir"));
+  init_triton_tle_ir(m.def_submodule("tle_ir"));
 }
