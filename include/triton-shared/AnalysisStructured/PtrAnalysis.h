@@ -296,6 +296,12 @@ public:
   LogicalResult visitOperandExtSI(arith::ExtSIOp, PtrState &state,
                                   const Location loc, OpBuilder &builder);
 
+  LogicalResult visitOperandExtUI(arith::ExtUIOp, PtrState &state,
+                                  const Location loc, OpBuilder &builder);
+
+  LogicalResult visitOperandCmp(arith::CmpIOp cmpOp, PtrState &state,
+                                const Location loc, OpBuilder &builder);
+
   // Operand is the result of addptr.
   // Main assumptions:
   //  The ptr field should populate the source field

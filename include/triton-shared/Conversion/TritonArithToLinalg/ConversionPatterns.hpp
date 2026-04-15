@@ -94,7 +94,7 @@ static Value getScalarValue(Value operand, Location loc,
     } else if (auto op = operand.getDefiningOp<arith::ConstantOp>()) {
       if (auto attr = dyn_cast<DenseElementsAttr>(op.getValue())) {
         if (!attr.isSplat()) {
-          InFlightDiagnostic diag = emitError(loc)
+          InFlightDiagnostic diag = emitRemark(loc)
                                     << "other value used in masked load "
                                        "produced by unsupported instruction";
           return nullptr;
@@ -113,7 +113,7 @@ static Value getScalarValue(Value operand, Location loc,
       ops.push_back(op.getOperation());
       operand = op.getIn();
     } else {
-      InFlightDiagnostic diag = emitError(loc)
+      InFlightDiagnostic diag = emitRemark(loc)
                                 << "other value used in masked load produced "
                                    "by unsupported instruction";
       return nullptr;
@@ -3041,11 +3041,12 @@ private:
     bool isSin = (symbol == "math.sin");
     bool isTrunc = (symbol == "math.trunc");
     bool isAtan2 = (symbol == "math.atan2");
+    bool isFmod = (symbol == "linalg.fmod");
     auto divRoundingMode = getDivRoundingMode(symbol);
     bool isDivLike = divRoundingMode.has_value();
 
     if (!isIsNaN && !isIsInf && !isFinite && !isCos && !isSin && !isTrunc &&
-        !isAtan2 && !isDivLike) {
+        !isAtan2 && !isFmod && !isDivLike) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
         diag << "unsupported extern operation: " << symbol;
       });
@@ -3086,6 +3087,11 @@ private:
     } else if (isAtan2) {
       if (failed(validateBinaryFloatOp(op, operands, outputType, rewriter,
                                        "math.atan2"))) {
+        return failure();
+      }
+    } else if (isFmod) {
+      if (failed(validateBinaryFloatOp(op, operands, outputType, rewriter,
+                                       "linalg.fmod"))) {
         return failure();
       }
     }
@@ -3147,6 +3153,8 @@ private:
             outputVal = math::TruncOp::create(b, loc, inputVal);
           } else if (isAtan2) {
             outputVal = math::Atan2Op::create(b, loc, args[0], args[1]);
+          } else if (isFmod) {
+            outputVal = arith::RemFOp::create(b, loc, args[0], args[1]);
           } else if (isDivLike) {
             outputVal =
                 buildDivLikeOp(b, loc, args[0], args[1], *divRoundingMode);

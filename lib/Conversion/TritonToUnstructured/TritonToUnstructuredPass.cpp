@@ -285,6 +285,13 @@ public:
 
     llvm::SmallVector<Operation *> toDelete;
     llvm::SmallVector<Operation *> ptrUsers;
+    // Deferred operand rewrites: calling op->setOperand() inside the
+    // use-iterator loop invalidates the iterator when a Value has multiple
+    // users (e.g. a scalar tt.addptr used by both tts.load and tts.store).
+    // Collect {op, operandIndex, ptrOperandValue} triples here and apply
+    // them after the BFS finishes iterating uses.
+    llvm::SmallVector<std::tuple<Operation *, unsigned, Value>>
+        deferredRewrites;
 
     while (!workList.empty()) {
       auto val = workList.front();
@@ -311,11 +318,10 @@ public:
                       b, op->getLoc(), offsetInfo.ptrType, offsetInfo.ptr,
                       offsetInfo.offset);
 
-                  // Change the op to use the "simplified" pointer above.
-                  // This should not affect the traversal of uses, but hacky.
-                  // We will need to revisit how we process the IRs in this pass
-                  // later.
-                  op->setOperand(0, materializedAddPtr);
+                  // Defer the operand update to avoid invalidating the
+                  // use-list iterator.
+                  deferredRewrites.emplace_back(op.getOperation(), 0,
+                                                materializedAddPtr);
 
                   return success();
                 })
@@ -466,6 +472,9 @@ public:
                   // erased later by the toDelete loop.  Materialize a
                   // fresh tt.addptr(base, accumulated_offset) so the
                   // tts op no longer depends on the old addptr.
+                  // Defer the setOperand call to avoid invalidating the
+                  // use-list iterator when the same tt.addptr feeds
+                  // multiple tts ops (e.g. tts.load + tts.store).
                   Value ptrOperand = op->getOperand(0);
                   if (offsetMap.count(ptrOperand)) {
                     auto offsetInfo = offsetMap.at(ptrOperand);
@@ -473,7 +482,7 @@ public:
                     auto materializedPtr = triton::AddPtrOp::create(
                         b, op->getLoc(), offsetInfo.ptrType, offsetInfo.ptr,
                         offsetInfo.offset);
-                    op->setOperand(0, materializedPtr);
+                    deferredRewrites.emplace_back(op, 0, materializedPtr);
                   }
                   return success();
                 })
@@ -573,6 +582,12 @@ public:
           return failure();
         }
       }
+    }
+
+    // Apply deferred operand rewrites now that we are no longer iterating
+    // over any Value's use-list.
+    for (auto &[op, idx, newVal] : deferredRewrites) {
+      op->setOperand(idx, newVal);
     }
 
     for (auto op : ptrUsers) {

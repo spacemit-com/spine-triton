@@ -863,6 +863,25 @@ LogicalResult PtrAnalysis::visitOperandExtSI(arith::ExtSIOp extOp,
   return visitOperand(extOp.getIn(), state, loc, builder);
 }
 
+LogicalResult PtrAnalysis::visitOperandExtUI(arith::ExtUIOp extOp,
+                                             PtrState &state,
+                                             const Location loc,
+                                             OpBuilder &builder) {
+  assert(state.isEmpty());
+  return visitOperand(extOp.getIn(), state, loc, builder);
+}
+
+LogicalResult PtrAnalysis::visitOperandCmp(arith::CmpIOp cmpOp, PtrState &state,
+                                           const Location loc,
+                                           OpBuilder &builder) {
+  assert(state.isEmpty());
+  // When a comparison produces a mask that later participates in pointer
+  // arithmetic, the useful part for pointer decoding is typically the
+  // original integer operand (lhs). Delegate analysis to the lhs so that
+  // PtrState can be recovered from patterns like `offset < limit`.
+  return visitOperand(cmpOp.getLhs(), state, loc, builder);
+}
+
 LogicalResult PtrAnalysis::visitOperandMakeRange(triton::MakeRangeOp rangeOp,
                                                  PtrState &state, Location loc,
                                                  OpBuilder &builder) {
@@ -1352,6 +1371,10 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
     return visitOperandRem(op, state, loc, builder);
   } else if (auto op = operand.getDefiningOp<arith::ExtSIOp>()) {
     return visitOperandExtSI(op, state, loc, builder);
+  } else if (auto op = operand.getDefiningOp<arith::ExtUIOp>()) {
+    return visitOperandExtUI(op, state, loc, builder);
+  } else if (auto op = operand.getDefiningOp<arith::CmpIOp>()) {
+    return visitOperandCmp(op, state, loc, builder);
   } else if (auto op = operand.getDefiningOp<scf::ForOp>()) {
     return visitOperandForOp(op, operand, state, loc, builder);
   } else if (!operand.getDefiningOp()) {

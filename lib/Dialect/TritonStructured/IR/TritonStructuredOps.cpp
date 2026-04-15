@@ -90,7 +90,7 @@ Value getScalarValue(Value operand, Location loc, OpBuilder &builder) {
     } else if (auto op = operand.getDefiningOp<arith::ConstantOp>()) {
       if (auto attr = dyn_cast<DenseElementsAttr>(op.getValue())) {
         if (!attr.isSplat()) {
-          InFlightDiagnostic diag = emitError(loc)
+          InFlightDiagnostic diag = emitRemark(loc)
                                     << "other value used in masked load "
                                        "produced by unsupported instruction";
           return nullptr;
@@ -118,7 +118,7 @@ Value getScalarValue(Value operand, Location loc, OpBuilder &builder) {
       ops.push_back(op.getOperation());
       operand = op.getIn();
     } else {
-      InFlightDiagnostic diag = emitError(loc)
+      InFlightDiagnostic diag = emitRemark(loc)
                                 << "other value used in masked load produced "
                                    "by unsupported instruction";
       return nullptr;
