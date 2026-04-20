@@ -347,8 +347,12 @@ public:
   LogicalResult visitOperandAlloc(xsmt::AllocOp allocOp, PtrState &state,
                                   const Location loc, OpBuilder &builder);
 
-  LogicalResult visitOperandView(xsmt::ViewPtrOp viewOp, PtrState &state,
-                                 const Location loc, OpBuilder &builder);
+  LogicalResult visitOperandSubview(xsmt::SubviewOp subviewOp, PtrState &state,
+                                    const Location loc, OpBuilder &builder);
+
+  LogicalResult visitOperandSubviewPack(xsmt::SubviewPackOp subviewPackOp,
+                                        PtrState &state, const Location loc,
+                                        OpBuilder &builder);
 
   LogicalResult
   visitOperandBufferTensorViewOp(xsmt::BufferTensorViewOp BufferTensorViewOp,

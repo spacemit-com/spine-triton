@@ -252,8 +252,8 @@ public:
         memref::MemRefDialect, xsmt_async::XSMTAsyncDialect>();
 
     target.addIllegalOp<tts::LoadOp, tts::StoreOp, tts::MakeTensorPtrOp,
-                        xsmt::AllocOp, xsmt::ViewPtrOp, xsmt::MBarrierCopiesOp,
-                        xsmt::MBarrierSubviewOp>();
+                        xsmt::AllocOp, xsmt::SubviewOp, xsmt::SubviewPackOp,
+                        xsmt::MBarrierCopiesOp, xsmt::MBarrierSubviewOp>();
 
     target.addLegalOp<UnrealizedConversionCastOp>();
 

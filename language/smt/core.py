@@ -9,7 +9,6 @@ from triton.language.core import (
 )
 from . import semantic as smt_semantic
 from triton.language import core as tl
-from . import types as smt
 
 
 def _constexpr_to_value(v):
@@ -35,7 +34,8 @@ class parallel(range):
     :param bind_sub_block: Tells the compiler if multiple tensor cores participate in the loop.
     """
 
-    def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None, bind_sub_block: bool = True):
+    def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None,
+                 bind_sub_block: bool = True):
         super().__init__(arg1, arg2, step, num_stages, loop_unroll_factor)
         self.bind_sub_block = bind_sub_block
 
@@ -68,13 +68,14 @@ def descriptor_load(base, offsets, destination=None, _semantic=None):
 
 
 @builtin
-def view(base, offsets, shape, micro_size=None, _semantic=None):
-    """Create a local view of a tensor with new shape and micro tile size.
+def view(base, offsets, shape, packed_size=None, destination=None, _semantic=None):
+    """Create a local view of a tensor with new shape and packed tile size.
 
     :param base: the base tensor to create view from
     :param offsets: offset values (e.g., [s * SUB_BLK_M, 0])
     :param shape: new shape for the view (e.g., [SUB_BLK_M, BLOCK_SIZE_K])
-    :param micro_size: micro tile size for tensor cores (e.g., [16, 8])
+    :param packed_size: packed tile size for tensor cores (e.g., [16, 8])
+    :param destination: optional destination tensor for in-place write (DPS)
 
     Example
     *******
@@ -83,14 +84,14 @@ def view(base, offsets, shape, micro_size=None, _semantic=None):
         accumulator = tl.view(accumulator, [s * SUB_BLK_M, 0], [SUB_BLK_M, BLOCK_SIZE_K], [16, 8])
     """
     rank = len(shape)
-    if micro_size is None:
-        micro_size = [0] * rank
-    return smt_semantic.view(base, offsets, shape, micro_size, _semantic)
+    if packed_size is None:
+        packed_size = [0] * rank
+    return smt_semantic.view(base, offsets, shape, packed_size, destination, _semantic)
 
 
 @builtin
-def alloc(shape, type=tl.float32, storage="l2",  _semantic=None):
-    """Allocate a tensor in shared memory with specified shape and micro tile size.
+def alloc(shape, type=tl.float32, storage="l2", _semantic=None):
+    """Allocate a tensor in shared memory with specified shape and packed tile size.
 
     :param shape: shape of the tensor to allocate (e.g., [BLOCK_SIZE_N, BLOCK_SIZE_K])
     :param type: data type of the tensor elements (default: float32)
@@ -110,6 +111,7 @@ def alloc_copies(shape, dtype=tl.float32, storage="l2", copies=1, _semantic=None
 
     return smt_semantic.alloc_copies(shape, dtype, copies, storage, _semantic)
 
+
 @builtin
 def dot(a_packed, b_packed, out_unpacked=None, _semantic=None):
     """
@@ -125,7 +127,8 @@ def dot(a_packed, b_packed, out_unpacked=None, _semantic=None):
 
 
 @builtin
-def mbarrier(flag = tl.constexpr(0), arrive_count = tl.constexpr(0), transaction_count = tl.constexpr(0), expect_count = tl.constexpr(1), _semantic=None):
+def mbarrier(flag=tl.constexpr(0), arrive_count=tl.constexpr(0), transaction_count=tl.constexpr(0),
+             expect_count=tl.constexpr(1), _semantic=None):
     """Initialize a memory barrier for thread synchronization.
 
     :param flag: Barrier mode flag (0=normal, 1=async, 2=with fence)
@@ -138,38 +141,42 @@ def mbarrier(flag = tl.constexpr(0), arrive_count = tl.constexpr(0), transaction
     """
     return smt_semantic.mbarrier(flag, arrive_count, transaction_count, expect_count, _semantic)
 
+
 @builtin
 def barrier_arrive(bar, _semantic=None):
     """Signal thread arrival at barrier."""
     return smt_semantic.barrier_arrive(bar, _semantic)
 
+
 @builtin
-def barrier_wait(bar, flag = tl.constexpr(0), arrive_count = tl.constexpr(0), _semantic=None):
+def barrier_wait(bar, flag=tl.constexpr(0), arrive_count=tl.constexpr(0), _semantic=None):
     """Wait for barrier to reach expected version."""
     return smt_semantic.barrier_wait(bar, flag, arrive_count, _semantic)
+
 
 @builtin
 def get_num_of_thread(_semantic=None):
     return smt_semantic.get_num_of_thread(_semantic)
 
+
 @builtin
 def global_mbarrier(id, _semantic=None):
     return smt_semantic.global_mbarrier(id, _semantic)
 
+
 @builtin
-def barrier_set_expect(bar, expect_count = tl.constexpr(1), _semantic=None):
+def barrier_set_expect(bar, expect_count=tl.constexpr(1), _semantic=None):
     return smt_semantic.barrier_set_expect(bar, expect_count, _semantic)
+
 
 @builtin
 def mbarrier_copies(
-    flag=tl.constexpr(0),
-    arrive_count=tl.constexpr(0),
-    transaction_count=tl.constexpr(0),
-    expect_count=tl.constexpr(1),
-    copies=1,
-    _semantic=None,
+        flag=tl.constexpr(0),
+        arrive_count=tl.constexpr(0),
+        transaction_count=tl.constexpr(0),
+        expect_count=tl.constexpr(1),
+        copies=1,
+        _semantic=None,
 ):
 
-    return smt_semantic.mbarrier_copies(
-        flag, arrive_count, transaction_count, expect_count, copies, _semantic
-    )
+    return smt_semantic.mbarrier_copies(flag, arrive_count, transaction_count, expect_count, copies, _semantic)

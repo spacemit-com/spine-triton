@@ -43,15 +43,18 @@ def descriptor_load_to_destination(base: tl.tensor, offsets, destination, _seman
     _semantic.builder.create_descriptor_load_to_destination(base.handle, offsets, destination.handle)
 
 
-def view(base: tl.tensor, offsets, shape, micro_size, _semantic=None) -> tl.tensor:
+def view(base: tl.tensor, offsets, shape, packed_size, destination=None, _semantic=None) -> tl.tensor:
     semantic_instance = tl_semantic.TritonSemantic(_semantic.builder)
     offsets = semantic_instance._convert_to_ir_values(offsets, require_i64=False)
 
     shape = [elem.value if isinstance(elem, tl.constexpr) else elem for elem in shape]
-    micro_size = [elem.value if isinstance(elem, tl.constexpr) else elem for elem in micro_size]
+    packed_size = [elem.value if isinstance(elem, tl.constexpr) else elem for elem in packed_size]
 
-    assert len(shape) == len(micro_size), \
-        "Shape and micro_size must have the same length"
+    # Resolve optional destination handle for DPS
+    dest_handle = destination.handle if destination is not None else None
+
+    assert len(shape) == len(packed_size), \
+        "Shape and packed_size must have the same length"
 
     pointee_type = base.type.element_ty
 
@@ -59,38 +62,75 @@ def view(base: tl.tensor, offsets, shape, micro_size, _semantic=None) -> tl.tens
     if hasattr(pointee_type, 'is_block') and pointee_type.is_block():
         is_block_ptr = True
 
-    if hasattr(pointee_type, 'is_block') and pointee_type.is_block():
+    if is_block_ptr:
         element_ty = pointee_type.element_ty
-        handle = _semantic.builder.create_viewptr(base.handle, offsets, shape, micro_size)
-
+        # Dispatch to subview or subview_pack
+        if all(s == 0 for s in packed_size):
+            # packed_size=[0,0] means subview (preserve existing packing)
+            handle = _semantic.builder.create_subview(base.handle, offsets, shape)
+        else:
+            # Check if base is already packed (4D) and packed_size matches
+            base_shape = pointee_type.shape
+            if len(base_shape) == 4:
+                base_packed = [base_shape[2], base_shape[3]]
+                if list(packed_size) == base_packed:
+                    # Same packed_size → subview (preserve packing)
+                    handle = _semantic.builder.create_subview(base.handle, offsets, shape)
+                else:
+                    # Different packed_size on ptr → subview_pack
+                    handle = _semantic.builder.create_subview_pack(base.handle, offsets, shape, packed_size)
+            else:
+                # 2D base → subview_pack (apply packing)
+                handle = _semantic.builder.create_subview_pack(base.handle, offsets, shape, packed_size)
     else:
         element_ty = pointee_type
-        handle = _semantic.builder.create_view(base.handle, offsets, shape, micro_size)
+        # Dispatch to pack, unpack, or repack
+        if all(s == 1 for s in packed_size):
+            # packed_size=[1,1] → unpack (4D→2D)
+            handle = _semantic.builder.create_unpack(base.handle, offsets, shape, destination=dest_handle)
+        else:
+            base_shape = base.type.shape if hasattr(base.type, 'shape') else []
+            base_is_4d = len(base_shape) == 4
+            if base_is_4d and not all(s == 0 for s in packed_size):
+                base_packed = [base_shape[2], base_shape[3]]
+                if list(packed_size) != base_packed:
+                    # 4D input with different packed → repack
+                    handle = _semantic.builder.create_repack(base.handle, offsets, shape, packed_size,
+                                                             destination=dest_handle)
+                else:
+                    # 4D input with same packed_size → pack (defensive, shouldn't normally happen)
+                    handle = _semantic.builder.create_pack(base.handle, offsets, shape, packed_size,
+                                                           destination=dest_handle)
+            else:
+                # 2D→4D standard pack
+                handle = _semantic.builder.create_pack(base.handle, offsets, shape, packed_size,
+                                                       destination=dest_handle)
 
-    if all(s == 0 for s in micro_size):
+    # Compute result type (same logic as before, unchanged)
+    if all(s == 0 for s in packed_size):
         if is_block_ptr:
             base_tensor = tl.tensor(handle, base.type.element_ty)
         else:
             base_tensor = tl.tensor(handle, base.type)
 
-        actualMicroSize = [base_tensor.shape[2], base_tensor.shape[3]]
+        actualPackedSize = [base_tensor.shape[2], base_tensor.shape[3]]
         result_shape = [
-            _ceil_div(shape[0], actualMicroSize[0]),
-            _ceil_div(shape[1], actualMicroSize[1]), actualMicroSize[0], actualMicroSize[1]
+            _ceil_div(shape[0], actualPackedSize[0]),
+            _ceil_div(shape[1], actualPackedSize[1]), actualPackedSize[0], actualPackedSize[1]
         ]
         if is_block_ptr:
             result_tensor = tl.tensor(handle, tl.pointer_type(tl.block_type(element_ty, result_shape)))
         else:
             result_tensor = tl.tensor(handle, tl.block_type(element_ty, result_shape))
-    elif all(s == 1 for s in micro_size):
+    elif all(s == 1 for s in packed_size):
         if is_block_ptr:
             result_tensor = tl.tensor(handle, tl.pointer_type(tl.block_type(element_ty, shape)))
         else:
             result_tensor = tl.tensor(handle, tl.block_type(element_ty, shape))
     else:
         result_shape = [
-            _ceil_div(shape[0], micro_size[0]),
-            _ceil_div(shape[1], micro_size[1]), micro_size[0], micro_size[1]
+            _ceil_div(shape[0], packed_size[0]),
+            _ceil_div(shape[1], packed_size[1]), packed_size[0], packed_size[1]
         ]
         if is_block_ptr:
             result_tensor = tl.tensor(handle, tl.pointer_type(tl.block_type(element_ty, result_shape)))
@@ -135,16 +175,16 @@ def mmt4d(a_packed: tl.tensor, b_packed: tl.tensor, out_unpacked: tl.tensor, _se
     if a_packed.shape[1] == b_packed.shape[0] and a_packed.shape[3] == b_packed.shape[2]:
         mb = a_packed.shape[0]
         nb = b_packed.shape[1]
-        mb_micro_sizes = a_packed.shape[2]
-        nb_micro_sizes = b_packed.shape[3]
+        mb_packed_sizes = a_packed.shape[2]
+        nb_packed_sizes = b_packed.shape[3]
     elif a_packed.shape[1] == b_packed.shape[1] and a_packed.shape[3] == b_packed.shape[3]:
         mb = a_packed.shape[0]
         nb = b_packed.shape[0]
-        mb_micro_sizes = a_packed.shape[2]
-        nb_micro_sizes = b_packed.shape[2]
+        mb_packed_sizes = a_packed.shape[2]
+        nb_packed_sizes = b_packed.shape[2]
     else:
         raise ValueError(f"Unsupported packing shapes A{a_packed.shape} B{b_packed.shape}")
-    output_shape = [mb, nb, mb_micro_sizes, nb_micro_sizes]
+    output_shape = [mb, nb, mb_packed_sizes, nb_packed_sizes]
     ret_type = tl.block_type(a_packed.type.scalar, output_shape)
     if out_unpacked is None:
         out = _semantic.builder.create_mmt4d(a_packed.handle, b_packed.handle, None)

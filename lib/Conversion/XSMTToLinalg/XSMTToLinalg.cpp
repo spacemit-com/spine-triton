@@ -52,184 +52,32 @@ using namespace mlir::xsmt;
 
 #include "triton-shared/Conversion/XSMTToLinalg/Passes.h.inc"
 
+// ===----------------------------------------------------------------------===//
+// Common helpers (used by multiple patterns)
+// ===----------------------------------------------------------------------===//
+
 Value createZeroConstant(PatternRewriter &rewriter, Location loc,
                          Type elementType) {
-  if (elementType.isF32()) {
-    return arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(),
-                                          APFloat(0.0f));
-  } else if (elementType.isF64()) {
-    return arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF64Type(),
-                                          APFloat(0.0));
-  } else if (elementType.isF16()) {
-    return arith::ConstantFloatOp::create(
-        rewriter, loc, rewriter.getF16Type(),
-        APFloat::getZero(rewriter.getF16Type().getFloatSemantics()));
-  } else if (elementType.isBF16()) {
-    return arith::ConstantFloatOp::create(
-        rewriter, loc, rewriter.getBF16Type(),
-        APFloat::getZero(rewriter.getBF16Type().getFloatSemantics()));
-  } else if (auto intType = dyn_cast<IntegerType>(elementType)) {
-    return arith::ConstantIntOp::create(rewriter, loc, 0, intType.getWidth());
-  }
-  return nullptr;
+  auto zeroAttr = rewriter.getZeroAttr(elementType);
+  if (!zeroAttr)
+    return nullptr;
+  return arith::ConstantOp::create(rewriter, loc, elementType, zeroAttr);
 }
 
-static bool isZeroOFRLocal(OpFoldResult ofr) {
-  if (auto attr = llvm::dyn_cast<Attribute>(ofr)) {
-    if (auto intAttr = llvm::dyn_cast<IntegerAttr>(attr))
-      return intAttr.getInt() == 0;
-    return false;
-  }
-  if (auto val = llvm::dyn_cast<Value>(ofr)) {
-    if (auto cst = val.getDefiningOp<arith::ConstantIndexOp>())
-      return cst.value() == 0;
-    if (auto cst = val.getDefiningOp<arith::ConstantIntOp>())
-      return cst.value() == 0;
-    if (auto cast = val.getDefiningOp<arith::IndexCastOp>()) {
-      if (auto cst = cast.getIn().getDefiningOp<arith::ConstantIntOp>())
-        return cst.value() == 0;
-    }
-  }
-  return false;
-}
+// ===----------------------------------------------------------------------===//
+// Subview elision helpers (XSMT-specific; generic OFR helpers live in
+// OpFoldResultUtils.h)
+// ===----------------------------------------------------------------------===//
 
-static bool isUnitOFRLocal(OpFoldResult ofr) {
-  if (auto attr = llvm::dyn_cast<Attribute>(ofr)) {
-    if (auto intAttr = llvm::dyn_cast<IntegerAttr>(attr))
-      return intAttr.getInt() == 1;
-    return false;
-  }
-  if (auto val = llvm::dyn_cast<Value>(ofr)) {
-    if (auto cst = val.getDefiningOp<arith::ConstantIndexOp>())
-      return cst.value() == 1;
-    if (auto cst = val.getDefiningOp<arith::ConstantIntOp>())
-      return cst.value() == 1;
-    if (auto cast = val.getDefiningOp<arith::IndexCastOp>()) {
-      if (auto cst = cast.getIn().getDefiningOp<arith::ConstantIntOp>())
-        return cst.value() == 1;
-    }
-  }
-  return false;
-}
-
-static bool sameValueOrEquivalentCast(Value lhs, Value rhs) {
-  if (lhs == rhs)
-    return true;
-
-  if (auto cast = lhs.getDefiningOp<arith::IndexCastOp>())
-    if (cast.getIn() == rhs)
-      return true;
-  if (auto cast = rhs.getDefiningOp<arith::IndexCastOp>())
-    if (cast.getIn() == lhs)
-      return true;
-
-  return false;
-}
-
-static std::optional<int64_t> getConstantIntLike(Value v) {
-  if (!v)
-    return std::nullopt;
-  if (auto cst = v.getDefiningOp<arith::ConstantIndexOp>())
-    return cst.value();
-  if (auto cst = v.getDefiningOp<arith::ConstantIntOp>())
-    return cst.value();
-  if (auto cast = v.getDefiningOp<arith::IndexCastOp>())
-    return getConstantIntLike(cast.getIn());
-  return std::nullopt;
-}
-
-static bool sameBoundedSizeExpr(Value lhs, Value rhs);
-
-static Value peelTrivialIndexExpr(Value v) {
-  while (v) {
-    if (auto cast = v.getDefiningOp<arith::IndexCastOp>()) {
-      v = cast.getIn();
-      continue;
-    }
-    if (auto minOp = v.getDefiningOp<arith::MinSIOp>()) {
-      // min(x, C) where v is already known-bounded often appears repeatedly.
-      // Keep the canonical SSA value rather than peeling further here.
-      return v;
-    }
-    break;
-  }
-  return v;
-}
-
-static bool sameMinSIOp(arith::MinSIOp lhsMin, arith::MinSIOp rhsMin) {
-  Value lhsA = peelTrivialIndexExpr(lhsMin.getLhs());
-  Value lhsB = peelTrivialIndexExpr(lhsMin.getRhs());
-  Value rhsA = peelTrivialIndexExpr(rhsMin.getLhs());
-  Value rhsB = peelTrivialIndexExpr(rhsMin.getRhs());
-
-  return (sameBoundedSizeExpr(lhsA, rhsA) && sameBoundedSizeExpr(lhsB, rhsB)) ||
-         (sameBoundedSizeExpr(lhsA, rhsB) && sameBoundedSizeExpr(lhsB, rhsA));
-}
-
-static bool sameSubIOp(arith::SubIOp lhsSub, arith::SubIOp rhsSub) {
-  return sameBoundedSizeExpr(lhsSub.getLhs(), rhsSub.getLhs()) &&
-         sameBoundedSizeExpr(lhsSub.getRhs(), rhsSub.getRhs());
-}
-
-static bool sameBoundedSizeExpr(Value lhs, Value rhs) {
-  lhs = peelTrivialIndexExpr(lhs);
-  rhs = peelTrivialIndexExpr(rhs);
-
-  if (!lhs || !rhs)
-    return false;
-  if (sameValueOrEquivalentCast(lhs, rhs))
-    return true;
-
-  if (auto lhsCst = getConstantIntLike(lhs)) {
-    if (auto rhsCst = getConstantIntLike(rhs))
-      return *lhsCst == *rhsCst;
-  }
-
-  auto lhsMin = lhs.getDefiningOp<arith::MinSIOp>();
-  auto rhsMin = rhs.getDefiningOp<arith::MinSIOp>();
-  if (lhsMin && rhsMin)
-    return sameMinSIOp(lhsMin, rhsMin);
-
-  auto lhsSub = lhs.getDefiningOp<arith::SubIOp>();
-  auto rhsSub = rhs.getDefiningOp<arith::SubIOp>();
-  if (lhsSub && rhsSub)
-    return sameSubIOp(lhsSub, rhsSub);
-
-  return false;
-}
-
-static bool sameOFR(OpFoldResult lhs, OpFoldResult rhs) {
-  auto lhsAttr =
-      llvm::dyn_cast_if_present<Attribute>(lhs.dyn_cast<Attribute>());
-  auto rhsAttr =
-      llvm::dyn_cast_if_present<Attribute>(rhs.dyn_cast<Attribute>());
-  if (lhsAttr && rhsAttr)
-    return lhsAttr == rhsAttr;
-
-  Value lhsVal = lhs.dyn_cast<Value>();
-  Value rhsVal = rhs.dyn_cast<Value>();
-  if (lhsVal && rhsVal)
-    return sameBoundedSizeExpr(lhsVal, rhsVal);
-
-  if (lhsAttr && rhsVal) {
-    if (auto intAttr = llvm::dyn_cast<IntegerAttr>(lhsAttr)) {
-      if (auto cst = rhsVal.getDefiningOp<arith::ConstantIndexOp>())
-        return intAttr.getInt() == cst.value();
-      if (auto cst = rhsVal.getDefiningOp<arith::ConstantIntOp>())
-        return intAttr.getInt() == cst.value();
-    }
-  }
-  if (lhsVal && rhsAttr)
-    return sameOFR(rhs, lhs);
-
-  return false;
-}
+using mlir::isConstOneOFR;
+using mlir::isConstZeroOFR;
+using mlir::sameOFR;
 
 static bool canElideDescriptorSubview(Value rankedMemRef, Value off0,
                                       Value off1, Value size0, Value size1) {
   (void)size0;
   (void)size1;
-  if (!isZeroOFRLocal(off0) || !isZeroOFRLocal(off1))
+  if (!isConstZeroOFR(off0) || !isConstZeroOFR(off1))
     return false;
 
   auto memrefTy = llvm::dyn_cast<MemRefType>(rankedMemRef.getType());
@@ -249,9 +97,9 @@ static bool canElideIdentitySubview(Value memrefBaseValue,
     return false;
 
   if (!llvm::all_of(offsets,
-                    [](OpFoldResult ofr) { return isZeroOFRLocal(ofr); }) ||
+                    [](OpFoldResult ofr) { return isConstZeroOFR(ofr); }) ||
       !llvm::all_of(strides,
-                    [](OpFoldResult ofr) { return isUnitOFRLocal(ofr); }))
+                    [](OpFoldResult ofr) { return isConstOneOFR(ofr); }))
     return false;
 
   if (auto reinterpretCast =
@@ -267,6 +115,10 @@ static bool canElideIdentitySubview(Value memrefBaseValue,
   return true;
 }
 
+// ===----------------------------------------------------------------------===//
+// Loop detection helper
+// ===----------------------------------------------------------------------===//
+
 inline bool isInsideLoop(mlir::Operation *op) {
   mlir::Operation *parent = op->getParentOp();
   while (parent) {
@@ -279,40 +131,9 @@ inline bool isInsideLoop(mlir::Operation *op) {
   return false;
 }
 
-struct MMT4DBindFusionPattern : public OpRewritePattern<xsmt::BindOp> {
-  MMT4DBindFusionPattern(MLIRContext *context)
-      : OpRewritePattern<xsmt::BindOp>(context) {}
-
-  LogicalResult matchAndRewrite(xsmt::BindOp bindOp,
-                                PatternRewriter &rewriter) const override {
-
-    Value mmt4dResult = bindOp.getDest();
-    Value accumulator = bindOp.getSrc();
-
-    auto mmt4dOp = mmt4dResult.getDefiningOp<xsmt::MMT4DOp>();
-    if (!mmt4dOp) {
-      return failure();
-    }
-
-    if (mmt4dOp.getC()) {
-      return failure();
-    }
-
-    rewriter.setInsertionPoint(bindOp);
-
-    auto newMMT4DOp = xsmt::MMT4DOp::create(
-        rewriter, bindOp.getLoc(), bindOp.getResult().getType(), mmt4dOp.getA(),
-        mmt4dOp.getB(), accumulator);
-
-    rewriter.replaceOp(bindOp, newMMT4DOp.getResult());
-
-    if (mmt4dOp->use_empty()) {
-      rewriter.eraseOp(mmt4dOp);
-    }
-
-    return success();
-  }
-};
+// ===----------------------------------------------------------------------===//
+// Phase 1: Validation patterns
+// ===----------------------------------------------------------------------===//
 
 template <typename OpTy>
 struct MBarrierLoopCheckPattern : public OpRewritePattern<OpTy> {
@@ -366,578 +187,346 @@ struct CheckGlobalMBarrierInLoopPattern : public OpRewritePattern<OpTy> {
   }
 };
 
-struct FillOpPattern : public OpRewritePattern<linalg::FillOp> {
-public:
-  FillOpPattern(MLIRContext *context)
-      : OpRewritePattern<linalg::FillOp>(context) {}
+// ===----------------------------------------------------------------------===//
+// Phase 2: XSMT → Linalg conversion patterns
+// (DescriptorLoadViewOp, MMT4D, GetThread, Proton, MBarrier release)
+// ===----------------------------------------------------------------------===//
 
-  LogicalResult matchAndRewrite(linalg::FillOp fillOp,
+// ===----------------------------------------------------------------------===//
+// PackOpPattern: xsmt.pack (2D → 4D)
+// Extracted from ViewOpPattern::convertFillDirect + convertNormal
+// ===----------------------------------------------------------------------===//
+struct PackOpPattern : public OpRewritePattern<xsmt::PackOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(xsmt::PackOp op,
                                 PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value base = op.getBase();
+    ValueRange offsets = op.getOffsets();
+    ArrayRef<int32_t> shape = op.getShape();
+    ArrayRef<int32_t> packedSize = op.getPackedSize();
 
-    Location loc = fillOp.getLoc();
-    Value fillValue = fillOp.getInputs()[0];
-    Value fillOutput = fillOp.getOutputs()[0];
-
-    auto outputType = dyn_cast<TensorType>(fillOutput.getType());
-    if (!outputType) {
-      return rewriter.notifyMatchFailure(fillOp,
-                                         "FAIL: Output is not a tensor type");
-    }
-
-    SmallVector<int64_t> shape(outputType.getShape().begin(),
-                               outputType.getShape().end());
-
-    auto allocOp = memref::AllocOp::create(
-        rewriter, loc, MemRefType::get(shape, outputType.getElementType()));
-    PatternRewriter::InsertionGuard guard(rewriter);
-
-    Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
-
-    SmallVector<Value> ivs;
-
-    scf::ForOp outermostLoop;
-
-    for (size_t i = 0; i < shape.size(); ++i) {
-      Value dimLimit = arith::ConstantIndexOp::create(rewriter, loc, shape[i]);
-      auto loop = scf::ForOp::create(rewriter, loc, c0, dimLimit, c1);
-
-      if (i == 0) {
-        outermostLoop = loop;
-      }
-
-      ivs.push_back(loop.getInductionVar());
-      rewriter.setInsertionPointToStart(loop.getBody());
-    }
-
-    memref::StoreOp::create(rewriter, loc, fillValue, allocOp, ivs);
-    if (outermostLoop) {
-      rewriter.setInsertionPointAfter(outermostLoop);
-    }
-
-    auto toTensorOp = bufferization::ToTensorOp::create(
-        rewriter, loc, outputType, allocOp, /*restrict=*/true);
-
-    rewriter.replaceOp(fillOp, toTensorOp.getResult());
-    return success();
-  }
-};
-
-struct ViewOpPattern : public OpRewritePattern<xsmt::ViewOp> {
-public:
-  ViewOpPattern(MLIRContext *context)
-      : OpRewritePattern<xsmt::ViewOp>(context) {}
-
-  LogicalResult matchAndRewrite(xsmt::ViewOp viewOp,
-                                PatternRewriter &rewriter) const override {
-
-    Location loc = viewOp.getLoc();
-    Value base = viewOp.getBase();
-    ValueRange offsets = viewOp.getOffsets();
-    ArrayRef<int32_t> shape = viewOp.getShape();
-    ArrayRef<int32_t> microSize = viewOp.getMicroSize();
-
-    auto resultType = dyn_cast<TensorType>(viewOp.getResult().getType());
-    if (!resultType) {
-      return rewriter.notifyMatchFailure(viewOp, "Result is not a tensor type");
-    }
+    auto resultType = cast<RankedTensorType>(op.getResult().getType());
     Type elementType = resultType.getElementType();
-    if (shape.size() != 2 || microSize.size() != 2) {
-      return rewriter.notifyMatchFailure(
-          viewOp, "Expected shape and micro_size to have 2 elements each");
-    }
-    if (offsets.size() != 2) {
-      return rewriter.notifyMatchFailure(viewOp,
-                                         "Expected exactly 2 offset values");
-    }
-    auto baseType = dyn_cast<TensorType>(base.getType());
-    if (!baseType) {
-      return rewriter.notifyMatchFailure(viewOp, "Base is not a tensor type");
-    }
+    auto baseType = cast<RankedTensorType>(base.getType());
 
-    // Optimization: for FillOp base (e.g. zero-initialized tensor),
-    // skip the redundant alloc → materialize → subview → to_tensor chain.
-    // We can directly pack the fill result tensor without materializing to
-    // memref. This avoids generating:
-    //   %alloc = memref.alloc()
-    //   bufferization.materialize_in_destination %fill in writable %alloc
-    //   %cast = memref.cast %alloc
-    //   %t = bufferization.to_tensor %cast restrict
-    //   linalg.pack %t ...
-    // Instead, we generate:
-    //   linalg.pack %fill ...
+    if (shape.size() != 2 || packedSize.size() != 2 || offsets.size() != 2)
+      return rewriter.notifyMatchFailure(
+          op, "Expected 2D shape/packed_size/offsets");
+
+    SmallVector<OpFoldResult> offsetValues;
+    for (Value off : offsets)
+      offsetValues.push_back(ensureIndexType(loc, off, rewriter));
+
+    // FillOp fast path: skip alloc+materialize roundtrip
     if (auto fillOp = base.getDefiningOp<linalg::FillOp>()) {
       auto tensorType = cast<RankedTensorType>(fillOp.getResult(0).getType());
-      auto shapes = tensorType.getShape();
       SmallVector<OpFoldResult> sizes;
-      for (int64_t s : shapes) {
+      for (int64_t s : tensorType.getShape())
         sizes.push_back(rewriter.getIndexAttr(s));
-      }
-      return convertFillDirect(viewOp, base, sizes, rewriter);
-    }
 
-    auto memrefType =
-        MemRefType::get(baseType.getShape(), baseType.getElementType());
-    Value memref = memref::AllocOp::create(rewriter, loc, memrefType);
+      auto sliceInfo =
+          computeClampedSlice2D(loc, sizes, offsetValues, shape, rewriter);
 
-    auto materialize = bufferization::MaterializeInDestinationOp::create(
-        rewriter, loc, base, memref);
-    materialize.setWritable(true);
-
-    bool hasMicroSize = false;
-    bool isSameMicroSize = false;
-    ArrayRef<int32_t> preMicroSize;
-
-    if (auto ViewOp = base.getDefiningOp<xsmt::ViewOp>()) {
-      preMicroSize = ViewOp.getMicroSize();
-    } else if (auto loadOp = base.getDefiningOp<xsmt::DescriptorLoadViewOp>()) {
-      preMicroSize = loadOp.getMicroSize();
-    }
-
-    if (!preMicroSize.empty()) {
-      hasMicroSize = true;
-      if (preMicroSize == microSize) {
-        isSameMicroSize = true;
-      }
-    }
-
-    SmallVector<OpFoldResult> sizes;
-    if (auto ViewOp = base.getDefiningOp<xsmt::ViewOp>()) {
-      auto shapes = ViewOp.getShape();
-      for (int64_t shape : shapes) {
-        sizes.push_back(rewriter.getIndexAttr(shape));
-      }
-    } else {
-      if (baseType.getRank() == 2) {
-        auto shapes = baseType.getShape();
-        for (int64_t s : shapes) {
-          sizes.push_back(rewriter.getIndexAttr(s));
-        }
-        return convertNormal(viewOp, memref, sizes, rewriter);
-      } else if (baseType.getRank() == 4) {
-        return convertIsDiffMicroSize(viewOp, memref, rewriter);
-      } else {
-        return failure();
-      }
-    }
-
-    if (!hasMicroSize && !isSameMicroSize) {
-      return convertNormal(viewOp, memref, sizes, rewriter);
-    } else if (hasMicroSize && isSameMicroSize) {
-      return convertIsSameMicroSize(viewOp, memref, sizes, rewriter);
-    } else if (hasMicroSize && !isSameMicroSize) {
-      return convertIsDiffMicroSize(viewOp, memref, rewriter);
-    } else {
-      return failure();
-    }
-  }
-
-private:
-  /// Directly pack a FillOp result tensor without going through
-  /// alloc → materialize → subview → to_tensor. This eliminates the
-  /// redundant bufferization roundtrip for zero-initialized tensors.
-  LogicalResult convertFillDirect(xsmt::ViewOp viewOp, Value baseTensor,
-                                  SmallVector<OpFoldResult> sizes,
-                                  PatternRewriter &rewriter) const {
-    Location loc = viewOp.getLoc();
-    ValueRange offsets = viewOp.getOffsets();
-    ArrayRef<int32_t> shape = viewOp.getShape();
-    ArrayRef<int32_t> microSize = viewOp.getMicroSize();
-
-    auto resultType = cast<RankedTensorType>(viewOp.getResult().getType());
-    Type elementType = resultType.getElementType();
-
-    SmallVector<OpFoldResult> offsetValues;
-    for (auto offset : offsets) {
-      offsetValues.push_back(ensureIndexType(loc, offset, rewriter));
-    }
-
-    // Compute actual slice size: min(baseSize - offset, shape)
-    auto size_m1 = subOFRs(sizes[0], offsetValues[0], loc, rewriter);
-    Value size_m2 = ofrToIndexValue(size_m1, loc, rewriter);
-    Value shape0 = ConstantIndexOp::create(rewriter, loc, shape[0]);
-    Value size_m3 = MinSIOp::create(rewriter, loc, size_m2, shape0);
-
-    auto size_n1 = subOFRs(sizes[1], offsetValues[1], loc, rewriter);
-    Value size_n2 = ofrToIndexValue(size_n1, loc, rewriter);
-    Value shape1 = ConstantIndexOp::create(rewriter, loc, shape[1]);
-    Value size_n3 = MinSIOp::create(rewriter, loc, size_n2, shape1);
-
-    // Extract the slice from the fill result tensor directly (no memref
-    // roundtrip)
-    SmallVector<int64_t, 2> sliceStaticShape = {ShapedType::kDynamic,
-                                                ShapedType::kDynamic};
-    auto sliceType = RankedTensorType::get(sliceStaticShape, elementType);
-    Value slice = tensor::ExtractSliceOp::create(
-        rewriter, loc, sliceType, baseTensor,
-        ArrayRef<OpFoldResult>{offsetValues[0], offsetValues[1]},
-        ArrayRef<OpFoldResult>{size_m3, size_n3},
-        ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1),
-                               rewriter.getIndexAttr(1)});
-
-    // Pack directly
-    Value tile0Value = ConstantIndexOp::create(rewriter, loc, microSize[0]);
-    Value tile1Value = ConstantIndexOp::create(rewriter, loc, microSize[1]);
-    Value packedRows = createCeilDivUI(rewriter, loc, size_m3, tile0Value);
-    Value packedCols = createCeilDivUI(rewriter, loc, size_n3, tile1Value);
-
-    SmallVector<int64_t, 4> shapeDims;
-    shapeDims.push_back(ShapedType::kDynamic);
-    shapeDims.push_back(ShapedType::kDynamic);
-    shapeDims.push_back(microSize[0]);
-    shapeDims.push_back(microSize[1]);
-    auto emptyType = RankedTensorType::get(shapeDims, elementType);
-    Value emptyTensor = EmptyOp::create(rewriter, loc, emptyType,
-                                        ValueRange{packedRows, packedCols});
-
-    Value paddingValue = createZeroConstant(rewriter, loc, elementType);
-    if (!paddingValue) {
-      return rewriter.notifyMatchFailure(
-          viewOp, "Unsupported element type for padding");
-    }
-
-    Value packedResult =
-        linalg::PackOp::create(
-            rewriter, loc, slice, emptyTensor, ArrayRef<int64_t>{0, 1},
-            ArrayRef<OpFoldResult>{rewriter.getIndexAttr(microSize[0]),
-                                   rewriter.getIndexAttr(microSize[1])},
-            paddingValue, ArrayRef<int64_t>{0, 1})
-            .getResult();
-
-    Value castResult =
-        tensor::CastOp::create(rewriter, loc, resultType, packedResult);
-    rewriter.replaceOp(viewOp, castResult);
-    return success();
-  }
-
-  LogicalResult convertNormal(xsmt::ViewOp viewOp, Value memrefBaseValue,
-                              SmallVector<OpFoldResult> sizes,
-                              PatternRewriter &rewriter) const {
-    Location loc = viewOp.getLoc();
-    Value base = viewOp.getBase();
-    ValueRange offsets = viewOp.getOffsets();
-    ArrayRef<int32_t> shape = viewOp.getShape();
-    ArrayRef<int32_t> microSize = viewOp.getMicroSize();
-
-    auto resultType = cast<TensorType>(viewOp.getResult().getType());
-    Type elementType = resultType.getElementType();
-
-    SmallVector<OpFoldResult> offsetValues;
-
-    for (auto offset : offsets) {
-      offsetValues.push_back(ensureIndexType(loc, offset, rewriter));
-    }
-
-    Value c1 = ConstantIndexOp::create(rewriter, loc, 1);
-    auto size_m1 = subOFRs(sizes[0], offsetValues[0], loc, rewriter);
-    Value size_m2 = ofrToIndexValue(size_m1, loc, rewriter);
-    Value shape0 = ConstantIndexOp::create(rewriter, loc, shape[0]);
-    Value size_m3 = MinSIOp::create(rewriter, loc, size_m2, shape0);
-
-    auto size_n1 = subOFRs(sizes[1], offsetValues[1], loc, rewriter);
-    Value size_n2 = ofrToIndexValue(size_n1, loc, rewriter);
-    Value shape1 = ConstantIndexOp::create(rewriter, loc, shape[1]);
-    Value size_n3 = MinSIOp::create(rewriter, loc, size_n2, shape1);
-
-    SmallVector<OpFoldResult> strideValues{c1, c1};
-    Value toTensorSource = memrefBaseValue;
-    auto tensorType = RankedTensorType::get(
-        {ShapedType::kDynamic, ShapedType::kDynamic}, elementType);
-
-    if (!canElideIdentitySubview(memrefBaseValue,
-                                 ArrayRef<OpFoldResult>{size_m3, size_n3},
-                                 offsetValues, strideValues)) {
-      auto subview = memref::SubViewOp::create(
-          rewriter, loc, memrefBaseValue, offsetValues,
-          ArrayRef<OpFoldResult>{size_m3, size_n3}, strideValues);
-      toTensorSource = subview.getResult();
-      auto subviewType = cast<MemRefType>(subview.getType());
-      tensorType = RankedTensorType::get(subviewType.getShape(),
-                                         subviewType.getElementType());
-    }
-
-    Value toTensorOp2 = bufferization::ToTensorOp::create(
-        rewriter, loc, tensorType, toTensorSource,
-        /*restrict=*/rewriter.getUnitAttr());
-
-    Value tile0Value = ConstantIndexOp::create(rewriter, loc, microSize[0]);
-    Value tile1Value = ConstantIndexOp::create(rewriter, loc, microSize[1]);
-    Value packedRows = createCeilDivUI(rewriter, loc, size_m3, tile0Value);
-    Value packedCols = createCeilDivUI(rewriter, loc, size_n3, tile1Value);
-
-    SmallVector<int64_t, 4> shapeDims;
-    shapeDims.push_back(ShapedType::kDynamic);
-    shapeDims.push_back(ShapedType::kDynamic);
-    shapeDims.push_back(microSize[0]);
-    shapeDims.push_back(microSize[1]);
-    auto emptyType =
-        RankedTensorType::get(shapeDims, tensorType.getElementType());
-    Value emptyTensor = EmptyOp::create(rewriter, loc, emptyType,
-                                        ValueRange{packedRows, packedCols});
-
-    Value paddingValue = createZeroConstant(rewriter, loc, elementType);
-    if (!paddingValue) {
-      return rewriter.notifyMatchFailure(
-          viewOp, "Unsupported element type for padding");
-    }
-
-    Value packedResult =
-        linalg::PackOp::create(
-            rewriter, loc, toTensorOp2, emptyTensor, ArrayRef<int64_t>{0, 1},
-            ArrayRef<OpFoldResult>{rewriter.getIndexAttr(microSize[0]),
-                                   rewriter.getIndexAttr(microSize[1])},
-            paddingValue, ArrayRef<int64_t>{0, 1})
-            .getResult();
-
-    auto originalResultType =
-        cast<RankedTensorType>(viewOp.getResult().getType());
-    Value castResult =
-        tensor::CastOp::create(rewriter, loc, originalResultType, packedResult);
-    rewriter.replaceOp(viewOp, castResult);
-    return success();
-  }
-
-  LogicalResult convertIsSameMicroSize(xsmt::ViewOp viewOp,
-                                       Value memrefBaseValue,
-                                       SmallVector<OpFoldResult> sizes,
-                                       PatternRewriter &rewriter) const {
-
-    Location loc = viewOp.getLoc();
-    Value base = viewOp.getBase();
-    ValueRange offsets = viewOp.getOffsets();
-    ArrayRef<int32_t> shape = viewOp.getShape();
-    ArrayRef<int32_t> microSize = viewOp.getMicroSize();
-
-    auto resultType = cast<TensorType>(viewOp.getResult().getType());
-    Type elementType = resultType.getElementType();
-
-    SmallVector<OpFoldResult> offsetValues;
-
-    for (auto offset : offsets) {
-      offsetValues.push_back(ensureIndexType(loc, offset, rewriter));
-    }
-
-    Value c1 = ConstantIndexOp::create(rewriter, loc, 1);
-    auto size_m1 = subOFRs(sizes[0], offsetValues[0], loc, rewriter);
-    Value size_m2 = ofrToIndexValue(size_m1, loc, rewriter);
-    Value shape0 = ConstantIndexOp::create(rewriter, loc, shape[0]);
-    Value size_m3 = MinSIOp::create(rewriter, loc, size_m2, shape0);
-
-    auto size_n1 = subOFRs(sizes[1], offsetValues[1], loc, rewriter);
-    Value size_n2 = ofrToIndexValue(size_n1, loc, rewriter);
-    Value shape1 = ConstantIndexOp::create(rewriter, loc, shape[1]);
-    Value size_n3 = MinSIOp::create(rewriter, loc, size_n2, shape1);
-
-    Value tile0Value = ConstantIndexOp::create(rewriter, loc, microSize[0]);
-    Value tile1Value = ConstantIndexOp::create(rewriter, loc, microSize[1]);
-    Value size0 = createCeilDivUI(rewriter, loc, size_m3, tile0Value);
-    Value size1 = createCeilDivUI(rewriter, loc, size_n3, tile1Value);
-
-    Value offset0 = createCeilDivUI(rewriter, loc, offsets[0], tile0Value);
-    Value offset1 = createCeilDivUI(rewriter, loc, offsets[1], tile1Value);
-
-    Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
-
-    auto subview = memref::SubViewOp::create(
-        rewriter, loc, memrefBaseValue,
-        ArrayRef<OpFoldResult>{offset0, offset1, c0, c0},
-        ArrayRef<OpFoldResult>{size0, size1, tile0Value, tile1Value},
-        ArrayRef<OpFoldResult>{c1, c1, c1, c1});
-
-    auto subviewMemRefType = subview.getType();
-    auto subviewTensorType = RankedTensorType::get(
-        subviewMemRefType.getShape(), subviewMemRefType.getElementType());
-
-    Value newTensor = bufferization::ToTensorOp::create(
-        rewriter, loc, subviewTensorType, subview.getResult(),
-        /*restrict=*/rewriter.getUnitAttr());
-
-    Value castResult =
-        tensor::CastOp::create(rewriter, loc, resultType, newTensor);
-    rewriter.replaceOp(viewOp, castResult);
-
-    return success();
-  }
-
-  LogicalResult convertIsDiffMicroSize(xsmt::ViewOp viewOp,
-                                       Value memrefBaseValue,
-                                       PatternRewriter &rewriter) const {
-    Location loc = viewOp.getLoc();
-    Value base = viewOp.getBase();
-    ValueRange offsets = viewOp.getOffsets();
-    ArrayRef<int32_t> shape = viewOp.getShape();
-    ArrayRef<int32_t> microSize = viewOp.getMicroSize();
-
-    auto resultType = cast<RankedTensorType>(viewOp.getResult().getType());
-    Type elementType = resultType.getElementType();
-
-    bool other = false;
-
-    ArrayRef<int32_t> preMicroSize;
-    if (auto prevViewOp = base.getDefiningOp<xsmt::ViewOp>()) {
-      preMicroSize = prevViewOp.getMicroSize();
-    } else if (auto loadOp = base.getDefiningOp<xsmt::DescriptorLoadViewOp>()) {
-      preMicroSize = loadOp.getMicroSize();
-    } else {
-      other = true;
-    }
-
-    Value packedTensor = memrefBaseValue;
-    ShapedType shapedTy = cast<ShapedType>(memrefBaseValue.getType());
-    if (!isa<RankedTensorType>(memrefBaseValue.getType())) {
-      auto tensorTy =
-          RankedTensorType::get(shapedTy.getShape(), shapedTy.getElementType());
-      packedTensor = bufferization::ToTensorOp::create(
-          rewriter, loc, tensorTy, memrefBaseValue,
-          rewriter.getUnitAttr()); // restrict=true
-    }
-
-    if (microSize[0] == 1 && microSize[1] == 1) {
-      Value flatTensor = packedTensor;
-
-      Value dim0 = tensor::DimOp::create(rewriter, loc, packedTensor, 0);
-      Value dim1 = tensor::DimOp::create(rewriter, loc, packedTensor, 1);
-
-      int64_t dim2 = shapedTy.getDimSize(2);
-      int64_t dim3 = shapedTy.getDimSize(3);
-
-      if (other) {
-        Value flatRows = arith::MulIOp::create(
-            rewriter, loc, dim0,
-            arith::ConstantIndexOp::create(rewriter, loc, dim2));
-        Value flatCols = arith::MulIOp::create(
-            rewriter, loc, dim1,
-            arith::ConstantIndexOp::create(rewriter, loc, dim3));
-
-        auto flatTy = RankedTensorType::get(
-            {ShapedType::kDynamic, ShapedType::kDynamic}, elementType);
-        Value empty = tensor::EmptyOp::create(rewriter, loc, flatTy,
-                                              ValueRange{flatRows, flatCols});
-
-        flatTensor =
-            linalg::UnPackOp::create(
-                rewriter, loc, packedTensor, empty, ArrayRef<int64_t>{0, 1},
-                ArrayRef<OpFoldResult>{rewriter.getIndexAttr(dim2),
-                                       rewriter.getIndexAttr(dim3)})
-                .getResult();
-      } else {
-        Value flatRows = arith::MulIOp::create(
-            rewriter, loc, dim0,
-            arith::ConstantIndexOp::create(rewriter, loc, preMicroSize[0]));
-        Value flatCols = arith::MulIOp::create(
-            rewriter, loc, dim1,
-            arith::ConstantIndexOp::create(rewriter, loc, preMicroSize[1]));
-
-        auto flatTy = RankedTensorType::get(
-            {ShapedType::kDynamic, ShapedType::kDynamic}, elementType);
-        Value empty = tensor::EmptyOp::create(rewriter, loc, flatTy,
-                                              ValueRange{flatRows, flatCols});
-
-        flatTensor =
-            linalg::UnPackOp::create(
-                rewriter, loc, packedTensor, empty, ArrayRef<int64_t>{0, 1},
-                ArrayRef<OpFoldResult>{rewriter.getIndexAttr(preMicroSize[0]),
-                                       rewriter.getIndexAttr(preMicroSize[1])})
-                .getResult();
-      }
-
-      Value off0 = ensureIndexType(loc, offsets[0], rewriter);
-      Value off1 = ensureIndexType(loc, offsets[1], rewriter);
-      Value reqRows = arith::ConstantIndexOp::create(rewriter, loc, shape[0]);
-      Value reqCols = arith::ConstantIndexOp::create(rewriter, loc, shape[1]);
-
-      Value flatRows = tensor::DimOp::create(rewriter, loc, flatTensor, 0);
-      Value flatCols = tensor::DimOp::create(rewriter, loc, flatTensor, 1);
-      Value availRows = arith::SubIOp::create(rewriter, loc, flatRows, off0);
-      Value availCols = arith::SubIOp::create(rewriter, loc, flatCols, off1);
-      Value actualRows =
-          arith::MinUIOp::create(rewriter, loc, reqRows, availRows);
-      Value actualCols =
-          arith::MinUIOp::create(rewriter, loc, reqCols, availCols);
-
+      SmallVector<int64_t, 2> dynShape = {ShapedType::kDynamic,
+                                          ShapedType::kDynamic};
+      auto sliceType = RankedTensorType::get(dynShape, elementType);
       Value slice = tensor::ExtractSliceOp::create(
-          rewriter, loc, flatTensor, ArrayRef<Value>{off0, off1},
-          ArrayRef<Value>{actualRows, actualCols},
-          ArrayRef<Value>{arith::ConstantIndexOp::create(rewriter, loc, 1),
-                          arith::ConstantIndexOp::create(rewriter, loc, 1)});
+          rewriter, loc, sliceType, base,
+          ArrayRef<OpFoldResult>{sliceInfo.offsetValues[0],
+                                 sliceInfo.offsetValues[1]},
+          ArrayRef<OpFoldResult>{sliceInfo.sizeRows, sliceInfo.sizeCols},
+          ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1),
+                                 rewriter.getIndexAttr(1)});
 
-      Value result = tensor::CastOp::create(rewriter, loc, resultType, slice);
-      rewriter.replaceOp(viewOp, result);
+      FailureOr<Value> packed = pack2DToPackedTiles(
+          loc, slice, elementType, packedSize[0], packedSize[1],
+          sliceInfo.sizeRows, sliceInfo.sizeCols, rewriter, true);
+      if (failed(packed))
+        return rewriter.notifyMatchFailure(op, "Unsupported element type");
+
+      rewriter.replaceOp(
+          op, tensor::CastOp::create(rewriter, loc, resultType, *packed));
       return success();
     }
 
-    Value dim0 = tensor::DimOp::create(rewriter, loc, packedTensor, 0);
-    Value dim1 = tensor::DimOp::create(rewriter, loc, packedTensor, 1);
+    // Standard path: extract_slice from base tensor + linalg.pack
+    // Use destination if provided (DPS), otherwise use base directly.
+    Value sourceTensor = op.getDestination() ? op.getDestination() : base;
+    auto sourceType = cast<RankedTensorType>(sourceTensor.getType());
+    SmallVector<OpFoldResult> sizes;
+    for (int64_t s : sourceType.getShape())
+      sizes.push_back(rewriter.getIndexAttr(s));
 
-    int64_t dim2 = shapedTy.getDimSize(2);
-    int64_t dim3 = shapedTy.getDimSize(3);
+    auto sliceInfo =
+        computeClampedSlice2D(loc, sizes, offsetValues, shape, rewriter);
 
+    SmallVector<int64_t, 2> dynShape = {ShapedType::kDynamic,
+                                        ShapedType::kDynamic};
+    auto sliceType = RankedTensorType::get(dynShape, elementType);
+    Value tensor = tensor::ExtractSliceOp::create(
+        rewriter, loc, sliceType, sourceTensor,
+        ArrayRef<OpFoldResult>{sliceInfo.offsetValues[0],
+                               sliceInfo.offsetValues[1]},
+        ArrayRef<OpFoldResult>{sliceInfo.sizeRows, sliceInfo.sizeCols},
+        ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1),
+                               rewriter.getIndexAttr(1)});
+
+    FailureOr<Value> packed = pack2DToPackedTiles(
+        loc, tensor, elementType, packedSize[0], packedSize[1],
+        sliceInfo.sizeRows, sliceInfo.sizeCols, rewriter, true);
+    if (failed(packed))
+      return rewriter.notifyMatchFailure(op, "Unsupported element type");
+
+    rewriter.replaceOp(
+        op, tensor::CastOp::create(rewriter, loc, resultType, *packed));
+    return success();
+  }
+
+private:
+  struct ClampedViewSlice2D {
+    SmallVector<OpFoldResult> offsetValues;
+    Value sizeRows;
+    Value sizeCols;
+  };
+
+  ClampedViewSlice2D computeClampedSlice2D(Location loc,
+                                           ArrayRef<OpFoldResult> sizes,
+                                           ArrayRef<OpFoldResult> offsetValues,
+                                           ArrayRef<int32_t> shape,
+                                           PatternRewriter &rewriter) const {
+    auto rowDelta = subOFRs(sizes[0], offsetValues[0], loc, rewriter);
+    Value rowBase = ofrToIndexValue(rowDelta, loc, rewriter);
+    Value shapeRows = ConstantIndexOp::create(rewriter, loc, shape[0]);
+    Value sizeRows = MinSIOp::create(rewriter, loc, rowBase, shapeRows);
+
+    auto colDelta = subOFRs(sizes[1], offsetValues[1], loc, rewriter);
+    Value colBase = ofrToIndexValue(colDelta, loc, rewriter);
+    Value shapeCols = ConstantIndexOp::create(rewriter, loc, shape[1]);
+    Value sizeCols = MinSIOp::create(rewriter, loc, colBase, shapeCols);
+
+    return {SmallVector<OpFoldResult>(offsetValues.begin(), offsetValues.end()),
+            sizeRows, sizeCols};
+  }
+
+  FailureOr<Value> pack2DToPackedTiles(Location loc, Value source2D,
+                                       Type elementType, int32_t tileRows,
+                                       int32_t tileCols, Value rows, Value cols,
+                                       PatternRewriter &rewriter,
+                                       bool withOuterDimsPerm) const {
+    Value tileRowsValue =
+        arith::ConstantIndexOp::create(rewriter, loc, tileRows);
+    Value tileColsValue =
+        arith::ConstantIndexOp::create(rewriter, loc, tileCols);
+    Value outerRows = createCeilDivUI(rewriter, loc, rows, tileRowsValue);
+    Value outerCols = createCeilDivUI(rewriter, loc, cols, tileColsValue);
+
+    SmallVector<int64_t> packedShape = {
+        ShapedType::kDynamic, ShapedType::kDynamic, tileRows, tileCols};
+    auto packedTy = RankedTensorType::get(packedShape, elementType);
+    Value packedEmpty = tensor::EmptyOp::create(rewriter, loc, packedTy,
+                                                {outerRows, outerCols});
+
+    Value padding = createZeroConstant(rewriter, loc, elementType);
+    if (!padding)
+      return failure();
+
+    if (withOuterDimsPerm) {
+      return linalg::PackOp::create(
+                 rewriter, loc, source2D, packedEmpty, ArrayRef<int64_t>{0, 1},
+                 ArrayRef<OpFoldResult>{rewriter.getIndexAttr(tileRows),
+                                        rewriter.getIndexAttr(tileCols)},
+                 padding, ArrayRef<int64_t>{0, 1})
+          .getResult();
+    }
+    return linalg::PackOp::create(
+               rewriter, loc, source2D, packedEmpty, ArrayRef<int64_t>{0, 1},
+               ArrayRef<OpFoldResult>{rewriter.getIndexAttr(tileRows),
+                                      rewriter.getIndexAttr(tileCols)},
+               padding)
+        .getResult();
+  }
+};
+
+// ===----------------------------------------------------------------------===//
+// UnpackOpPattern: xsmt.unpack (4D → 2D)
+// Extracted from ViewOpPattern::convertWithDifferentPackedSize
+// (packedSize=={1,1})
+// ===----------------------------------------------------------------------===//
+struct UnpackOpPattern : public OpRewritePattern<xsmt::UnpackOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(xsmt::UnpackOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value base = op.getBase();
+    ValueRange offsets = op.getOffsets();
+    ArrayRef<int32_t> shape = op.getShape();
+
+    auto resultType = cast<RankedTensorType>(op.getResult().getType());
+    Type elementType = resultType.getElementType();
+    auto baseType = cast<RankedTensorType>(base.getType());
+
+    if (baseType.getRank() != 4)
+      return rewriter.notifyMatchFailure(op, "Expected 4D input for unpack");
+
+    int64_t tileRows = baseType.getDimSize(2);
+    int64_t tileCols = baseType.getDimSize(3);
+
+    // Use base directly as the 4D tensor source (no alloc roundtrip needed).
+    Value packedTensor = op.getDestination() ? op.getDestination() : base;
+
+    // Unpack 4D → 2D
+    Value outerRows = tensor::DimOp::create(rewriter, loc, packedTensor, 0);
+    Value outerCols = tensor::DimOp::create(rewriter, loc, packedTensor, 1);
     Value flatRows = arith::MulIOp::create(
-        rewriter, loc, dim0,
-        arith::ConstantIndexOp::create(rewriter, loc, dim2));
+        rewriter, loc, outerRows,
+        arith::ConstantIndexOp::create(rewriter, loc, tileRows));
     Value flatCols = arith::MulIOp::create(
-        rewriter, loc, dim1,
-        arith::ConstantIndexOp::create(rewriter, loc, dim3));
+        rewriter, loc, outerCols,
+        arith::ConstantIndexOp::create(rewriter, loc, tileCols));
 
     auto flatTy = RankedTensorType::get(
         {ShapedType::kDynamic, ShapedType::kDynamic}, elementType);
-    Value flatEmpty = tensor::EmptyOp::create(rewriter, loc, flatTy,
-                                              ValueRange{flatRows, flatCols});
+    Value flatEmpty =
+        tensor::EmptyOp::create(rewriter, loc, flatTy, {flatRows, flatCols});
 
     Value flatTensor =
         linalg::UnPackOp::create(
             rewriter, loc, packedTensor, flatEmpty, ArrayRef<int64_t>{0, 1},
-            ArrayRef<OpFoldResult>{rewriter.getIndexAttr(dim2),
-                                   rewriter.getIndexAttr(dim3)})
+            ArrayRef<OpFoldResult>{rewriter.getIndexAttr(tileRows),
+                                   rewriter.getIndexAttr(tileCols)})
             .getResult();
 
+    // Extract slice to target shape
     Value off0 = ensureIndexType(loc, offsets[0], rewriter);
     Value off1 = ensureIndexType(loc, offsets[1], rewriter);
     Value reqRows = arith::ConstantIndexOp::create(rewriter, loc, shape[0]);
     Value reqCols = arith::ConstantIndexOp::create(rewriter, loc, shape[1]);
 
-    Value availRows = arith::SubIOp::create(
-        rewriter, loc, tensor::DimOp::create(rewriter, loc, flatTensor, 0),
-        off0);
-    Value availCols = arith::SubIOp::create(
-        rewriter, loc, tensor::DimOp::create(rewriter, loc, flatTensor, 1),
-        off1);
+    Value srcRows = tensor::DimOp::create(rewriter, loc, flatTensor, 0);
+    Value srcCols = tensor::DimOp::create(rewriter, loc, flatTensor, 1);
+    Value availRows = arith::SubIOp::create(rewriter, loc, srcRows, off0);
+    Value availCols = arith::SubIOp::create(rewriter, loc, srcCols, off1);
     Value actualRows =
         arith::MinUIOp::create(rewriter, loc, reqRows, availRows);
     Value actualCols =
         arith::MinUIOp::create(rewriter, loc, reqCols, availCols);
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
 
     Value slice = tensor::ExtractSliceOp::create(
         rewriter, loc, flatTensor, ArrayRef<Value>{off0, off1},
-        ArrayRef<Value>{actualRows, actualCols},
-        ArrayRef<Value>{arith::ConstantIndexOp::create(rewriter, loc, 1),
-                        arith::ConstantIndexOp::create(rewriter, loc, 1)});
+        ArrayRef<Value>{actualRows, actualCols}, ArrayRef<Value>{c1, c1});
 
-    Value tile0 = arith::ConstantIndexOp::create(rewriter, loc, microSize[0]);
-    Value tile1 = arith::ConstantIndexOp::create(rewriter, loc, microSize[1]);
-    Value outerRows = createCeilDivUI(rewriter, loc, actualRows, tile0);
-    Value outerCols = createCeilDivUI(rewriter, loc, actualCols, tile1);
+    rewriter.replaceOp(
+        op, tensor::CastOp::create(rewriter, loc, resultType, slice));
+    return success();
+  }
+};
 
-    SmallVector<int64_t> packedShape = {
-        ShapedType::kDynamic, ShapedType::kDynamic, microSize[0], microSize[1]};
+// ===----------------------------------------------------------------------===//
+// RepackOpPattern: xsmt.repack (4D → 4D with different packed)
+// Extracted from ViewOpPattern::convertWithDifferentPackedSize
+// (packedSize!={1,1})
+// ===----------------------------------------------------------------------===//
+struct RepackOpPattern : public OpRewritePattern<xsmt::RepackOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(xsmt::RepackOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value base = op.getBase();
+    ValueRange offsets = op.getOffsets();
+    ArrayRef<int32_t> shape = op.getShape();
+    ArrayRef<int32_t> packedSize = op.getPackedSize();
+
+    auto resultType = cast<RankedTensorType>(op.getResult().getType());
+    Type elementType = resultType.getElementType();
+    auto baseType = cast<RankedTensorType>(base.getType());
+
+    if (baseType.getRank() != 4)
+      return rewriter.notifyMatchFailure(op, "Expected 4D input for repack");
+
+    int64_t oldTileRows = baseType.getDimSize(2);
+    int64_t oldTileCols = baseType.getDimSize(3);
+
+    // Use base directly as the 4D tensor source (no alloc roundtrip needed).
+    Value packedTensor = op.getDestination() ? op.getDestination() : base;
+
+    // Step 1: Unpack old 4D → 2D
+    Value outerRows = tensor::DimOp::create(rewriter, loc, packedTensor, 0);
+    Value outerCols = tensor::DimOp::create(rewriter, loc, packedTensor, 1);
+    Value flatRows = arith::MulIOp::create(
+        rewriter, loc, outerRows,
+        arith::ConstantIndexOp::create(rewriter, loc, oldTileRows));
+    Value flatCols = arith::MulIOp::create(
+        rewriter, loc, outerCols,
+        arith::ConstantIndexOp::create(rewriter, loc, oldTileCols));
+
+    auto flatTy = RankedTensorType::get(
+        {ShapedType::kDynamic, ShapedType::kDynamic}, elementType);
+    Value flatEmpty =
+        tensor::EmptyOp::create(rewriter, loc, flatTy, {flatRows, flatCols});
+
+    Value flatTensor =
+        linalg::UnPackOp::create(
+            rewriter, loc, packedTensor, flatEmpty, ArrayRef<int64_t>{0, 1},
+            ArrayRef<OpFoldResult>{rewriter.getIndexAttr(oldTileRows),
+                                   rewriter.getIndexAttr(oldTileCols)})
+            .getResult();
+
+    // Step 2: Extract slice
+    Value off0 = ensureIndexType(loc, offsets[0], rewriter);
+    Value off1 = ensureIndexType(loc, offsets[1], rewriter);
+    Value reqRows = arith::ConstantIndexOp::create(rewriter, loc, shape[0]);
+    Value reqCols = arith::ConstantIndexOp::create(rewriter, loc, shape[1]);
+
+    Value srcRows = tensor::DimOp::create(rewriter, loc, flatTensor, 0);
+    Value srcCols = tensor::DimOp::create(rewriter, loc, flatTensor, 1);
+    Value availRows = arith::SubIOp::create(rewriter, loc, srcRows, off0);
+    Value availCols = arith::SubIOp::create(rewriter, loc, srcCols, off1);
+    Value actualRows =
+        arith::MinUIOp::create(rewriter, loc, reqRows, availRows);
+    Value actualCols =
+        arith::MinUIOp::create(rewriter, loc, reqCols, availCols);
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
+
+    Value slice = tensor::ExtractSliceOp::create(
+        rewriter, loc, flatTensor, ArrayRef<Value>{off0, off1},
+        ArrayRef<Value>{actualRows, actualCols}, ArrayRef<Value>{c1, c1});
+
+    // Step 3: Repack with new packed tiles
+    Value newTileRowsVal =
+        arith::ConstantIndexOp::create(rewriter, loc, packedSize[0]);
+    Value newTileColsVal =
+        arith::ConstantIndexOp::create(rewriter, loc, packedSize[1]);
+    Value newOuterRows =
+        createCeilDivUI(rewriter, loc, actualRows, newTileRowsVal);
+    Value newOuterCols =
+        createCeilDivUI(rewriter, loc, actualCols, newTileColsVal);
+
+    SmallVector<int64_t> packedShape = {ShapedType::kDynamic,
+                                        ShapedType::kDynamic, packedSize[0],
+                                        packedSize[1]};
     auto packedTy = RankedTensorType::get(packedShape, elementType);
-    Value packedEmpty = tensor::EmptyOp::create(
-        rewriter, loc, packedTy, ValueRange{outerRows, outerCols});
+    Value packedEmpty = tensor::EmptyOp::create(rewriter, loc, packedTy,
+                                                {newOuterRows, newOuterCols});
 
     Value padding = createZeroConstant(rewriter, loc, elementType);
     if (!padding)
-      return rewriter.notifyMatchFailure(viewOp, "Cannot create padding value");
+      return rewriter.notifyMatchFailure(op, "Cannot create padding value");
 
-    Value packed =
+    Value repacked =
         linalg::PackOp::create(
             rewriter, loc, slice, packedEmpty, ArrayRef<int64_t>{0, 1},
-            ArrayRef<OpFoldResult>{rewriter.getIndexAttr(microSize[0]),
-                                   rewriter.getIndexAttr(microSize[1])},
+            ArrayRef<OpFoldResult>{rewriter.getIndexAttr(packedSize[0]),
+                                   rewriter.getIndexAttr(packedSize[1])},
             padding)
             .getResult();
 
-    Value result = tensor::CastOp::create(rewriter, loc, resultType, packed);
-    rewriter.replaceOp(viewOp, result);
+    rewriter.replaceOp(
+        op, tensor::CastOp::create(rewriter, loc, resultType, repacked));
     return success();
   }
 };
@@ -967,217 +556,89 @@ struct LowerXSMTMMT4D : public OpRewritePattern<xsmt::MMT4DOp> {
     return true;
   }
 
-  LogicalResult matchAndRewrite(xsmt::MMT4DOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    Value a = op.getA();
-    Value b = op.getB();
-    Value c = op.getC();
+  /// Try to find a linalg.generic(addf) user that wraps this mmt4d result
+  /// as an accumulation pattern: generic(addf(mmt4d_result, acc)).
+  /// Returns the genericOp if found, nullptr otherwise.
+  static linalg::GenericOp findAccumulationGeneric(xsmt::MMT4DOp op) {
+    Value result = op.getResult();
+    // The mmt4d must have no accumulator (2 operands: a, b)
+    if (op.getNumOperands() != 2)
+      return nullptr;
 
-    if (auto cast = a.getDefiningOp<tensor::CastOp>())
-      a = cast.getSource();
-    if (auto cast = b.getDefiningOp<tensor::CastOp>())
-      b = cast.getSource();
+    for (OpOperand &use : result.getUses()) {
+      auto genericOp = dyn_cast<linalg::GenericOp>(use.getOwner());
+      if (!genericOp)
+        continue;
 
-    bool unpack = false;
-
-    if (c) {
-      if (c.hasOneUse() && op.getResult().use_empty())
-        unpack = true;
-      if (unpack) {
-        if (auto cast = c.getDefiningOp<tensor::CastOp>())
-          c = cast.getSource();
-        auto cPackOp = c.getDefiningOp<linalg::PackOp>();
-        if (!cPackOp)
-          return rewriter.notifyMatchFailure(op,
-                                             "C must be result of linalg.pack");
-
-        Value packInput = cPackOp.getSource();
-        auto toTensorOp = packInput.getDefiningOp<bufferization::ToTensorOp>();
-        if (!toTensorOp)
-          return rewriter.notifyMatchFailure(
-              op, "Packed input must come from to_tensor");
-
-        Value subview = toTensorOp->getOperand(0);
-
-        auto cType = dyn_cast<RankedTensorType>(c.getType());
-        auto zeroAttr = FloatAttr::get(cType.getElementType(), 0.0);
-        auto zero = arith::ConstantOp::create(rewriter, loc, zeroAttr);
-
-        auto fillOp =
-            linalg::FillOp::create(rewriter, loc, TypeRange{c.getType()},
-                                   ValueRange{zero}, ValueRange{c});
-
-        auto mmt4dOp = linalg::Mmt4DOp::create(rewriter, loc, ValueRange{a, b},
-                                               ValueRange{fillOp.getResult(0)});
-
-        // Unpack directly into the output buffer (subview) as in
-        // /home/share/nfs_share/zuoweixia/ir_offline/mm_kernel_linalg1.mlir.
-        //
-        // IMPORTANT: Use the *same* memref subview that backs the pack input
-        // (operand of bufferization.to_tensor feeding linalg.pack). This keeps
-        // dest/result types stable for downstream lowerings.
-        Value destination = subview;
-        auto destMemrefTy = cast<MemRefType>(destination.getType());
-
-        // Create a dynamic-shaped destination tensor view backed by the memref.
-        auto elemTy = destMemrefTy.getElementType();
-        auto dstTensorTy = RankedTensorType::get(
-            {ShapedType::kDynamic, ShapedType::kDynamic}, elemTy);
-        auto dstTensor = bufferization::ToTensorOp::create(
-            rewriter, loc, dstTensorTy, destination,
-            /*restrict=*/rewriter.getUnitAttr(),
-            /*writable=*/rewriter.getUnitAttr());
-
-        // Unpack into the destination tensor (should alias the output buffer).
-        ArrayRef<int64_t> staticInnerTiles = cPackOp.getStaticInnerTiles();
-        if (staticInnerTiles.empty())
-          return rewriter.notifyMatchFailure(op, "static_inner_tiles is empty");
-        SmallVector<OpFoldResult> innerTiles;
-        for (int64_t tile : staticInnerTiles)
-          innerTiles.push_back(rewriter.getIndexAttr(tile));
-
-        auto unpackOp = linalg::UnPackOp::create(
-            rewriter, loc, mmt4dOp.getResult(0), dstTensor.getResult(),
-            cPackOp.getInnerDimsPos(), innerTiles, cPackOp.getOuterDimsPerm());
-
-        // Keep an explicit anchor write-back. If aliasing is proven, this
-        // should become a no-op; otherwise it preserves semantics.
-        auto materializeOp = bufferization::MaterializeInDestinationOp::create(
-            rewriter, unpackOp.getLoc(), unpackOp.getResult(), destination);
-        materializeOp.setWritable(true);
-
-        rewriter.replaceOp(op, unpackOp.getResult());
-        return success();
-      } else {
-        if (auto cast = c.getDefiningOp<tensor::CastOp>())
-          c = cast.getSource();
-        auto toTensorOp = c.getDefiningOp<bufferization::ToTensorOp>();
-        if (!toTensorOp)
-          return rewriter.notifyMatchFailure(op, "c must come from to_tensor");
-
-        auto subview = toTensorOp->getOperand(0);
-
-        auto cType = dyn_cast<RankedTensorType>(c.getType());
-        auto zeroAttr = FloatAttr::get(cType.getElementType(), 0.0);
-        auto zero = arith::ConstantOp::create(rewriter, loc, zeroAttr);
-
-        auto fillOp =
-            linalg::FillOp::create(rewriter, loc, TypeRange{c.getType()},
-                                   ValueRange{zero}, ValueRange{c});
-
-        auto mmt4dOp = linalg::Mmt4DOp::create(rewriter, loc, ValueRange{a, b},
-                                               ValueRange{fillOp.getResult(0)});
-
-        auto materializeOp = bufferization::MaterializeInDestinationOp::create(
-            rewriter, mmt4dOp.getLoc(), mmt4dOp.getResult(0), subview);
-        materializeOp.setWritable(true);
-        rewriter.replaceOp(op, mmt4dOp.getResult(0));
-        return success();
+      // Check: all parallel iterators
+      bool allParallel = true;
+      for (auto it : genericOp.getIteratorTypesArray()) {
+        if (it != utils::IteratorType::parallel) {
+          allParallel = false;
+          break;
+        }
       }
-    } else {
-      auto resultType = dyn_cast<RankedTensorType>(op.getResult().getType());
-      Value initTensor = tensor::EmptyOp::create(
-          rewriter, loc, resultType.getShape(), resultType.getElementType());
-      auto zeroAttr = FloatAttr::get(resultType.getElementType(), 0.0);
-      auto zero = arith::ConstantOp::create(rewriter, loc, zeroAttr);
+      if (!allParallel)
+        continue;
 
-      auto fillOp = linalg::FillOp::create(rewriter, loc, ValueRange{zero},
-                                           ValueRange{initTensor});
+      // Check: 3 indexing maps (2 inputs + 1 output)
+      if (genericOp.getIndexingMaps().size() != 3)
+        continue;
 
-      auto mmt4dOp = linalg::Mmt4DOp::create(rewriter, loc, ValueRange{a, b},
-                                             ValueRange{fillOp.getResult(0)});
-      rewriter.replaceOp(op, mmt4dOp.getResult(0));
-      return success();
+      // Check: single addf in body
+      auto &block = genericOp.getRegion().front();
+      if (!llvm::hasSingleElement(block.without_terminator()))
+        continue;
+      auto addOp = dyn_cast<arith::AddFOp>(*block.begin());
+      if (!addOp)
+        continue;
+      if (addOp.getLhs() != block.getArgument(0) ||
+          addOp.getRhs() != block.getArgument(1))
+        continue;
+
+      // Check: one input is the mmt4d result, the other matches the output
+      Value otherInput;
+      if (genericOp.getInputs()[0] == result)
+        otherInput = genericOp.getInputs()[1];
+      else if (genericOp.getInputs()[1] == result)
+        otherInput = genericOp.getInputs()[0];
+      else
+        continue;
+
+      Value accTensor = genericOp.getOutputs()[0];
+      if (accTensor != otherInput)
+        continue;
+
+      return genericOp;
     }
+    return nullptr;
   }
-  Value traceDestinationFromOutput(Value output) const {
-    if (auto packOp = output.getDefiningOp<linalg::PackOp>()) {
-      Value packInput = packOp.getSource();
-      if (auto toTensorOp =
-              packInput.getDefiningOp<bufferization::ToTensorOp>()) {
-        return toTensorOp->getOperand(0);
-      }
 
-      return packInput;
-    }
-    if (auto toTensorOp = output.getDefiningOp<bufferization::ToTensorOp>()) {
-      return toTensorOp->getOperand(0);
-    }
-    return Value();
-  }
-};
-
-struct ConvertMMT4DAddPattern : public OpRewritePattern<linalg::GenericOp> {
-  using OpRewritePattern<linalg::GenericOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(linalg::GenericOp genericOp,
-                                PatternRewriter &rewriter) const override {
-    for (auto it : genericOp.getIteratorTypesArray()) {
-      if (it != utils::IteratorType::parallel)
-        return rewriter.notifyMatchFailure(genericOp, "non-parallel iterators");
-    }
-
-    auto maps = genericOp.getIndexingMaps();
-    if (maps.size() != 3)
-      return rewriter.notifyMatchFailure(genericOp, "wrong number of maps");
-
-    auto &block = genericOp.getRegion().front();
-    if (!llvm::hasSingleElement(block.without_terminator())) {
-      return rewriter.notifyMatchFailure(genericOp,
-                                         "multiple block operations");
-    }
-
-    auto addOp = dyn_cast<arith::AddFOp>(*block.begin());
-    if (!addOp)
-      return rewriter.notifyMatchFailure(genericOp, "not an addf operation");
-    if (addOp.getLhs() != block.getArgument(0) ||
-        addOp.getRhs() != block.getArgument(1)) {
-      return rewriter.notifyMatchFailure(genericOp,
-                                         "addf not using block args");
-    }
-
-    Value mmt4dResult;
-    Value otherInput;
-    if (auto mmt4d = genericOp.getInputs()[0].getDefiningOp<MMT4DOp>()) {
-      mmt4dResult = genericOp.getInputs()[0];
-      otherInput = genericOp.getInputs()[1];
-    } else if (auto mmt4d = genericOp.getInputs()[1].getDefiningOp<MMT4DOp>()) {
-      mmt4dResult = genericOp.getInputs()[1];
-      otherInput = genericOp.getInputs()[0];
-    } else {
-      return rewriter.notifyMatchFailure(genericOp, "no xsmt.mmt4d input");
-    }
-
-    auto mmt4dOp = cast<MMT4DOp>(mmt4dResult.getDefiningOp());
-    if (mmt4dOp.getNumOperands() != 2) {
-      return rewriter.notifyMatchFailure(genericOp, "mmt4d has accumulator");
-    }
-
-    Value accTensor = genericOp.getOutputs()[0];
-    if (accTensor != otherInput) {
-      return rewriter.notifyMatchFailure(
-          genericOp, "output not matching accumulation target");
-    }
-
+  /// Handle the case where xsmt.mmt4d is wrapped in linalg.generic(addf)
+  /// for accumulation. This inlines the logic from ConvertMMT4DAddPattern.
+  LogicalResult convertWithAccumulation(xsmt::MMT4DOp op,
+                                        linalg::GenericOp genericOp,
+                                        PatternRewriter &rewriter) const {
+    Value mmt4dResult = op.getResult();
     auto resType = dyn_cast<RankedTensorType>(mmt4dResult.getType());
-    if (!resType || resType.getRank() != 4 || !resType.hasStaticShape()) {
-      return rewriter.notifyMatchFailure(genericOp,
-                                         "non-static 4D result type");
-    }
-    auto shape = resType.getShape();
+    if (!resType || resType.getRank() != 4 || !resType.hasStaticShape())
+      return rewriter.notifyMatchFailure(op, "non-static 4D result type");
 
+    auto shape = resType.getShape();
     Location loc = genericOp.getLoc();
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPoint(genericOp);
 
-    Value a = mmt4dOp.getA();
-    Value b = mmt4dOp.getB();
+    Value a = op.getA();
+    Value b = op.getB();
 
     if (auto cast = a.getDefiningOp<tensor::CastOp>())
       a = cast.getSource();
     if (auto cast = b.getDefiningOp<tensor::CastOp>())
       b = cast.getSource();
+
+    // Determine which input is the accumulator
+    Value accTensor = genericOp.getOutputs()[0];
 
     SmallVector<OpFoldResult> offsets(4, rewriter.getIndexAttr(0));
     SmallVector<OpFoldResult> strides(4, rewriter.getIndexAttr(1));
@@ -1209,11 +670,126 @@ struct ConvertMMT4DAddPattern : public OpRewritePattern<linalg::GenericOp> {
                                       accTensor, offsets, sizes, strides);
 
     rewriter.replaceOp(genericOp, insertOp.getResult());
-    rewriter.eraseOp(mmt4dOp);
+    rewriter.eraseOp(op);
 
     return success();
   }
+
+  LogicalResult matchAndRewrite(xsmt::MMT4DOp op,
+                                PatternRewriter &rewriter) const override {
+    // First, check if this mmt4d is wrapped in a generic(addf) accumulation
+    // pattern. If so, handle it inline (replaces the old ConvertMMT4DAddPattern
+    // stage).
+    if (auto genericUser = findAccumulationGeneric(op))
+      return convertWithAccumulation(op, genericUser, rewriter);
+
+    Location loc = op.getLoc();
+    Value a = op.getA();
+    Value b = op.getB();
+    Value c = op.getC();
+
+    if (auto cast = a.getDefiningOp<tensor::CastOp>())
+      a = cast.getSource();
+    if (auto cast = b.getDefiningOp<tensor::CastOp>())
+      b = cast.getSource();
+
+    bool unpack = false;
+
+    if (c) {
+      if (c.hasOneUse() && op.getResult().use_empty())
+        unpack = true;
+      if (unpack) {
+        if (auto cast = c.getDefiningOp<tensor::CastOp>())
+          c = cast.getSource();
+        auto cPackOp = c.getDefiningOp<linalg::PackOp>();
+        if (!cPackOp)
+          return rewriter.notifyMatchFailure(op,
+                                             "C must be result of linalg.pack");
+
+        Value packInput = cPackOp.getSource();
+        auto toTensorOp = packInput.getDefiningOp<bufferization::ToTensorOp>();
+        if (!toTensorOp)
+          return rewriter.notifyMatchFailure(
+              op, "Packed input must come from to_tensor");
+
+        Value subview = toTensorOp->getOperand(0);
+        Value mmt4dResult = createZeroFilledMmt4d(rewriter, loc, a, b, c);
+
+        // Unpack directly into the output buffer (subview).
+        // Use the *same* memref subview that backs the pack input to keep
+        // dest/result types stable for downstream lowerings.
+        auto destMemrefTy = cast<MemRefType>(subview.getType());
+        auto dstTensorTy =
+            RankedTensorType::get({ShapedType::kDynamic, ShapedType::kDynamic},
+                                  destMemrefTy.getElementType());
+        auto dstTensor = bufferization::ToTensorOp::create(
+            rewriter, loc, dstTensorTy, subview,
+            /*restrict=*/rewriter.getUnitAttr(),
+            /*writable=*/rewriter.getUnitAttr());
+
+        ArrayRef<int64_t> staticInnerTiles = cPackOp.getStaticInnerTiles();
+        if (staticInnerTiles.empty())
+          return rewriter.notifyMatchFailure(op, "static_inner_tiles is empty");
+        SmallVector<OpFoldResult> innerTiles;
+        for (int64_t tile : staticInnerTiles)
+          innerTiles.push_back(rewriter.getIndexAttr(tile));
+
+        auto unpackOp = linalg::UnPackOp::create(
+            rewriter, loc, mmt4dResult, dstTensor.getResult(),
+            cPackOp.getInnerDimsPos(), innerTiles, cPackOp.getOuterDimsPerm());
+
+        auto materializeOp = bufferization::MaterializeInDestinationOp::create(
+            rewriter, unpackOp.getLoc(), unpackOp.getResult(), subview);
+        materializeOp.setWritable(true);
+
+        rewriter.replaceOp(op, unpackOp.getResult());
+        return success();
+      } else {
+        if (auto cast = c.getDefiningOp<tensor::CastOp>())
+          c = cast.getSource();
+        auto toTensorOp = c.getDefiningOp<bufferization::ToTensorOp>();
+        if (!toTensorOp)
+          return rewriter.notifyMatchFailure(op, "c must come from to_tensor");
+
+        Value subview = toTensorOp->getOperand(0);
+        Value mmt4dResult = createZeroFilledMmt4d(rewriter, loc, a, b, c);
+
+        auto materializeOp = bufferization::MaterializeInDestinationOp::create(
+            rewriter, loc, mmt4dResult, subview);
+        materializeOp.setWritable(true);
+        rewriter.replaceOp(op, mmt4dResult);
+        return success();
+      }
+    } else {
+      auto resultType = dyn_cast<RankedTensorType>(op.getResult().getType());
+      Value initTensor = tensor::EmptyOp::create(
+          rewriter, loc, resultType.getShape(), resultType.getElementType());
+      Value mmt4dResult =
+          createZeroFilledMmt4d(rewriter, loc, a, b, initTensor);
+      rewriter.replaceOp(op, mmt4dResult);
+      return success();
+    }
+  }
+
+private:
+  /// Create: zero → fill(initTensor) → mmt4d(a, b, filled). Returns mmt4d
+  /// result.
+  static Value createZeroFilledMmt4d(PatternRewriter &rewriter, Location loc,
+                                     Value a, Value b, Value initTensor) {
+    auto tensorType = cast<RankedTensorType>(initTensor.getType());
+    auto zeroAttr = FloatAttr::get(tensorType.getElementType(), 0.0);
+    auto zero = arith::ConstantOp::create(rewriter, loc, zeroAttr);
+    auto fillOp = linalg::FillOp::create(rewriter, loc, ValueRange{zero},
+                                         ValueRange{initTensor});
+    auto mmt4dOp = linalg::Mmt4DOp::create(rewriter, loc, ValueRange{a, b},
+                                           ValueRange{fillOp.getResult(0)});
+    return mmt4dOp.getResult(0);
+  }
 };
+
+// ===----------------------------------------------------------------------===//
+// Phase 3: Loop parallelization and remaining cleanup
+// ===----------------------------------------------------------------------===//
 
 class ForToForallPattern : public OpRewritePattern<scf::ForOp> {
 public:
@@ -1270,416 +846,6 @@ public:
       rewriter.clone(op, mapping);
     }
     rewriter.replaceOp(forOp, forallOp.getResults());
-    return success();
-  }
-};
-
-class ReplaceRedundantMaterializePattern1
-    : public OpRewritePattern<bufferization::MaterializeInDestinationOp> {
-public:
-  using OpRewritePattern<
-      bufferization::MaterializeInDestinationOp>::OpRewritePattern;
-
-  LogicalResult
-  matchAndRewrite(bufferization::MaterializeInDestinationOp materializeOp,
-                  PatternRewriter &rewriter) const override {
-
-    auto toTensorOp =
-        materializeOp.getSource().getDefiningOp<bufferization::ToTensorOp>();
-    if (!toTensorOp)
-      return failure();
-
-    auto destAlloc = materializeOp.getDest().getDefiningOp<memref::AllocOp>();
-    if (!destAlloc)
-      return failure();
-
-    auto srcAlloc = toTensorOp->getOperand(0).getDefiningOp<memref::AllocOp>();
-    if (!srcAlloc)
-      return failure();
-
-    if (srcAlloc.getType() != destAlloc.getType()) {
-      return failure();
-    }
-
-    Value srcMemref = srcAlloc.getResult();
-    Value destMemref = destAlloc.getResult();
-
-    bool hasOtherUses = false;
-    for (OpOperand &use : llvm::make_early_inc_range(destMemref.getUses())) {
-      if (use.getOwner() == materializeOp)
-        continue;
-
-      rewriter.modifyOpInPlace(use.getOwner(), [&]() { use.set(srcMemref); });
-      hasOtherUses = true;
-    }
-
-    rewriter.eraseOp(materializeOp);
-
-    if (!hasOtherUses && destAlloc->use_empty()) {
-      rewriter.eraseOp(destAlloc);
-    }
-
-    return success();
-  }
-};
-
-/// Rewrite the common tail pattern:
-///   %t0 = tensor.empty() : tensor<128x128xf16>
-///   %u  = linalg.unpack %packed ... into %t0 : ... -> tensor<128x128xf16>
-///   %s  = tensor.extract_slice %u[0,0] [%m,%n] [1,1] : tensor<128x128xf16> to
-///   tensor<?x?xf16> %sv = memref.subview %out[...] [%m,%n] ...
-///   bufferization.materialize_in_destination %s in writable %sv
-/// into an in-place form (as in mm_kernel_linalg1.mlir):
-///   %sv' = (optional) memref.cast %sv : memref<?x?xf16, strided<[?,?],...>> to
-///   memref<?x?xf16, strided<[?,1],...>> %dst = bufferization.to_tensor %sv'
-///   restrict writable : ... -> tensor<?x?xf16> %u2  = linalg.unpack %packed
-///   ... into %dst : ... -> tensor<?x?xf16>
-///   bufferization.materialize_in_destination %u2 in writable %sv'
-///
-/// This avoids the intermediate 128x128 tensor and the extract_slice copy for
-/// tail blocks.
-class MaterializeUnpackIntoSubviewPattern
-    : public OpRewritePattern<bufferization::MaterializeInDestinationOp> {
-public:
-  MaterializeUnpackIntoSubviewPattern(MLIRContext *context)
-      : OpRewritePattern<bufferization::MaterializeInDestinationOp>(
-            context,
-            /*benefit=*/2) {}
-
-private:
-  static bool isZeroIndex(Value value) {
-    APInt intValue;
-    return matchPattern(value, m_ConstantInt(&intValue)) && intValue.isZero();
-  }
-
-  static bool isIdentitySubview(memref::SubViewOp subview) {
-    if (!hasZeroOffsets(subview.getOffsets()))
-      return false;
-    if (!hasUnitStrides(subview.getStrides()))
-      return false;
-
-    auto srcTy = dyn_cast<MemRefType>(subview.getSource().getType());
-    auto dstTy = dyn_cast<MemRefType>(subview.getType());
-    if (!srcTy || !dstTy || srcTy.getRank() != dstTy.getRank())
-      return false;
-
-    for (auto [srcDim, dstDim] :
-         llvm::zip(srcTy.getShape(), dstTy.getShape())) {
-      if (srcDim != ShapedType::kDynamic && dstDim != ShapedType::kDynamic &&
-          srcDim != dstDim)
-        return false;
-    }
-    return true;
-  }
-
-  static bool comesFromDimOf(Value value, Value source) {
-    auto dimOp = value.getDefiningOp<tensor::DimOp>();
-    return dimOp && dimOp.getSource() == source;
-  }
-
-  static bool isBoundedByUnpackDim(Value size, Value unpackResult) {
-    if (comesFromDimOf(size, unpackResult))
-      return true;
-
-    auto minOp = size.getDefiningOp<arith::MinUIOp>();
-    if (!minOp)
-      return false;
-
-    return comesFromDimOf(minOp.getLhs(), unpackResult) ||
-           comesFromDimOf(minOp.getRhs(), unpackResult);
-  }
-
-  static bool isStaticSliceWithinUnpackDim(OpFoldResult size,
-                                           int64_t unpackDim) {
-    auto attr =
-        llvm::dyn_cast_if_present<IntegerAttr>(size.dyn_cast<Attribute>());
-    return attr && unpackDim != ShapedType::kDynamic &&
-           attr.getInt() <= unpackDim;
-  }
-
-  static bool isSliceSizeCompatible(OpFoldResult size, Value unpackResult,
-                                    int64_t unpackDim) {
-    if (isStaticSliceWithinUnpackDim(size, unpackDim))
-      return true;
-
-    Value sizeVal = size.dyn_cast<Value>();
-    return sizeVal && isBoundedByUnpackDim(sizeVal, unpackResult);
-  }
-
-  static bool hasUnitStrides(ValueRange strides) {
-    return llvm::all_of(
-        strides, [](Value stride) { return isConstantIntValue(stride, 1); });
-  }
-
-  static bool hasZeroOffsets(ValueRange offsets) {
-    return llvm::all_of(offsets, isZeroIndex);
-  }
-
-  LogicalResult matchAndRewrite(bufferization::MaterializeInDestinationOp mat,
-                                PatternRewriter &rewriter) const override {
-    auto fail = [&](StringRef reason) -> LogicalResult {
-      (void)reason;
-      return failure();
-    };
-
-    if (!mat.getWritable())
-      return failure();
-
-    // Match the actual post-bufferization shape:
-    // materialize_in_destination(extract_slice(cast(extract_slice(unpack(...)))))
-    auto outerSlice = mat.getSource().getDefiningOp<tensor::ExtractSliceOp>();
-    if (!outerSlice)
-      return fail("source is not outer extract_slice");
-
-    if (outerSlice.getMixedOffsets().size() != 2 ||
-        outerSlice.getMixedSizes().size() != 2 ||
-        outerSlice.getMixedStrides().size() != 2)
-      return fail("expected rank-2 outer slice");
-
-    if (!hasZeroOffsets(outerSlice.getOffsets()))
-      return fail("expected zero outer slice offsets");
-
-    if (!hasUnitStrides(outerSlice.getStrides()))
-      return fail("expected unit outer slice strides");
-
-    auto cast = outerSlice.getSource().getDefiningOp<tensor::CastOp>();
-    if (!cast)
-      return fail("outer slice source is not tensor.cast");
-
-    auto innerSlice = cast.getSource().getDefiningOp<tensor::ExtractSliceOp>();
-    if (!innerSlice)
-      return fail("cast source is not inner extract_slice");
-
-    auto unpack = innerSlice.getSource().getDefiningOp<linalg::UnPackOp>();
-    if (!unpack)
-      return fail("inner slice source is not linalg.unpack");
-
-    if (innerSlice.getMixedOffsets().size() != 2 ||
-        innerSlice.getMixedSizes().size() != 2 ||
-        innerSlice.getMixedStrides().size() != 2)
-      return fail("expected rank-2 inner slice");
-
-    if (!hasZeroOffsets(innerSlice.getOffsets()))
-      return fail("expected zero inner slice offsets");
-
-    if (!hasUnitStrides(innerSlice.getStrides()))
-      return fail("expected unit inner slice strides");
-
-    auto unpackTy = dyn_cast<RankedTensorType>(unpack.getResult().getType());
-    if (!unpackTy || unpackTy.getRank() != 2)
-      return fail("expected rank-2 unpack result");
-
-    Value unpackResult = unpack.getResult();
-    ArrayRef<int64_t> unpackShape = unpackTy.getShape();
-    if (!llvm::all_of(llvm::zip(innerSlice.getMixedSizes(), unpackShape),
-                      [&](auto it) {
-                        return isSliceSizeCompatible(
-                            std::get<0>(it), unpackResult, std::get<1>(it));
-                      }))
-      return fail("inner slice sizes must be derived from unpack dimensions");
-
-    // Destination subview memref.
-    Value dstMemref = mat.getDest();
-    if (auto subview = dstMemref.getDefiningOp<memref::SubViewOp>()) {
-      if (isIdentitySubview(subview)) {
-        dstMemref = subview.getSource();
-      }
-    }
-    auto dstTy = dyn_cast<MemRefType>(dstMemref.getType());
-    if (!dstTy || dstTy.getRank() != 2)
-      return fail("destination is not rank-2 memref");
-
-    if (outerSlice.getMixedSizes().size() !=
-        static_cast<size_t>(dstTy.getRank()))
-      return fail("outer slice rank does not match destination rank");
-
-    Location loc = mat.getLoc();
-    rewriter.setInsertionPoint(mat);
-
-    // Keep destination memref type unchanged. We don't try to force a
-    // particular strided layout here; downstream can reason about the actual
-    // strides if needed.
-    Value castedDst = dstMemref;
-
-    // Create writable tensor view of the destination.
-    auto dstTensorTy =
-        RankedTensorType::get(dstTy.getShape(), dstTy.getElementType());
-    Value dstTensor =
-        bufferization::ToTensorOp::create(rewriter, loc, dstTensorTy, castedDst,
-                                          /*restrict=*/rewriter.getUnitAttr(),
-                                          /*writable=*/rewriter.getUnitAttr());
-
-    // Recreate unpack with destination init = dstTensor.
-    auto newUnpack = linalg::UnPackOp::create(
-        rewriter, loc, unpack.getSource(), dstTensor, unpack.getInnerDimsPos(),
-        unpack.getMixedTiles(), unpack.getOuterDimsPerm());
-
-    // Replace materialize to use the unpack result directly.
-    auto newMat = bufferization::MaterializeInDestinationOp::create(
-        rewriter, loc, newUnpack.getResult(), castedDst);
-    newMat.setWritable(true);
-
-    rewriter.eraseOp(mat);
-    // Old slice/unpack/empty will be DCE'd if no longer used.
-    return success();
-  }
-};
-struct ReplaceRedundantMaterializePattern2
-    : public OpRewritePattern<bufferization::MaterializeInDestinationOp> {
-  using OpRewritePattern<
-      bufferization::MaterializeInDestinationOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(bufferization::MaterializeInDestinationOp matOp,
-                                PatternRewriter &rewriter) const override {
-    auto allocOp = matOp.getDest().getDefiningOp<memref::AllocOp>();
-    if (!allocOp)
-      return failure();
-
-    auto loop = dyn_cast<scf::ForOp>(matOp->getParentOp());
-    if (!loop)
-      return failure();
-
-    Value sourceTensor = matOp.getSource();
-    if (!sourceTensor.getDefiningOp() ||
-        loop->isAncestor(sourceTensor.getDefiningOp()))
-      return failure();
-
-    MemRefType memrefType = allocOp.getType();
-    if (memrefType.getRank() != 4 || !memrefType.hasStaticShape())
-      return failure();
-
-    rewriter.setInsertionPoint(loop);
-    auto hoistedAlloc =
-        memref::AllocOp::create(rewriter, loop.getLoc(), memrefType);
-    auto hoistMat = bufferization::MaterializeInDestinationOp::create(
-        rewriter, loop.getLoc(), sourceTensor, hoistedAlloc.getResult());
-    hoistMat->setAttr("writable", rewriter.getUnitAttr());
-
-    Value hoistedBuffer = hoistedAlloc.getResult();
-
-    matOp.getDest().replaceAllUsesWith(hoistedBuffer);
-
-    rewriter.eraseOp(matOp);
-    rewriter.eraseOp(allocOp);
-
-    SmallVector<Operation *> deadOps;
-    for (auto &use : llvm::make_early_inc_range(sourceTensor.getUses())) {
-      auto redundant =
-          dyn_cast<bufferization::MaterializeInDestinationOp>(use.getOwner());
-      if (!redundant)
-        continue;
-      if (redundant.getSource() != sourceTensor)
-        continue;
-      if (loop->isAncestor(redundant))
-        continue;
-
-      Value deadMemref = redundant.getDest();
-      if (auto deadAlloc = deadMemref.getDefiningOp<memref::AllocOp>()) {
-        for (auto *user : llvm::make_early_inc_range(deadMemref.getUsers())) {
-          if (user == redundant)
-            continue;
-          rewriter.modifyOpInPlace(user, [&] {
-            for (unsigned i = 0; i < user->getNumOperands(); ++i) {
-              if (user->getOperand(i) == deadMemref) {
-                user->setOperand(i, hoistedBuffer);
-              }
-            }
-          });
-        }
-      }
-    }
-    return success();
-  }
-};
-
-struct RemoveUnusedAllocPattern : public OpRewritePattern<memref::AllocOp> {
-  using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(memref::AllocOp allocOp,
-                                PatternRewriter &rewriter) const override {
-    Value memrefResult = allocOp.getMemref();
-
-    SmallVector<Operation *> opsToErase;
-
-    for (Operation *user : memrefResult.getUsers()) {
-
-      if (auto matOp = dyn_cast<MaterializeInDestinationOp>(user)) {
-        if (matOp.getDest() == memrefResult) {
-          opsToErase.push_back(user);
-          continue;
-        }
-      }
-
-      if (isa<memref::DeallocOp>(user)) {
-        opsToErase.push_back(user);
-        continue;
-      }
-
-      return failure();
-    }
-    for (Operation *op : opsToErase) {
-      rewriter.eraseOp(op);
-    }
-    rewriter.eraseOp(allocOp);
-
-    return success();
-  }
-};
-
-struct RemoveRedundantBufferizationRoundtrip
-    : public OpRewritePattern<ToTensorOp> {
-  using OpRewritePattern<ToTensorOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(ToTensorOp toTensorOp,
-                                PatternRewriter &rewriter) const override {
-    Value memref = toTensorOp->getOperand(0);
-
-    auto allocOp = memref.getDefiningOp<memref::AllocOp>();
-    if (!allocOp) {
-      return failure();
-    }
-
-    MaterializeInDestinationOp matOp;
-    Operation *deallocOp = nullptr;
-
-    for (Operation *user : memref.getUsers()) {
-      if (user == toTensorOp)
-        continue;
-
-      if (auto m = dyn_cast<MaterializeInDestinationOp>(user)) {
-        if (m.getDest() == memref) {
-          if (matOp) {
-            return failure();
-          }
-          matOp = m;
-          continue;
-        }
-      }
-
-      if (isa<memref::DeallocOp>(user)) {
-        deallocOp = user;
-        continue;
-      }
-      return failure();
-    }
-
-    if (!matOp) {
-      return failure();
-    }
-
-    Value sourceTensor = matOp.getSource();
-
-    if (sourceTensor.getType() != toTensorOp.getResult().getType()) {
-      return failure();
-    }
-
-    rewriter.replaceOp(toTensorOp, sourceTensor);
-    if (deallocOp) {
-      rewriter.eraseOp(deallocOp);
-    }
-    rewriter.eraseOp(matOp);
-    rewriter.eraseOp(allocOp);
-
     return success();
   }
 };
@@ -2001,6 +1167,195 @@ private:
   }
 };
 
+// ===----------------------------------------------------------------------===//
+// Bufferization cleanup: rewrite unpack+materialize into direct subview write.
+// Runs AFTER the main conversion stage where linalg::UnPackOp and
+// MaterializeInDestinationOp have already been generated.
+// ===----------------------------------------------------------------------===//
+
+class MaterializeUnpackIntoSubviewPattern
+    : public OpRewritePattern<bufferization::MaterializeInDestinationOp> {
+public:
+  MaterializeUnpackIntoSubviewPattern(MLIRContext *context)
+      : OpRewritePattern<bufferization::MaterializeInDestinationOp>(
+            context,
+            /*benefit=*/2) {}
+
+private:
+  static bool isZeroIndex(Value value) {
+    APInt intValue;
+    return matchPattern(value, m_ConstantInt(&intValue)) && intValue.isZero();
+  }
+
+  static bool isIdentitySubview(memref::SubViewOp subview) {
+    if (!hasZeroOffsets(subview.getOffsets()))
+      return false;
+    if (!hasUnitStrides(subview.getStrides()))
+      return false;
+
+    auto srcTy = dyn_cast<MemRefType>(subview.getSource().getType());
+    auto dstTy = dyn_cast<MemRefType>(subview.getType());
+    if (!srcTy || !dstTy || srcTy.getRank() != dstTy.getRank())
+      return false;
+
+    for (auto [srcDim, dstDim] :
+         llvm::zip(srcTy.getShape(), dstTy.getShape())) {
+      if (srcDim != ShapedType::kDynamic && dstDim != ShapedType::kDynamic &&
+          srcDim != dstDim)
+        return false;
+    }
+    return true;
+  }
+
+  static bool comesFromDimOf(Value value, Value source) {
+    auto dimOp = value.getDefiningOp<tensor::DimOp>();
+    return dimOp && dimOp.getSource() == source;
+  }
+
+  static bool isBoundedByUnpackDim(Value size, Value unpackResult) {
+    if (comesFromDimOf(size, unpackResult))
+      return true;
+
+    auto minOp = size.getDefiningOp<arith::MinUIOp>();
+    if (!minOp)
+      return false;
+
+    return comesFromDimOf(minOp.getLhs(), unpackResult) ||
+           comesFromDimOf(minOp.getRhs(), unpackResult);
+  }
+
+  static bool isStaticSliceWithinUnpackDim(OpFoldResult size,
+                                           int64_t unpackDim) {
+    auto attr =
+        llvm::dyn_cast_if_present<IntegerAttr>(size.dyn_cast<Attribute>());
+    return attr && unpackDim != ShapedType::kDynamic &&
+           attr.getInt() <= unpackDim;
+  }
+
+  static bool isSliceSizeCompatible(OpFoldResult size, Value unpackResult,
+                                    int64_t unpackDim) {
+    if (isStaticSliceWithinUnpackDim(size, unpackDim))
+      return true;
+
+    Value sizeVal = size.dyn_cast<Value>();
+    return sizeVal && isBoundedByUnpackDim(sizeVal, unpackResult);
+  }
+
+  static bool hasUnitStrides(ValueRange strides) {
+    return llvm::all_of(
+        strides, [](Value stride) { return isConstantIntValue(stride, 1); });
+  }
+
+  static bool hasZeroOffsets(ValueRange offsets) {
+    return llvm::all_of(offsets, isZeroIndex);
+  }
+
+  LogicalResult matchAndRewrite(bufferization::MaterializeInDestinationOp mat,
+                                PatternRewriter &rewriter) const override {
+    auto fail = [&](StringRef reason) -> LogicalResult {
+      (void)reason;
+      return failure();
+    };
+
+    if (!mat.getWritable())
+      return failure();
+
+    // Match:
+    // materialize_in_destination(extract_slice(cast(extract_slice(unpack(...)))))
+    auto outerSlice = mat.getSource().getDefiningOp<tensor::ExtractSliceOp>();
+    if (!outerSlice)
+      return fail("source is not outer extract_slice");
+
+    if (outerSlice.getMixedOffsets().size() != 2 ||
+        outerSlice.getMixedSizes().size() != 2 ||
+        outerSlice.getMixedStrides().size() != 2)
+      return fail("expected rank-2 outer slice");
+
+    if (!hasZeroOffsets(outerSlice.getOffsets()))
+      return fail("expected zero outer slice offsets");
+
+    if (!hasUnitStrides(outerSlice.getStrides()))
+      return fail("expected unit outer slice strides");
+
+    auto cast = outerSlice.getSource().getDefiningOp<tensor::CastOp>();
+    if (!cast)
+      return fail("outer slice source is not tensor.cast");
+
+    auto innerSlice = cast.getSource().getDefiningOp<tensor::ExtractSliceOp>();
+    if (!innerSlice)
+      return fail("cast source is not inner extract_slice");
+
+    auto unpack = innerSlice.getSource().getDefiningOp<linalg::UnPackOp>();
+    if (!unpack)
+      return fail("inner slice source is not linalg.unpack");
+
+    if (innerSlice.getMixedOffsets().size() != 2 ||
+        innerSlice.getMixedSizes().size() != 2 ||
+        innerSlice.getMixedStrides().size() != 2)
+      return fail("expected rank-2 inner slice");
+
+    if (!hasZeroOffsets(innerSlice.getOffsets()))
+      return fail("expected zero inner slice offsets");
+
+    if (!hasUnitStrides(innerSlice.getStrides()))
+      return fail("expected unit inner slice strides");
+
+    auto unpackTy = dyn_cast<RankedTensorType>(unpack.getResult().getType());
+    if (!unpackTy || unpackTy.getRank() != 2)
+      return fail("expected rank-2 unpack result");
+
+    Value unpackResult = unpack.getResult();
+    ArrayRef<int64_t> unpackShape = unpackTy.getShape();
+    if (!llvm::all_of(llvm::zip(innerSlice.getMixedSizes(), unpackShape),
+                      [&](auto it) {
+                        return isSliceSizeCompatible(
+                            std::get<0>(it), unpackResult, std::get<1>(it));
+                      }))
+      return fail("inner slice sizes must be derived from unpack dimensions");
+
+    // Destination subview memref.
+    Value dstMemref = mat.getDest();
+    if (auto subview = dstMemref.getDefiningOp<memref::SubViewOp>()) {
+      if (isIdentitySubview(subview)) {
+        dstMemref = subview.getSource();
+      }
+    }
+    auto dstTy = dyn_cast<MemRefType>(dstMemref.getType());
+    if (!dstTy || dstTy.getRank() != 2)
+      return fail("destination is not rank-2 memref");
+
+    if (outerSlice.getMixedSizes().size() !=
+        static_cast<size_t>(dstTy.getRank()))
+      return fail("outer slice rank does not match destination rank");
+
+    Location loc = mat.getLoc();
+    rewriter.setInsertionPoint(mat);
+
+    Value castedDst = dstMemref;
+
+    // Create writable tensor view of the destination.
+    auto dstTensorTy =
+        RankedTensorType::get(dstTy.getShape(), dstTy.getElementType());
+    Value dstTensor =
+        bufferization::ToTensorOp::create(rewriter, loc, dstTensorTy, castedDst,
+                                          /*restrict=*/rewriter.getUnitAttr(),
+                                          /*writable=*/rewriter.getUnitAttr());
+
+    // Recreate unpack with destination init = dstTensor.
+    auto newUnpack = linalg::UnPackOp::create(
+        rewriter, loc, unpack.getSource(), dstTensor, unpack.getInnerDimsPos(),
+        unpack.getMixedTiles(), unpack.getOuterDimsPerm());
+
+    // Replace materialize to use the unpack result directly.
+    auto newMat = bufferization::MaterializeInDestinationOp::create(
+        rewriter, loc, newUnpack.getResult(), castedDst);
+    newMat.setWritable(true);
+
+    rewriter.eraseOp(mat);
+    return success();
+  }
+};
+
 struct DescriptorLoadViewOpPattern
     : public OpRewritePattern<DescriptorLoadViewOp> {
   using OpRewritePattern<DescriptorLoadViewOp>::OpRewritePattern;
@@ -2069,11 +1424,11 @@ struct DescriptorLoadViewOpPattern
           getDimValueFromTypeOrDimOp(loc, rankedMemRef, /*dim=*/1, rewriter);
     }
 
-    auto microSizeAttr = op.getMicroSize();
-    if (microSizeAttr.size() != 2)
+    auto packedSizeAttr = op.getPackedSize();
+    if (packedSizeAttr.size() != 2)
       return failure();
-    int32_t tile0 = microSizeAttr[0];
-    int32_t tile1 = microSizeAttr[1];
+    int32_t tile0 = packedSizeAttr[0];
+    int32_t tile1 = packedSizeAttr[1];
 
     Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
 
@@ -2369,87 +1724,11 @@ private:
   }
 };
 
-struct FoldAllocCopyToTensor final
-    : public OpRewritePattern<bufferization::ToTensorOp> {
-  using OpRewritePattern::OpRewritePattern;
+// ===----------------------------------------------------------------------===//
+// Stage registration
+// ===----------------------------------------------------------------------===//
 
-  LogicalResult matchAndRewrite(bufferization::ToTensorOp toTensor,
-                                PatternRewriter &rewriter) const override {
-
-    Value allocMemref = toTensor->getOperand(0);
-
-    auto alloc = allocMemref.getDefiningOp<memref::AllocOp>();
-    if (!alloc)
-      return failure();
-
-    memref::CopyOp copyOp;
-    memref::DeallocOp deallocOp;
-
-    for (Operation *user : allocMemref.getUsers()) {
-      if (user == toTensor.getOperation())
-        continue;
-
-      if (auto c = dyn_cast<memref::CopyOp>(user)) {
-        if (c.getTarget() != allocMemref)
-          return failure();
-        if (copyOp)
-          return failure();
-        copyOp = c;
-        continue;
-      }
-
-      if (auto d = dyn_cast<memref::DeallocOp>(user)) {
-        if (deallocOp)
-          return failure();
-        deallocOp = d;
-        continue;
-      }
-
-      return failure();
-    }
-
-    if (!copyOp)
-      return failure();
-
-    if (copyOp->getBlock() == toTensor->getBlock()) {
-      if (!copyOp->isBeforeInBlock(toTensor))
-        return failure();
-    } else {
-      DominanceInfo dom(toTensor->getParentOp());
-      if (!dom.dominates(copyOp, toTensor))
-        return failure();
-    }
-
-    Value src = copyOp.getSource();
-
-    auto resTy = dyn_cast<RankedTensorType>(toTensor.getType());
-    auto srcTy = dyn_cast<MemRefType>(src.getType());
-    if (!resTy || !srcTy)
-      return failure();
-    if (srcTy.getRank() != resTy.getRank())
-      return failure();
-    if (srcTy.getElementType() != resTy.getElementType())
-      return failure();
-
-    auto newToTensor = bufferization::ToTensorOp::create(
-        rewriter, toTensor.getLoc(), resTy, src);
-
-    newToTensor->setAttrs(toTensor->getAttrs());
-
-    rewriter.replaceOp(toTensor, newToTensor.getResult());
-
-    rewriter.eraseOp(copyOp);
-    if (deallocOp)
-      rewriter.eraseOp(deallocOp);
-    rewriter.eraseOp(alloc);
-
-    return success();
-  }
-};
-
-void mlir::triton::populateXSMTOptimizationAndValidationPatterns(
-    RewritePatternSet &patterns) {
-  patterns.add<MMT4DBindFusionPattern>(patterns.getContext());
+void mlir::triton::populateXSMTValidationPatterns(RewritePatternSet &patterns) {
   patterns.add<MBarrierLoopCheckPattern<xsmt_async::MBarrierAllocOp>>(
       patterns.getContext());
   patterns.add<MBarrierLoopCheckPattern<xsmt::GlobalMBarrierInitOp>>(
@@ -2458,42 +1737,21 @@ void mlir::triton::populateXSMTOptimizationAndValidationPatterns(
       patterns.getContext());
   patterns.add<CheckGlobalMBarrierInLoopPattern<xsmt_async::MBarrierWaitOp>>(
       patterns.getContext());
+  patterns.add<InsertMBarrierReleasePattern>(patterns.getContext());
 }
 
-void mlir::triton::populateXSMTToLinalgConversionPatterns(
-    RewritePatternSet &patterns) {
-  // patterns.add<FillOpPattern>(patterns.getContext());
+void mlir::triton::populateXSMTConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<DescriptorLoadViewOpPattern>(patterns.getContext());
-  patterns.add<ViewOpPattern>(patterns.getContext());
-  patterns.add<InsertMBarrierReleasePattern>(patterns.getContext());
+  patterns.add<PackOpPattern>(patterns.getContext());
+  patterns.add<UnpackOpPattern>(patterns.getContext());
+  patterns.add<RepackOpPattern>(patterns.getContext());
+  patterns.add<LowerXSMTMMT4D>(patterns.getContext());
   patterns.add<GetThreadOpToLLVMCallPattern>(patterns.getContext());
+  patterns.add<ForToForallPattern>(patterns.getContext());
   patterns.add<ProtonRecordOpPattern>(patterns.getContext());
 }
 
-void mlir::triton::ConvertMMT4DAddConversionPatterns(
-    RewritePatternSet &patterns) {
-  patterns.add<ConvertMMT4DAddPattern>(patterns.getContext());
-}
-
-void mlir::triton::MMT4DOpConversionPatterns(RewritePatternSet &patterns) {
-  patterns.add<LowerXSMTMMT4D>(patterns.getContext());
-}
-
-void mlir::triton::LoopParallelizationConversionPatterns(
-    RewritePatternSet &patterns) {
-  patterns.add<ForToForallPattern>(patterns.getContext());
-  patterns.add<ReplaceRedundantMaterializePattern1>(patterns.getContext());
-  patterns.add<ReplaceRedundantMaterializePattern2>(patterns.getContext());
-}
-
-void mlir::triton::BufferizationCleanupConversionPatterns(
-    RewritePatternSet &patterns) {
-  patterns.add<RemoveUnusedAllocPattern>(patterns.getContext());
-  patterns.add<RemoveRedundantBufferizationRoundtrip>(patterns.getContext());
-  patterns.add<FoldAllocCopyToTensor>(patterns.getContext());
-}
-
-void mlir::triton::populateCanonicalizationPatterns(
+void mlir::triton::populateXSMTBufferizationCleanupPatterns(
     RewritePatternSet &patterns) {
   patterns.add<MaterializeUnpackIntoSubviewPattern>(patterns.getContext());
 }

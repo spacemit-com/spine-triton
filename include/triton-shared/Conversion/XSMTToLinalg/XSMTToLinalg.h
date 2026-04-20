@@ -19,14 +19,15 @@ namespace triton {
 #define GEN_PASS_DECL
 #include "triton-shared/Conversion/XSMTToLinalg/Passes.h.inc"
 
-void populateXSMTOptimizationAndValidationPatterns(RewritePatternSet &patterns);
-void LoopParallelizationConversionPatterns(RewritePatternSet &patterns);
-void populateXSMTToLinalgConversionPatterns(RewritePatternSet &patterns);
-void ConvertMMT4DAddConversionPatterns(RewritePatternSet &patterns);
-void MMT4DOpConversionPatterns(RewritePatternSet &patterns);
-void BufferizationCleanupConversionPatterns(RewritePatternSet &patterns);
-void populateCanonicalizationPatterns(RewritePatternSet &patterns);
+/// MBarrier checks + MBarrier release insertion.
+void populateXSMTValidationPatterns(RewritePatternSet &patterns);
 
+/// Core xsmt ops → linalg/tensor/memref conversion,
+/// loop parallelization, and Proton record lowering.
+void populateXSMTConversionPatterns(RewritePatternSet &patterns);
+
+/// Cleanup patterns after xsmt bufferization/conversion.
+void populateXSMTBufferizationCleanupPatterns(RewritePatternSet &patterns);
 
 std::unique_ptr<OperationPass<ModuleOp>> createXSMTToLinalgPass();
 

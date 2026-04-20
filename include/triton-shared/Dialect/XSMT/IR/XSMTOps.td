@@ -38,62 +38,187 @@ def AnnotationOp : XSMT_Op<"annotation", [Pure, MemoryEffects<[MemWrite]>]> {
 }
 
 
-def ViewOp : XSMT_Op<"view", [Pure]> {
-  let summary = "Create a local view of a tensor with new shape and micro tile size";
+// ===----------------------------------------------------------------------===//
+// New ops: split from ViewOp / ViewPtrOp (Spec 11)
+// ===----------------------------------------------------------------------===//
+
+def PackOp : XSMT_Op<"pack", [Pure, AttrSizedOperandSegments]> {
+  let summary = "Pack a 2D tensor into 4D packed layout";
   let description = [{
-    Creates a local view of a tensor with the specified shape and micro tile size.
-    This operation reshapes a tensor in shared memory for tensor core operations.
+    Packs a 2D tensor into a 4D tensor with packed tile layout.
+    Result shape: [shape[0]/packed_size[0], shape[1]/packed_size[1], packed_size[0], packed_size[1]].
+
+    If `destination` is provided, the pack result is written into the destination
+    tensor (destination-passing style). This avoids generating intermediate
+    alloc + materialize_in_destination roundtrips during lowering.
   }];
 
   let arguments = (ins
     TT_Tensor:$base,
     Variadic<I32>:$offsets,
+    Optional<TT_Tensor>:$destination,
     DenseI32ArrayAttr:$shape,
-    DenseI32ArrayAttr:$micro_size
+    DenseI32ArrayAttr:$packed_size
   );
 
-  let results = (outs
-    TT_Tensor:$result
-  );
+  let results = (outs TT_Tensor:$result);
 
-  let assemblyFormat = [{
-    $base `,` `[` $offsets `]` `,` `[` $shape `]` `,` `[` $micro_size `]` attr-dict `:`
-    type($base) `->` type($result)
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   let builders = [
+    // Builder without destination (backward compatible)
     OpBuilder<(ins
       "Value":$base,
       "ValueRange":$offsets,
       "ArrayRef<int32_t>":$shape,
-      "ArrayRef<int32_t>":$micro_size
+      "ArrayRef<int32_t>":$packed_size
+    )>,
+    // Builder with destination (destination-passing style)
+    OpBuilder<(ins
+      "Value":$base,
+      "ValueRange":$offsets,
+      "Value":$destination,
+      "ArrayRef<int32_t>":$shape,
+      "ArrayRef<int32_t>":$packed_size
     )>
   ];
 
   let hasVerifier = 1;
 }
 
-
-def ViewPtrOp : XSMT_Op<"viewptr", [Pure]> {
-  let summary = "Create a local view of a tensor with new shape and micro tile size";
+def UnpackOp : XSMT_Op<"unpack", [Pure, AttrSizedOperandSegments]> {
+  let summary = "Unpack a 4D packed tensor back to 2D";
   let description = [{
-    Creates a local view of a tensor with the specified shape and micro tile size.
-    This operation reshapes a tensor in shared memory for tensor core operations.
+    Unpacks a 4D packed tensor back to a 2D tensor.
+    The packed tile size is inferred from the input 4D shape (dim[2], dim[3]).
+
+    If `destination` is provided, the unpack result is written into the
+    destination tensor (destination-passing style). This enables direct
+    unpack into a target subview without intermediate full-size tensors.
+  }];
+
+  let arguments = (ins
+    TT_Tensor:$base,
+    Variadic<I32>:$offsets,
+    Optional<TT_Tensor>:$destination,
+    DenseI32ArrayAttr:$shape
+  );
+
+  let results = (outs TT_Tensor:$result);
+
+  let hasCustomAssemblyFormat = 1;
+
+  let builders = [
+    // Builder without destination (backward compatible)
+    OpBuilder<(ins
+      "Value":$base,
+      "ValueRange":$offsets,
+      "ArrayRef<int32_t>":$shape
+    )>,
+    // Builder with destination (destination-passing style)
+    OpBuilder<(ins
+      "Value":$base,
+      "ValueRange":$offsets,
+      "Value":$destination,
+      "ArrayRef<int32_t>":$shape
+    )>
+  ];
+
+  let hasVerifier = 1;
+}
+
+def RepackOp : XSMT_Op<"repack", [Pure, AttrSizedOperandSegments]> {
+  let summary = "Repack a 4D tensor with different packed tile size";
+  let description = [{
+    Repacks a 4D packed tensor into a new 4D layout with different packed tile sizes.
+    Equivalent to unpack + slice + pack with new packed tiles.
+
+    If `destination` is provided, the repack result is written into the
+    destination tensor (destination-passing style).
+  }];
+
+  let arguments = (ins
+    TT_Tensor:$base,
+    Variadic<I32>:$offsets,
+    Optional<TT_Tensor>:$destination,
+    DenseI32ArrayAttr:$shape,
+    DenseI32ArrayAttr:$packed_size
+  );
+
+  let results = (outs TT_Tensor:$result);
+
+  let hasCustomAssemblyFormat = 1;
+
+  let builders = [
+    // Builder without destination (backward compatible)
+    OpBuilder<(ins
+      "Value":$base,
+      "ValueRange":$offsets,
+      "ArrayRef<int32_t>":$shape,
+      "ArrayRef<int32_t>":$packed_size
+    )>,
+    // Builder with destination (destination-passing style)
+    OpBuilder<(ins
+      "Value":$base,
+      "ValueRange":$offsets,
+      "Value":$destination,
+      "ArrayRef<int32_t>":$shape,
+      "ArrayRef<int32_t>":$packed_size
+    )>
+  ];
+
+  let hasVerifier = 1;
+}
+
+def SubviewOp : XSMT_Op<"subview", [Pure]> {
+  let summary = "Create a pointer subview without changing packing";
+  let description = [{
+    Creates a subview of a tensor pointer, preserving the existing packed tile layout.
+    No packed_size attribute — the packing is inherited from the base.
+  }];
+
+  let arguments = (ins
+    TT_TensorPtr:$base,
+    Variadic<I32>:$offsets,
+    DenseI32ArrayAttr:$shape
+  );
+
+  let results = (outs TT_TensorPtr:$result);
+
+  let assemblyFormat = [{
+    $base `,` `[` $offsets `]` `,` `[` $shape `]` attr-dict `:`
+    type($base) `->` type($result)
+  }];
+
+  let builders = [
+    OpBuilder<(ins
+      "Value":$base,
+      "ValueRange":$offsets,
+      "ArrayRef<int32_t>":$shape
+    )>
+  ];
+
+  let hasVerifier = 1;
+}
+
+def SubviewPackOp : XSMT_Op<"subview_pack", [Pure]> {
+  let summary = "Create a pointer subview with packed tile packing";
+  let description = [{
+    Creates a subview of a tensor pointer and applies packed tile packing.
+    Combines subview + expand_shape + transpose in lowering.
   }];
 
   let arguments = (ins
     TT_TensorPtr:$base,
     Variadic<I32>:$offsets,
     DenseI32ArrayAttr:$shape,
-    DenseI32ArrayAttr:$micro_size
+    DenseI32ArrayAttr:$packed_size
   );
 
-  let results = (outs
-    TT_TensorPtr:$result
-  );
+  let results = (outs TT_TensorPtr:$result);
 
   let assemblyFormat = [{
-    $base `,` `[` $offsets `]` `,` `[` $shape `]` `,` `[` $micro_size `]` attr-dict `:`
+    $base `,` `[` $offsets `]` `,` `[` $shape `]` `,` `[` $packed_size `]` attr-dict `:`
     type($base) `->` type($result)
   }];
 
@@ -102,7 +227,7 @@ def ViewPtrOp : XSMT_Op<"viewptr", [Pure]> {
       "Value":$base,
       "ValueRange":$offsets,
       "ArrayRef<int32_t>":$shape,
-      "ArrayRef<int32_t>":$micro_size
+      "ArrayRef<int32_t>":$packed_size
     )>
   ];
 
@@ -118,13 +243,13 @@ def DescriptorLoadViewOp : XSMT_Op<"descriptor_load_view", [Pure]> {
     TT_Ptr:$base,
     Variadic<I64>:$offsets,
     DenseI32ArrayAttr:$shape,
-    DenseI32ArrayAttr:$micro_size
+    DenseI32ArrayAttr:$packed_size
   );
 
   let results = (outs TT_Tensor:$result);
 
   let assemblyFormat = [{
-    $base `,` `[` $offsets `]` `,` `[` $shape `]` `,` `[` $micro_size `]` attr-dict `:`
+    $base `,` `[` $offsets `]` `,` `[` $shape `]` `,` `[` $packed_size `]` attr-dict `:`
     type($base) `->` type($result)
   }];
 
@@ -133,7 +258,7 @@ def DescriptorLoadViewOp : XSMT_Op<"descriptor_load_view", [Pure]> {
       "Value":$base,
       "ValueRange":$offsets,
       "ArrayRef<int32_t>":$shape,
-      "ArrayRef<int32_t>":$micro_size
+      "ArrayRef<int32_t>":$packed_size
     )>
   ];
 }
@@ -230,35 +355,6 @@ def MMT4DOp : XSMT_Op<"mmt4d", [Pure, MemoryEffects<[MemWrite]>]> {
 
   let assemblyFormat = [{
     $a `,` $b (`,` $c^)? attr-dict `:` type($a) `,` type($b) (`,` type($c)^)? `->` type($result)
-  }];
-}
-
-def BindOp : XSMT_Op<"bind", [Pure, MemoryEffects<[MemWrite]>]> {
-  let summary = "Bind a source value to a destination";
-  let description = [{
-    The `xsmt.bind` operation binds the source value to the destination.
-    It returns the source value with the type of the destination.
-
-    This operation is typically used for variable binding or value assignment
-    in the XSMT dialect. The result type always matches the destination type.
-
-    Example:
-    ```mlir
-    %bound = xsmt.bind %dest, %src : (tensor<f32>, tensor<f32>) -> tensor<f32>
-    ```
-  }];
-
-  let arguments = (ins
-    TT_Tensor:$dest,
-    TT_Tensor:$src
-  );
-
-  let results = (outs
-    TT_Tensor:$result
-  );
-
-  let assemblyFormat = [{
-    $dest `,` $src attr-dict `:` `(` type($dest) `,` type($src) `)` `->` type($result)
   }];
 }
 

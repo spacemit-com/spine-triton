@@ -460,4 +460,130 @@ OpFoldResult compareOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
   return selectOp.getResult();
 }
 
+// ===----------------------------------------------------------------------===//
+// Deep OFR / Value analysis (peers through index_cast chains)
+// ===----------------------------------------------------------------------===//
+
+std::optional<int64_t> getConstantIntLike(Value v) {
+  if (!v)
+    return std::nullopt;
+  if (auto cst = v.getDefiningOp<arith::ConstantIndexOp>())
+    return cst.value();
+  if (auto cst = v.getDefiningOp<arith::ConstantIntOp>())
+    return cst.value();
+  if (auto cast = v.getDefiningOp<arith::IndexCastOp>())
+    return getConstantIntLike(cast.getIn());
+  return std::nullopt;
+}
+
+bool isConstZeroOFR(OpFoldResult ofr) {
+  if (auto attr = llvm::dyn_cast<Attribute>(ofr)) {
+    if (auto intAttr = llvm::dyn_cast<IntegerAttr>(attr))
+      return intAttr.getInt() == 0;
+    return false;
+  }
+  if (auto val = llvm::dyn_cast<Value>(ofr)) {
+    auto c = getConstantIntLike(val);
+    return c.has_value() && *c == 0;
+  }
+  return false;
+}
+
+bool isConstOneOFR(OpFoldResult ofr) {
+  if (auto attr = llvm::dyn_cast<Attribute>(ofr)) {
+    if (auto intAttr = llvm::dyn_cast<IntegerAttr>(attr))
+      return intAttr.getInt() == 1;
+    return false;
+  }
+  if (auto val = llvm::dyn_cast<Value>(ofr)) {
+    auto c = getConstantIntLike(val);
+    return c.has_value() && *c == 1;
+  }
+  return false;
+}
+
+bool sameValueOrEquivalentCast(Value lhs, Value rhs) {
+  if (lhs == rhs)
+    return true;
+  if (auto cast = lhs.getDefiningOp<arith::IndexCastOp>())
+    if (cast.getIn() == rhs)
+      return true;
+  if (auto cast = rhs.getDefiningOp<arith::IndexCastOp>())
+    if (cast.getIn() == lhs)
+      return true;
+  return false;
+}
+
+// --- Internal helpers for sameOFR ---
+
+static Value peelTrivialIndexExpr(Value v) {
+  while (v) {
+    if (auto cast = v.getDefiningOp<arith::IndexCastOp>()) {
+      v = cast.getIn();
+      continue;
+    }
+    break;
+  }
+  return v;
+}
+
+static bool sameBoundedSizeExpr(Value lhs, Value rhs);
+
+static bool sameMinSIOp(arith::MinSIOp lhsMin, arith::MinSIOp rhsMin) {
+  Value lhsA = peelTrivialIndexExpr(lhsMin.getLhs());
+  Value lhsB = peelTrivialIndexExpr(lhsMin.getRhs());
+  Value rhsA = peelTrivialIndexExpr(rhsMin.getLhs());
+  Value rhsB = peelTrivialIndexExpr(rhsMin.getRhs());
+  return (sameBoundedSizeExpr(lhsA, rhsA) && sameBoundedSizeExpr(lhsB, rhsB)) ||
+         (sameBoundedSizeExpr(lhsA, rhsB) && sameBoundedSizeExpr(lhsB, rhsA));
+}
+
+static bool sameSubIOp(arith::SubIOp lhsSub, arith::SubIOp rhsSub) {
+  return sameBoundedSizeExpr(lhsSub.getLhs(), rhsSub.getLhs()) &&
+         sameBoundedSizeExpr(lhsSub.getRhs(), rhsSub.getRhs());
+}
+
+static bool sameBoundedSizeExpr(Value lhs, Value rhs) {
+  lhs = peelTrivialIndexExpr(lhs);
+  rhs = peelTrivialIndexExpr(rhs);
+  if (!lhs || !rhs)
+    return false;
+  if (sameValueOrEquivalentCast(lhs, rhs))
+    return true;
+  if (auto lhsCst = getConstantIntLike(lhs))
+    if (auto rhsCst = getConstantIntLike(rhs))
+      return *lhsCst == *rhsCst;
+  if (auto lhsMin = lhs.getDefiningOp<arith::MinSIOp>())
+    if (auto rhsMin = rhs.getDefiningOp<arith::MinSIOp>())
+      return sameMinSIOp(lhsMin, rhsMin);
+  if (auto lhsSub = lhs.getDefiningOp<arith::SubIOp>())
+    if (auto rhsSub = rhs.getDefiningOp<arith::SubIOp>())
+      return sameSubIOp(lhsSub, rhsSub);
+  return false;
+}
+
+bool sameOFR(OpFoldResult lhs, OpFoldResult rhs) {
+  auto lhsAttr =
+      llvm::dyn_cast_if_present<Attribute>(lhs.dyn_cast<Attribute>());
+  auto rhsAttr =
+      llvm::dyn_cast_if_present<Attribute>(rhs.dyn_cast<Attribute>());
+  if (lhsAttr && rhsAttr)
+    return lhsAttr == rhsAttr;
+
+  Value lhsVal = lhs.dyn_cast<Value>();
+  Value rhsVal = rhs.dyn_cast<Value>();
+  if (lhsVal && rhsVal)
+    return sameBoundedSizeExpr(lhsVal, rhsVal);
+
+  if (lhsAttr && rhsVal) {
+    if (auto intAttr = llvm::dyn_cast<IntegerAttr>(lhsAttr)) {
+      auto c = getConstantIntLike(rhsVal);
+      return c.has_value() && *c == intAttr.getInt();
+    }
+  }
+  if (lhsVal && rhsAttr)
+    return sameOFR(rhs, lhs);
+  return false;
+}
+
 } // namespace mlir

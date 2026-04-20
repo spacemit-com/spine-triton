@@ -282,7 +282,7 @@ index 0941d363c..0af7f2993 100644
    };
 
 diff --git a/python/src/ir.cc b/python/src/ir.cc
-index d4e0619cc..a81802a60 100644
+index d4e0619cc..09a988d89 100644
 --- a/python/src/ir.cc
 +++ b/python/src/ir.cc
 @@ -40,7 +40,9 @@
@@ -358,18 +358,6 @@ index d4e0619cc..a81802a60 100644
        .def("get_op_builder", &TritonOpBuilder::getBuilder, ret::reference)
        // getters
        .def("create_module",
-@@ -1850,6 +1864,11 @@ void init_triton_ir(py::module &&m) {
-              return self.create<MakeTensorDescOp>(base, shape, strides,
-                                                   tensorShape, isSignedInteger,
-                                                   paddingOption);
-+           })
-+      .def("create_smt_bind",
-+           [](TritonOpBuilder &self, Value &dest,
-+              Value &src) -> Value {
-+             return self.create<mlir::xsmt::BindOp>(dest.getType(), dest, src);
-            });
-
-   py::class_<PassManager>(m, "pass_manager", py::module_local())
 diff --git a/python/src/ir.h b/python/src/ir.h
 index 499dd9e8a..9c863e6fa 100644
 --- a/python/src/ir.h
@@ -438,7 +426,7 @@ index e9180728b..ddfac27e6 100644
 
          pb.registerModuleAnalyses(mam);
 diff --git a/python/triton/compiler/code_generator.py b/python/triton/compiler/code_generator.py
-index 3ffb90457..49bf2c31f 100644
+index 3ffb90457..990a489c6 100644
 --- a/python/triton/compiler/code_generator.py
 +++ b/python/triton/compiler/code_generator.py
 @@ -383,6 +383,7 @@ class CodeGenerator(ast.NodeVisitor):
@@ -449,24 +437,19 @@ index 3ffb90457..49bf2c31f 100644
                      isinstance(val, language.dtype),  #
                      is_namedtuple(val),
                      self._is_constexpr_global(name),  #
-@@ -1150,7 +1151,15 @@ class CodeGenerator(ast.NodeVisitor):
+@@ -1150,7 +1151,10 @@ class CodeGenerator(ast.NodeVisitor):
          return lhs[slices]
 
      def visit_Subscript_Store(self, node, value):
 -        raise NotImplementedError("__setitem__ is not supported in triton")
-+        assert isinstance(node.ctx, ast.Store)
-+        lhs = self.visit(node.value)
-+        slices = self.visit(node.slice)
-+        if isinstance(lhs, language.tensor):
-+            lhs.__setitem__(slices, value, _semantic=self.semantic)
-+        elif isinstance(lhs, language.tuple):
-+            lhs.__setitem__(slices, value)
-+        else:
-+            raise RuntimeError('Only `tuple` and `tensor` are currently supported')
++        raise RuntimeError(
++            'Tensor __setitem__ (xsmt.bind) has been removed. '
++            'Use explicit accumulator operand on smt.dot instead.'
++        )
 
      def visit_Subscript(self, node):
          return self.visit_Subscript_Load(node)
-@@ -1176,8 +1185,8 @@ class CodeGenerator(ast.NodeVisitor):
+@@ -1176,8 +1180,8 @@ class CodeGenerator(ast.NodeVisitor):
          disallow_acc_multi_buffer = False
          flatten = False
          warp_specialize = False
@@ -477,7 +460,7 @@ index 3ffb90457..49bf2c31f 100644
              iterator = IteratorClass(*iter_args, **iter_kwargs)
              # visit iterator arguments
              # note: only `range` iterator is supported now
-@@ -1190,7 +1199,8 @@ class CodeGenerator(ast.NodeVisitor):
+@@ -1190,7 +1194,8 @@ class CodeGenerator(ast.NodeVisitor):
              disallow_acc_multi_buffer = iterator.disallow_acc_multi_buffer
              flatten = iterator.flatten
              warp_specialize = iterator.warp_specialize
@@ -487,7 +470,7 @@ index 3ffb90457..49bf2c31f 100644
          elif IteratorClass is range:
              # visit iterator arguments
              # note: only `range` iterator is supported now
-@@ -1253,8 +1263,8 @@ class CodeGenerator(ast.NodeVisitor):
+@@ -1253,8 +1258,8 @@ class CodeGenerator(ast.NodeVisitor):
                  for_op.set_attr("tt.flatten", self.builder.get_unit_attr())
              if warp_specialize:
                  for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
@@ -498,25 +481,8 @@ index 3ffb90457..49bf2c31f 100644
 
              self.scf_stack.append(node)
              for_op_body = for_op.get_body(0)
-diff --git a/python/triton/language/core.py b/python/triton/language/core.py
-index bf01d5bc1..27d17df5e 100644
---- a/python/triton/language/core.py
-+++ b/python/triton/language/core.py
-@@ -1111,6 +1111,12 @@ class tensor(base_value):
-                 raise ValueError(f"unsupported tensor index: {sl}")
-         return ret
-
-+    @builtin
-+    def __setitem__(self, slices, value, _semantic=None):
-+        if slices is Ellipsis or slices == Ellipsis:
-+            return _semantic.smt_bind(self, value)
-+        raise ValueError(f"Tensor __setitem__ only supports [...] (Ellipsis), got {slices}")
-+
-     @property
-     def T(self):
-         """Transposes a 2D tensor."""
 diff --git a/python/triton/language/semantic.py b/python/triton/language/semantic.py
-index bd48990d6..8dbec0152 100644
+index bd48990d6..9715dd21a 100644
 --- a/python/triton/language/semantic.py
 +++ b/python/triton/language/semantic.py
 @@ -75,6 +75,8 @@ class TritonSemantic(Generic[TensorTy]):
@@ -548,13 +514,6 @@ index bd48990d6..8dbec0152 100644
              else:
                  raise ValueError(f"Padding option {padding_option} not supported")
          return padding
-@@ -1973,3 +1979,6 @@ class TritonSemantic(Generic[TensorTy]):
-                                                             [s.handle for s in strides], block_shape, is_signed_int,
-                                                             padding)
-         return tl.tensor_descriptor(handle, shape, strides, type)
-+
-+    def smt_bind(self, dest: tl.tensor, src: tl.tensor):
-+        return self.tensor(self.builder.create_smt_bind(src.handle, dest.handle), dest.type)
 diff --git a/python/triton/language/standard.py b/python/triton/language/standard.py
 index 490dc7582..d9340d207 100644
 --- a/python/triton/language/standard.py
@@ -1357,379 +1316,3 @@ index 278593819..4638b4173 100644
      return tl.tensor(triton_proton.create_proton_record(semantic.builder, is_start, scope_name), tl.void)
 
 
-diff --git a/third_party/proton/csrc/include/Profiler/Cpu/CpuProfiler.h b/third_party/proton/csrc/include/Profiler/Cpu/CpuProfiler.h
-new file mode 100755
-index 000000000..208c9572a
---- /dev/null
-+++ b/third_party/proton/csrc/include/Profiler/Cpu/CpuProfiler.h
-@@ -0,0 +1,65 @@
-+#ifndef PROTON_PROFILER_CPU_PROFILER_H_
-+#define PROTON_PROFILER_CPU_PROFILER_H_
-+
-+#include "Context/Context.h"
-+#include "Profiler/Profiler.h"
-+#include "Utility/Singleton.h"
-+#include <map>
-+#include <stack>
-+#include <vector>
-+
-+namespace proton {
-+
-+// CpuProfiler directly inherits from Profiler, OpInterface, and ScopeInterface
-+// It does NOT depend on InstrumentationProfiler (which requires CUDA)
-+class CpuProfiler : public Profiler,
-+                    public OpInterface,
-+                    public ScopeInterface,
-+                    public Singleton<CpuProfiler> {
-+public:
-+  using Singleton<CpuProfiler>::instance;
-+  CpuProfiler();
-+  virtual ~CpuProfiler();
-+
-+protected:
-+  // Profiler interface
-+  void doStart() override;
-+  void doStop() override;
-+  void doFlush() override;
-+  void doSetMode(const std::vector<std::string> &modeAndOptions) override;
-+  void doAddMetrics(
-+      size_t scopeId,
-+      const std::map<std::string, MetricValueType> &scalarMetrics,
-+      const std::map<std::string, TensorMetric> &tensorMetrics) override;
-+
-+  // Op Interface for user scopes (proton.scope)
-+  void startOp(const Scope &scope) override;
-+  void stopOp(const Scope &scope) override;
-+
-+  // Scope Interface for nested scopes (proton.scope context manager)
-+  void enterScope(const Scope &scope) override;
-+  void exitScope(const Scope &scope) override;
-+
-+private:
-+  void setupCounters();
-+  void readCounters(std::map<std::string, uint64_t> &values);
-+
-+  struct PerfCounter {
-+      int fd = -1;
-+      std::string name;
-+  };
-+  std::vector<PerfCounter> counters;
-+
-+  // Nested scope support using stack
-+  struct ScopeState {
-+    size_t scopeId;
-+    std::string name;
-+    std::map<std::string, uint64_t> startValues;
-+    std::map<Data *, size_t> dataScopeIdMap;
-+  };
-+  std::stack<ScopeState> scopeStack;
-+};
-+
-+} // namespace proton
-+
-+#endif // PROTON_PROFILER_CPU_PROFILER_H_
-diff --git a/third_party/proton/csrc/include/Runtime/CpuRuntime.h b/third_party/proton/csrc/include/Runtime/CpuRuntime.h
-new file mode 100755
-index 000000000..473711567
---- /dev/null
-+++ b/third_party/proton/csrc/include/Runtime/CpuRuntime.h
-@@ -0,0 +1,74 @@
-+#ifndef PROTON_RUNTIME_CPU_RUNTIME_H_
-+#define PROTON_RUNTIME_CPU_RUNTIME_H_
-+
-+#include "Runtime/Runtime.h"
-+#include <vector>
-+#include <cstring>
-+#include <cstdlib>
-+
-+namespace proton {
-+
-+class CpuRuntime : public Runtime {
-+public:
-+  CpuRuntime() : Runtime(DeviceType::CPU) {}
-+  virtual ~CpuRuntime() = default;
-+
-+  static CpuRuntime &instance() {
-+    static CpuRuntime instance;
-+    return instance;
-+  }
-+
-+  void launchKernel(void *kernel, unsigned int gridDimX, unsigned int gridDimY,
-+                    unsigned int gridDimZ, unsigned int blockDimX,
-+                    unsigned int blockDimY, unsigned int blockDimZ,
-+                    unsigned int sharedMemBytes, void *stream,
-+                    void **kernelParams, void **extra) override {
-+      // No-op for CPU profiling currently
-+  }
-+
-+  void memset(void *devicePtr, uint32_t value, size_t size,
-+              void *stream) override {
-+     std::memset(devicePtr, value, size);
-+  }
-+
-+  void allocateHostBuffer(uint8_t **buffer, size_t size) override {
-+     *buffer = (uint8_t *)std::malloc(size);
-+  }
-+
-+  void freeHostBuffer(uint8_t *buffer) override {
-+     std::free(buffer);
-+  }
-+
-+  void allocateDeviceBuffer(uint8_t **buffer, size_t size) override {
-+      // Unified memory on CPU
-+      allocateHostBuffer(buffer, size);
-+  }
-+
-+  void freeDeviceBuffer(uint8_t *buffer) override {
-+      freeHostBuffer(buffer);
-+  }
-+
-+  void copyDeviceToHostAsync(void *dst, const void *src, size_t size,
-+                             void *stream) override {
-+      std::memcpy(dst, src, size);
-+  }
-+
-+  void *getDevice() override { return nullptr; }
-+
-+  void *getPriorityStream() override { return nullptr; }
-+
-+  void destroyStream(void *stream) override {}
-+
-+  void synchronizeStream(void *stream) override {}
-+
-+  void synchronizeDevice() override {}
-+
-+  void processHostBuffer(uint8_t *hostBuffer, size_t hostBufferSize,
-+                         uint8_t *deviceBuffer, size_t deviceBufferSize,
-+                         void *stream,
-+                         std::function<void(uint8_t *, size_t)> callback) override {}
-+};
-+
-+} // namespace proton
-+
-+#endif // PROTON_RUNTIME_CPU_RUNTIME_H_
-diff --git a/third_party/proton/csrc/lib/Profiler/Cpu/CpuProfiler.cpp b/third_party/proton/csrc/lib/Profiler/Cpu/CpuProfiler.cpp
-new file mode 100755
-index 000000000..61d2928cf
---- /dev/null
-+++ b/third_party/proton/csrc/lib/Profiler/Cpu/CpuProfiler.cpp
-@@ -0,0 +1,208 @@
-+#include "Profiler/Cpu/CpuProfiler.h"
-+#include <asm/unistd.h>
-+#include <cerrno>
-+#include <cstring>
-+#include <iostream>
-+#include <linux/perf_event.h>
-+#include <sys/ioctl.h>
-+#include <sys/syscall.h>
-+#include <unistd.h>
-+
-+namespace proton {
-+
-+static long perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
-+                            int cpu, int group_fd, unsigned long flags) {
-+  return syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
-+}
-+
-+CpuProfiler::CpuProfiler() {
-+  std::cout << "[Proton] CpuProfiler constructed" << std::endl;
-+}
-+
-+CpuProfiler::~CpuProfiler() {
-+  // Close all perf event file descriptors
-+  for (auto &c : counters) {
-+    if (c.fd >= 0) {
-+      close(c.fd);
-+    }
-+  }
-+  counters.clear();
-+}
-+
-+void CpuProfiler::setupCounters() {
-+  struct perf_event_attr pe;
-+  std::memset(&pe, 0, sizeof(struct perf_event_attr));
-+  pe.type = PERF_TYPE_HARDWARE;
-+  pe.size = sizeof(struct perf_event_attr);
-+  pe.disabled = 1;
-+  pe.exclude_kernel = 1;
-+  pe.exclude_hv = 1;
-+
-+  // Cycles
-+  pe.config = PERF_COUNT_HW_CPU_CYCLES;
-+  int fd_cycles = perf_event_open(&pe, 0, -1, -1, 0);
-+  if (fd_cycles != -1) {
-+    std::cout << "[Proton] Successfully opened CPU Cycle counter." << std::endl;
-+    counters.push_back({fd_cycles, "cycle"});
-+  } else {
-+    std::cerr << "[Proton] Warning: Failed to open cycles counter. Errno: "
-+              << strerror(errno) << std::endl;
-+  }
-+
-+  // Instructions
-+  pe.config = PERF_COUNT_HW_INSTRUCTIONS;
-+  int fd_inst = perf_event_open(&pe, 0, -1, -1, 0);
-+  if (fd_inst != -1) {
-+    std::cout << "[Proton] Successfully opened Instruction counter." << std::endl;
-+    counters.push_back({fd_inst, "instruction"});
-+  } else {
-+    std::cerr << "[Proton] Warning: Failed to open instruction counter. Errno: "
-+              << strerror(errno) << std::endl;
-+  }
-+}
-+
-+void CpuProfiler::doStart() {
-+  std::cout << "[Proton] CpuProfiler::doStart()" << std::endl;
-+  if (counters.empty()) {
-+    setupCounters();
-+  }
-+  for (auto &c : counters) {
-+    ioctl(c.fd, PERF_EVENT_IOC_RESET, 0);
-+    ioctl(c.fd, PERF_EVENT_IOC_ENABLE, 0);
-+  }
-+}
-+
-+void CpuProfiler::doStop() {
-+  std::cout << "[Proton] CpuProfiler::doStop()" << std::endl;
-+  for (auto &c : counters) {
-+    ioctl(c.fd, PERF_EVENT_IOC_DISABLE, 0);
-+  }
-+}
-+
-+void CpuProfiler::doFlush() {
-+  // Nothing special to flush for CPU profiler
-+}
-+
-+void CpuProfiler::doSetMode(const std::vector<std::string> &modeAndOptions) {
-+  // CPU profiler doesn't need special mode configuration
-+}
-+
-+void CpuProfiler::readCounters(std::map<std::string, uint64_t> &values) {
-+  for (auto &c : counters) {
-+    long long count;
-+    int ret = read(c.fd, &count, sizeof(long long));
-+    if (ret == sizeof(long long)) {
-+      values[c.name] = count;
-+    } else {
-+      std::cerr << "[Proton Error] Failed to read " << c.name
-+                << " ret=" << ret << " errno=" << strerror(errno) << std::endl;
-+    }
-+  }
-+}
-+
-+// OpInterface implementation
-+void CpuProfiler::startOp(const Scope &scope) {
-+  // Delegate to enterScope for consistency
-+  enterScope(scope);
-+}
-+
-+void CpuProfiler::stopOp(const Scope &scope) {
-+  // Delegate to exitScope for consistency
-+  exitScope(scope);
-+}
-+
-+void CpuProfiler::doAddMetrics(
-+    size_t scopeId,
-+    const std::map<std::string, MetricValueType> &scalarMetrics,
-+    const std::map<std::string, TensorMetric> &tensorMetrics) {
-+  // Add metrics to all registered data objects
-+  for (auto *data : getDataSet()) {
-+    data->addMetrics(scopeId, scalarMetrics);
-+  }
-+}
-+
-+// ScopeInterface implementation - supports nested scopes using stack
-+void CpuProfiler::enterScope(const Scope &scope) {
-+  std::cout << "[Proton Debug] enterScope: " << scope.name << " (scopeId="
-+            << scope.scopeId << ", stack depth=" << scopeStack.size() << ")" << std::endl;
-+
-+  // Create new scope state
-+  ScopeState state;
-+  state.scopeId = scope.scopeId;
-+  state.name = scope.name;
-+
-+  // Register this scope with all data objects
-+  for (auto data : getDataSet()) {
-+    auto internalScopeId = data->addOp(scope.scopeId, scope.name);
-+    state.dataScopeIdMap[data] = internalScopeId;
-+    std::cout << "[Proton Debug] Registered scope with data, internalScopeId="
-+              << internalScopeId << std::endl;
-+  }
-+
-+  // Read current counter values as start values
-+  readCounters(state.startValues);
-+
-+  // Push state onto stack
-+  scopeStack.push(std::move(state));
-+
-+  std::cout << "[Proton Debug] Start values recorded, stack depth now="
-+            << scopeStack.size() << std::endl;
-+}
-+
-+void CpuProfiler::exitScope(const Scope &scope) {
-+  std::cout << "[Proton Debug] exitScope: " << scope.name << " (scopeId="
-+            << scope.scopeId << ", stack depth=" << scopeStack.size() << ")" << std::endl;
-+
-+  if (scopeStack.empty()) {
-+    std::cerr << "[Proton Error] exitScope called but stack is empty!" << std::endl;
-+    return;
-+  }
-+
-+  // Pop the top state from stack
-+  ScopeState state = std::move(scopeStack.top());
-+  scopeStack.pop();
-+
-+  // Verify scope matches (optional safety check)
-+  if (state.scopeId != scope.scopeId) {
-+    std::cerr << "[Proton Warning] Scope mismatch: expected " << state.scopeId
-+              << " but got " << scope.scopeId << std::endl;
-+  }
-+
-+  // Read end counter values
-+  std::map<std::string, uint64_t> endValues;
-+  readCounters(endValues);
-+
-+  // Calculate metrics (difference between end and start)
-+  std::map<std::string, MetricValueType> metrics;
-+  for (auto &c : counters) {
-+    if (endValues.count(c.name) && state.startValues.count(c.name)) {
-+      uint64_t diff = endValues[c.name] - state.startValues[c.name];
-+      metrics[c.name] = static_cast<double>(diff);
-+      std::cout << "[Proton Debug] Scope " << scope.name << " " << c.name
-+                << ": " << diff << std::endl;
-+    }
-+  }
-+
-+  // Report metrics to all data objects using the saved dataScopeIdMap
-+  if (!metrics.empty()) {
-+    std::cout << "[Proton] Reporting metrics for scope " << scope.name
-+              << " (dataScopeIdMap size: " << state.dataScopeIdMap.size() << ")"
-+              << std::endl;
-+    // Use current valid DataSet instead of saved pointers to avoid dangling pointers
-+    for (auto *data : getDataSet()) {
-+      auto it = state.dataScopeIdMap.find(data);
-+      if (it != state.dataScopeIdMap.end()) {
-+        std::cout << "[Proton Debug] Adding metrics to data for internalScopeId="
-+                  << it->second << std::endl;
-+        data->addMetrics(it->second, metrics);
-+      }
-+    }
-+  } else {
-+    std::cerr << "[Proton] No metrics recorded for scope " << scope.name << std::endl;
-+  }
-+
-+  std::cout << "[Proton Debug] exitScope done, stack depth now="
-+            << scopeStack.size() << std::endl;
-+}
-+
-+} // namespace proton
-diff --git a/third_party/proton/csrc/lib/Runtime/CpuRuntime.cpp b/third_party/proton/csrc/lib/Runtime/CpuRuntime.cpp
-new file mode 100755
-index 000000000..010c507d4
---- /dev/null
-+++ b/third_party/proton/csrc/lib/Runtime/CpuRuntime.cpp
-@@ -0,0 +1,5 @@
-+#include "Runtime/CpuRuntime.h"
-+
-+namespace proton {
-+// Instantiation
-+}

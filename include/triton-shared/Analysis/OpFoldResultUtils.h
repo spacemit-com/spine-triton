@@ -8,9 +8,9 @@
 #ifndef TRITON_ANALYSIS_OPFOLDRESULT_UTILS_H
 #define TRITON_ANALYSIS_OPFOLDRESULT_UTILS_H
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/OpDefinition.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
 
 #include <optional>
 
@@ -55,7 +55,7 @@ OpFoldResult subOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
 // result is an Integer Attribtue. Otherwise, insert the arith.muli
 // instruction if needed and use its result Value.
 OpFoldResult mulOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
-                         const Location loc, OpBuilder &b);
+                     const Location loc, OpBuilder &b);
 
 OpFoldResult minOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
                      const Location loc, OpBuilder &b);
@@ -64,8 +64,32 @@ OpFoldResult maxOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
                      const Location loc, OpBuilder &b);
 
 OpFoldResult compareOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
-                    const arith::CmpIPredicate pred, const OpFoldResult trueVal,
-                    const OpFoldResult falseVal, const Location loc, OpBuilder &b);
+                         const arith::CmpIPredicate pred,
+                         const OpFoldResult trueVal,
+                         const OpFoldResult falseVal, const Location loc,
+                         OpBuilder &b);
+
+// ===--- Deep OFR / Value analysis (peers through index_cast chains) ---=== //
+
+// Like hasConstZero but also peers through arith.index_cast chains.
+bool isConstZeroOFR(OpFoldResult ofr);
+
+// Return true if ofr is a constant 1 (attribute or value, peers through
+// arith.index_cast).
+bool isConstOneOFR(OpFoldResult ofr);
+
+// Extract a constant integer from a Value, peering through index_cast chains.
+// Stronger than getIntAttr which only checks attributes.
+std::optional<int64_t> getConstantIntLike(Value v);
+
+// Return true if two Values represent the same SSA value, considering
+// arith.index_cast equivalence.
+bool sameValueOrEquivalentCast(Value lhs, Value rhs);
+
+// Deep structural equality for OpFoldResults. Handles attributes, constants,
+// index_cast chains, and bounded size expressions (min/sub patterns).
+bool sameOFR(OpFoldResult lhs, OpFoldResult rhs);
+
 } // namespace mlir
 
 #endif

@@ -1244,16 +1244,31 @@ LogicalResult PtrAnalysis::visitOperandAlloc(xsmt::AllocOp allocOp,
   return success();
 }
 
-LogicalResult PtrAnalysis::visitOperandView(xsmt::ViewPtrOp viewOp,
-                                            PtrState &state, const Location loc,
-                                            OpBuilder &builder) {
-  auto result = viewOp.getResult();
-  auto base = viewOp.getBase();
-  ;
+LogicalResult PtrAnalysis::visitOperandSubview(xsmt::SubviewOp subviewOp,
+                                               PtrState &state,
+                                               const Location loc,
+                                               OpBuilder &builder) {
+  auto result = subviewOp.getResult();
+  auto base = subviewOp.getBase();
   if (!triton::isTensorPointerType(result.getType()) ||
       !triton::isTensorPointerType(base.getType())) {
-    viewOp->emitRemark(
-        "xsmt::ViewPtrOp is not TensorPointerType, temporarily not lowering");
+    subviewOp->emitRemark(
+        "xsmt::SubviewOp is not TensorPointerType, temporarily not lowering");
+    return failure();
+  }
+  return success();
+}
+
+LogicalResult
+PtrAnalysis::visitOperandSubviewPack(xsmt::SubviewPackOp subviewPackOp,
+                                     PtrState &state, const Location loc,
+                                     OpBuilder &builder) {
+  auto result = subviewPackOp.getResult();
+  auto base = subviewPackOp.getBase();
+  if (!triton::isTensorPointerType(result.getType()) ||
+      !triton::isTensorPointerType(base.getType())) {
+    subviewPackOp->emitRemark("xsmt::SubviewPackOp is not TensorPointerType, "
+                              "temporarily not lowering");
     return failure();
   }
   return success();
@@ -1328,8 +1343,10 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
                      dyn_cast<xsmt::BufferTensorViewOp>(op)) {
         return visitOperandBufferTensorViewOp(BufferTensorViewOp, state, loc,
                                               builder);
-      } else if (auto viewOp = dyn_cast<xsmt::ViewPtrOp>(op)) {
-        return visitOperandView(viewOp, state, loc, builder);
+      } else if (auto subviewOp = dyn_cast<xsmt::SubviewOp>(op)) {
+        return visitOperandSubview(subviewOp, state, loc, builder);
+      } else if (auto subviewPackOp = dyn_cast<xsmt::SubviewPackOp>(op)) {
+        return visitOperandSubviewPack(subviewPackOp, state, loc, builder);
       } else {
         op->emitRemark("Unexpected defining op for triton pointer operand");
         return failure();
@@ -2384,29 +2401,58 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
           }
           return WalkResult::advance();
         })
-        .Case<xsmt::ViewPtrOp>([&](auto viewop) {
-          OpBuilder builder(viewop);
+        .Case<xsmt::SubviewOp>([&](auto subviewOp) {
+          OpBuilder builder(subviewOp);
           PtrState state;
-          if (failed(
-                  visitOperandView(viewop, state, viewop.getLoc(), builder))) {
-            viewop->emitRemark("PtrAnalysis: Failed to analyze xsmt.view");
+          if (failed(visitOperandSubview(subviewOp, state, subviewOp.getLoc(),
+                                         builder))) {
+            subviewOp->emitRemark(
+                "PtrAnalysis: Failed to analyze xsmt.subview");
             return WalkResult::advance();
           }
 
-          Value originalBase = viewop.getBase();
+          Value originalBase = subviewOp.getBase();
           Value rewrittenBase = ptrMap.lookupOrNull(originalBase);
 
           if (rewrittenBase) {
-            Operation *newViewOp = builder.clone(*viewop.getOperation());
-            newViewOp->setOperand(0, rewrittenBase);
+            Operation *newOp = builder.clone(*subviewOp.getOperation());
+            newOp->setOperand(0, rewrittenBase);
 
             LLVM_DEBUG({
-              llvm::dbgs() << "rewriting xsmt.viewptr to use new base:\n";
-              newViewOp->dump();
+              llvm::dbgs() << "rewriting xsmt.subview to use new base:\n";
+              newOp->dump();
             });
-            ptrMap.map(viewop.getResult(), newViewOp->getResult(0));
+            ptrMap.map(subviewOp.getResult(), newOp->getResult(0));
           } else {
-            ptrMap.map(viewop.getResult(), viewop.getResult());
+            ptrMap.map(subviewOp.getResult(), subviewOp.getResult());
+          }
+
+          return WalkResult::advance();
+        })
+        .Case<xsmt::SubviewPackOp>([&](auto subviewPackOp) {
+          OpBuilder builder(subviewPackOp);
+          PtrState state;
+          if (failed(visitOperandSubviewPack(
+                  subviewPackOp, state, subviewPackOp.getLoc(), builder))) {
+            subviewPackOp->emitRemark(
+                "PtrAnalysis: Failed to analyze xsmt.subview_pack");
+            return WalkResult::advance();
+          }
+
+          Value originalBase = subviewPackOp.getBase();
+          Value rewrittenBase = ptrMap.lookupOrNull(originalBase);
+
+          if (rewrittenBase) {
+            Operation *newOp = builder.clone(*subviewPackOp.getOperation());
+            newOp->setOperand(0, rewrittenBase);
+
+            LLVM_DEBUG({
+              llvm::dbgs() << "rewriting xsmt.subview_pack to use new base:\n";
+              newOp->dump();
+            });
+            ptrMap.map(subviewPackOp.getResult(), newOp->getResult(0));
+          } else {
+            ptrMap.map(subviewPackOp.getResult(), subviewPackOp.getResult());
           }
 
           return WalkResult::advance();

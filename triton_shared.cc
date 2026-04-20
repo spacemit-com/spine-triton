@@ -73,19 +73,54 @@ void init_triton_xsmt_ir(py::module &&m) {
                  destination, LoadOp, boundary_check,
                  triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL);
            })
-      .def("create_view",
+      .def(
+          "create_pack",
+          [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets,
+             std::vector<int32_t> &shape, std::vector<int32_t> &packed_size,
+             std::optional<Value> destination) -> Value {
+            if (destination.has_value())
+              return self.create<xsmt::PackOp>(
+                  base, offsets, destination.value(), shape, packed_size);
+            return self.create<xsmt::PackOp>(base, offsets, shape, packed_size);
+          },
+          py::arg("base"), py::arg("offsets"), py::arg("shape"),
+          py::arg("packed_size"), py::arg("destination") = py::none())
+      .def(
+          "create_unpack",
+          [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets,
+             std::vector<int32_t> &shape,
+             std::optional<Value> destination) -> Value {
+            if (destination.has_value())
+              return self.create<xsmt::UnpackOp>(base, offsets,
+                                                 destination.value(), shape);
+            return self.create<xsmt::UnpackOp>(base, offsets, shape);
+          },
+          py::arg("base"), py::arg("offsets"), py::arg("shape"),
+          py::arg("destination") = py::none())
+      .def(
+          "create_repack",
+          [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets,
+             std::vector<int32_t> &shape, std::vector<int32_t> &packed_size,
+             std::optional<Value> destination) -> Value {
+            if (destination.has_value())
+              return self.create<xsmt::RepackOp>(
+                  base, offsets, destination.value(), shape, packed_size);
+            return self.create<xsmt::RepackOp>(base, offsets, shape,
+                                               packed_size);
+          },
+          py::arg("base"), py::arg("offsets"), py::arg("shape"),
+          py::arg("packed_size"), py::arg("destination") = py::none())
+      .def("create_subview",
            [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets,
-              std::vector<int32_t> &shape,
-              std::vector<int32_t> &packed_size) -> Value {
-             return self.create<xsmt::ViewOp>(base, offsets, shape,
-                                              packed_size);
+              std::vector<int32_t> &shape) -> Value {
+             return self.create<xsmt::SubviewOp>(base, offsets, shape);
            })
-      .def("create_viewptr",
+      .def("create_subview_pack",
            [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets,
               std::vector<int32_t> &shape,
               std::vector<int32_t> &packed_size) -> Value {
-             return self.create<xsmt::ViewPtrOp>(base, offsets, shape,
-                                                 packed_size);
+             return self.create<xsmt::SubviewPackOp>(base, offsets, shape,
+                                                     packed_size);
            })
       .def("create_alloc",
            [](TritonOpBuilder &self, std::vector<int32_t> &shape,
