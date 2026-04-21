@@ -96,9 +96,14 @@ jobs:
         if: steps.cache-speir.outputs.cache-hit != 'true'
         run: |
           curl -k -L -o speir.tar.gz ${{ env.SPEIR_URL }}
+          mkdir -p /tmp/speir_tmp
+          tar -xf speir.tar.gz -C /tmp/speir_tmp
+          REAL_SPEIR_ROOT=$(dirname $(find /tmp/speir_tmp -type d -name "bin" | head -n 1))
+          echo "Found actual SPEIR root at: $REAL_SPEIR_ROOT"
           mkdir -p speir_installed
-          tar -xf speir.tar.gz -C speir_installed --strip-components=6
-          rm speir.tar.gz
+          cp -a "$REAL_SPEIR_ROOT"/* speir_installed/
+          rm -rf /tmp/speir_tmp speir.tar.gz
+          ls -la speir_installed/bin/
 
       - name: Cache LLVM
         id: cache-llvm
