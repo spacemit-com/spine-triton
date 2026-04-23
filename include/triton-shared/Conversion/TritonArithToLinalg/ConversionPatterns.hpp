@@ -1437,33 +1437,6 @@ struct MatmulConverter : public OpConversionPattern<triton::DotOp> {
     return false;
   }
 
-  // Create an elementwise f16->f32 extension using a linalg.generic
-  Value createElementwiseFPExtTensor(ConversionPatternRewriter &rewriter,
-                                     Location loc, Value input,
-                                     RankedTensorType dstType) const {
-    auto srcType = cast<RankedTensorType>(input.getType());
-    int64_t rank = srcType.getRank();
-
-    auto empty = tensor::EmptyOp::create(rewriter, loc, dstType.getShape(),
-                                         dstType.getElementType());
-
-    SmallVector<AffineMap> indexingMaps(2,
-                                        rewriter.getMultiDimIdentityMap(rank));
-    SmallVector<utils::IteratorType> iteratorTypes(
-        rank, utils::IteratorType::parallel);
-
-    auto generic = linalg::GenericOp::create(
-        rewriter, loc, dstType, ValueRange{input}, ValueRange{empty},
-        indexingMaps, iteratorTypes,
-        [&](OpBuilder &b, Location nestedLoc, ValueRange args) {
-          Value ext = arith::ExtFOp::create(b, nestedLoc,
-                                            dstType.getElementType(), args[0]);
-          linalg::YieldOp::create(b, nestedLoc, ext);
-        });
-
-    return generic.getResult(0);
-  }
-
   LogicalResult
   matchAndRewrite(triton::DotOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -1491,45 +1464,9 @@ struct MatmulConverter : public OpConversionPattern<triton::DotOp> {
     bool integers = dstElemType.isInteger();
     bool skipC = isZeroTensor(opc, integers);
 
-    // detect special case: inputs are f16 and destination is f32
-    auto aType = cast<RankedTensorType>(opa.getType());
-    auto bType = cast<RankedTensorType>(opb.getType());
-    auto aElemType = aType.getElementType();
-    auto bElemType = bType.getElementType();
-
-    bool useF16AccumThenCastToF32 =
-        aElemType.isF16() && bElemType.isF16() && dstElemType.isF32();
-
     Value res;
 
-    if (useF16AccumThenCastToF32) {
-      // create f16 outs for matmul
-      Type f16Ty = Float16Type::get(rewriter.getContext());
-      auto matmulDstType = RankedTensorType::get(dstType.getShape(), f16Ty);
-
-      auto init = tensor::EmptyOp::create(rewriter, loc,
-                                          matmulDstType.getShape(), f16Ty);
-      auto zeroAttr = rewriter.getFloatAttr(f16Ty, 0.0);
-      auto zero = arith::ConstantOp::create(rewriter, loc, f16Ty, zeroAttr);
-      auto zeroes = linalg::FillOp::create(rewriter, loc, ValueRange{zero},
-                                           ValueRange{init})
-                        .result();
-
-      auto matmulOp = linalg::MatmulOp::create(
-          rewriter, loc, ValueRange{opa, opb}, ValueRange{zeroes});
-      for (auto &kv : annotations) {
-        matmulOp->setAttr(kv.getFirst(), kv.getSecond());
-      }
-
-      Value f16Res = matmulOp.getResult(0);
-
-      // elementwise extend to f32
-      res = createElementwiseFPExtTensor(rewriter, loc, f16Res, dstType);
-
-      if (!skipC) {
-        res = arith::AddFOp::create(rewriter, loc, opc, res);
-      }
-    } else {
+    {
       auto init = tensor::EmptyOp::create(rewriter, loc, dstType.getShape(),
                                           dstElemType);
 
