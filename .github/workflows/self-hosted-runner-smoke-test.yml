@@ -1,5 +1,7 @@
 name: Self-hosted Runner Smoke Test
 
+permissions: {}
+
 on:
   workflow_dispatch:
 
