@@ -1,0 +1,11 @@
+name: Self-hosted Runner Smoke Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke-test:
+    runs-on: self-hosted
+    steps:
+      - name: Verify self-hosted runner availability
+        run: echo "Self-hosted runner is reachable."
