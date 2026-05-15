@@ -8,8 +8,7 @@ on:
 
 jobs:
   connectivity-check:
-    runs-on:
-      group: riscv-runners
+    runs-on: self-hosted
     timeout-minutes: 10
     steps:
       - name: Confirm self-hosted runner is reachable
