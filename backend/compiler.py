@@ -32,15 +32,13 @@ def _ttir_to_linalgdir(mod, metadata):
         Path(src_path).write_text(ttir_code)
         dump_ir_if_needed([src_path], metadata["name"])
         spine_triton_opt_path = get_spine_triton_opt_path()
-        subprocess.check_call(
-            [
-                spine_triton_opt_path,
-                src_path,
-                "--triton-to-linalg-experimental",
-                "-o",
-                dst_path,
-            ]
-        )
+        subprocess.check_call([
+            spine_triton_opt_path,
+            src_path,
+            "--triton-to-linalg-experimental",
+            "-o",
+            dst_path,
+        ])
         dump_ir_if_needed([dst_path], metadata["name"])
         return Path(dst_path).read_text()
 
@@ -63,9 +61,8 @@ def _spine_mlir_linalgdir_to_llir_ref(linalgdir: str, metadata):
         if pipeline_option_str == "":
             pipeline_option_str = "enable-always-tls={}".format("0" if metadata["smt_parallel_inside"] else "1")
 
-        cmd_str = '{} {} --spine-triton-e2e-ref-pipeline="{}" -o {}'.format(
-            spine_mlir_path, linalg_path, pipeline_option_str, llmlir_path
-        )
+        cmd_str = '{} {} --spine-triton-e2e-ref-pipeline="{}" -o {}'.format(spine_mlir_path, linalg_path,
+                                                                            pipeline_option_str, llmlir_path)
         subprocess.check_call(
             cmd_str,
             shell=True,
@@ -73,9 +70,7 @@ def _spine_mlir_linalgdir_to_llir_ref(linalgdir: str, metadata):
 
         # LLVM-MLIR to LLVM-IR
         mlir_translate_path = get_llvm_bin_path("mlir-translate")
-        subprocess.check_call(
-            [mlir_translate_path, llmlir_path, "--mlir-to-llvmir", "-o", llir_path]
-        )
+        subprocess.check_call([mlir_translate_path, llmlir_path, "--mlir-to-llvmir", "-o", llir_path])
         dump_ir_if_needed([llmlir_path, llir_path], metadata["name"])
         return Path(llir_path).read_text()
 
@@ -90,11 +85,11 @@ def _spine_mlir_linalgdir_to_llir(linalgdir: str, metadata):
 
         pipeline_option_str = get_spine_mlir_opt_options()
         if pipeline_option_str == "":
-            pipeline_option_str = "enable-always-tls={}".format("0" if metadata["smt_parallel_inside"] else "1")
+            pipeline_option_str = "enable-always-tls={} enable-fuse-group=false".format(
+                "0" if metadata["smt_parallel_inside"] else "1")
 
-        cmd_str = '{} {} --spine-triton-e2e-pipeline="{}" -o {}'.format(
-            spine_mlir_path, linalg_path, pipeline_option_str, llmlir_path
-        )
+        cmd_str = '{} {} --spine-triton-e2e-pipeline="{}" -o {}'.format(spine_mlir_path, linalg_path,
+                                                                        pipeline_option_str, llmlir_path)
         subprocess.check_call(
             cmd_str,
             shell=True,
@@ -105,26 +100,21 @@ def _spine_mlir_linalgdir_to_llir(linalgdir: str, metadata):
         base_path = os.getenv("SPINE_TRITON_DUMP_PATH", "")
         if base_path:
             llmlir_new_path = os.path.join(tmpdir, "ll_with_debuginfo.mlir")
-            subprocess.check_call(
-                [
-                    spine_mlir_path,
-                    os.path.join(
-                        base_path,
-                        metadata["name"] + "_" + os.path.basename(llmlir_path),
-                    ),
-                    "--ensure-debug-info-scope-on-llvm-func",
-                    "-mlir-print-debuginfo",
-                    "-o",
-                    llmlir_new_path,
-                ]
-            )
+            subprocess.check_call([
+                spine_mlir_path,
+                os.path.join(
+                    base_path,
+                    metadata["name"] + "_" + os.path.basename(llmlir_path),
+                ),
+                "--ensure-debug-info-scope-on-llvm-func",
+                "-mlir-print-debuginfo",
+                "-o",
+                llmlir_new_path,
+            ])
 
         # LLVM-MLIR to LLVM-IR
         mlir_translate_path = get_llvm_bin_path("mlir-translate")
-        subprocess.check_call(
-            [mlir_translate_path, llmlir_new_path,
-                "--mlir-to-llvmir", "-o", llir_path]
-        )
+        subprocess.check_call([mlir_translate_path, llmlir_new_path, "--mlir-to-llvmir", "-o", llir_path])
         dump_ir_if_needed([llir_path], metadata["name"])
         return Path(llir_path).read_text()
 
@@ -153,31 +143,22 @@ def _llir_to_so(llir: str, metadata):
         llopt_flags = []
         if cpu_arch == "riscv64":
             llopt_flags.extend([
-                "--march=riscv64",
-                "-mcpu={}".format(ai_cpu_arch) if ai_cpu_arch is not None else "",
-                "-passes=loop-vectorize",
-                "--pass-remarks-missed",
-                "-force-vector-width=32",
+                "--march=riscv64", "-mcpu={}".format(ai_cpu_arch) if ai_cpu_arch is not None else "",
+                "-passes=loop-vectorize", "--pass-remarks-missed", "-force-vector-width=32",
                 "-force-vector-interleave=2"
             ])
 
-        subprocess.check_call(
-            [llopt_path, src_path, *llopt_flags, "-o", src_opt_path]
-        )
+        subprocess.check_call([llopt_path, src_path, *llopt_flags, "-o", src_opt_path])
 
         llc_path = get_llvm_bin_path("llc")
         llc_flags = ["-O3", "--float-abi=hard", "--relocation-model=pic"]
         if cpu_arch == "riscv64":
-            llc_flags.extend(
-                [
-                    "--march=riscv64",
-                    "-mcpu={}".format(ai_cpu_arch) if ai_cpu_arch is not None else "",
-                ]
-            )
+            llc_flags.extend([
+                "--march=riscv64",
+                "-mcpu={}".format(ai_cpu_arch) if ai_cpu_arch is not None else "",
+            ])
 
-        subprocess.check_call(
-            [llc_path, src_opt_path, *llc_flags, "-filetype=obj", "-o", dst_path]
-        )
+        subprocess.check_call([llc_path, src_opt_path, *llc_flags, "-filetype=obj", "-o", dst_path])
         dump_ir_if_needed([dst_path], metadata["name"])
         import sys
 
@@ -186,9 +167,7 @@ def _llir_to_so(llir: str, metadata):
         if platform.system() == "Windows":
             py_include_dir = os.path.join(sys.base_prefix, "include")
             py_lib_dir = os.path.join(sys.base_prefix, "libs")
-            py_lib = "{name}{major}{minor}.lib".format(
-                name="python", major=py_version.major, minor=py_version.minor
-            )
+            py_lib = "{name}{major}{minor}.lib".format(name="python", major=py_version.major, minor=py_version.minor)
         else:
             py_include_dir = os.path.join(
                 sys.base_prefix,
@@ -196,9 +175,7 @@ def _llir_to_so(llir: str, metadata):
                 f"python{sys.version_info.major}.{sys.version_info.minor}",
             )
             py_lib_dir = os.path.join(sys.base_prefix, "lib")
-            py_lib = "{name}{major}.{minor}".format(
-                name="python", major=py_version.major, minor=py_version.minor
-            )
+            py_lib = "{name}{major}.{minor}".format(name="python", major=py_version.major, minor=py_version.minor)
         cpu_backend_path = Path(__file__).resolve().parent
         include_dir = os.path.join(cpu_backend_path, "include")
         so_path = os.path.join(tmpdir, ".so")
@@ -208,26 +185,23 @@ def _llir_to_so(llir: str, metadata):
 
         gcc_flags = []
         if cpu_arch == "riscv64":
-            gcc_flags.extend(
-                ["-march=rv64gcv_zfh_zba_zicbop", "-mabi=lp64d", "-O3"])
-        subprocess.check_call(
-            [
-                "g++",
-                "-std=c++17",
-                *gcc_flags,
-                dst_path,
-                f"-I{py_include_dir}",
-                f"-I{include_dir}",
-                f"-L{py_lib_dir}",
-                f"-L{runtime_lib_dir}",
-                "-shared",
-                f"-l{py_lib}",
-                "-lSpineTritonRuntime",
-                "-fPIC",
-                "-o",
-                so_path,
-            ]
-        )
+            gcc_flags.extend(["-march=rv64gcv_zfh_zba_zicbop", "-mabi=lp64d", "-O3"])
+        subprocess.check_call([
+            "g++",
+            "-std=c++17",
+            *gcc_flags,
+            dst_path,
+            f"-I{py_include_dir}",
+            f"-I{include_dir}",
+            f"-L{py_lib_dir}",
+            f"-L{runtime_lib_dir}",
+            "-shared",
+            f"-l{py_lib}",
+            "-lSpineTritonRuntime",
+            "-fPIC",
+            "-o",
+            so_path,
+        ])
         dump_ir_if_needed([so_path], metadata["name"])
         with open(so_path, "rb") as f:
             return f.read()
@@ -249,15 +223,14 @@ class CPUOptions:
     # Target specific backends can eanble it with supported types.
     supported_fp8_dtypes: Tuple[str] = ()
     allow_fp8e4nv: bool = False
-    allowed_dot_input_precisions: Tuple[str] = ("ieee",)
+    allowed_dot_input_precisions: Tuple[str] = ("ieee", )
     sanitize_overflow: bool = True
 
     def __post_init__(self):
         pass
 
     def hash(self):
-        key = "_".join([f"{name}-{val}" for name,
-                       val in self.__dict__.items()])
+        key = "_".join([f"{name}-{val}" for name, val in self.__dict__.items()])
         return hashlib.md5(key.encode("utf-8")).hexdigest()
 
 
@@ -275,10 +248,7 @@ class CPUBackend(BaseBackend):
         if "instrumentation_mode" in opts:
             opts.pop("instrumentation_mode")
         args = {"arch": self.target.arch}
-        args.update(
-            {k: opts[k]
-                for k in CPUOptions.__dataclass_fields__.keys() if k in opts}
-        )
+        args.update({k: opts[k] for k in CPUOptions.__dataclass_fields__.keys() if k in opts})
         return CPUOptions(**args)
 
     def get_codegen_implementation(self, options):
@@ -333,23 +303,15 @@ class CPUBackend(BaseBackend):
         return mod
 
     def add_stages(self, stages, options, language):
-        stages["ttir"] = lambda src, metadata: self.make_ttir(
-            src, metadata, options)
-        stages["linalgdir"] = lambda src, metadata: _optimize_linalgdir(
-            _ttir_to_linalgdir(src, metadata)
-        )
+        stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
+        stages["linalgdir"] = lambda src, metadata: _optimize_linalgdir(_ttir_to_linalgdir(src, metadata))
 
         use_ref_pipeline = int(os.getenv("SPINE_TRITON_USE_REF_PIPELINE", "0")) > 0
-        spine_mlir_path = get_spine_mlir_opt_path()
 
         if not use_ref_pipeline:
-            stages["llir"] = lambda src, metadata: _optimize_llir(
-                _spine_mlir_linalgdir_to_llir(src, metadata)
-            )
+            stages["llir"] = lambda src, metadata: _optimize_llir(_spine_mlir_linalgdir_to_llir(src, metadata))
         else:
-            stages["llir"] = lambda src, metadata: _optimize_llir(
-                _spine_mlir_linalgdir_to_llir_ref(src, metadata)
-            )
+            stages["llir"] = lambda src, metadata: _optimize_llir(_spine_mlir_linalgdir_to_llir_ref(src, metadata))
 
         stages["so"] = lambda src, metadata: _llir_to_so(src, metadata)
 
@@ -375,16 +337,13 @@ def get_cache_sizes():
     results = []
     for cache_level in ["L1", "L2", "L3"]:  # Enforce order
         try:
-            output = subprocess.check_output(
-                cache_cmd[cache_level], shell=True
-            ).decode()
+            output = subprocess.check_output(cache_cmd[cache_level], shell=True).decode()
         except Exception as e:
             print(f"Command execution failed: {e}")
             results.append(0)
             continue
 
-        match = re.search(
-            r"(\d+)\s*([KMG]?i?B)\s*\((\d+)\s*instances\)", output)
+        match = re.search(r"(\d+)\s*([KMG]?i?B)\s*\((\d+)\s*instances\)", output)
         matchNoinstances = re.search(r"(\d+)\s*([KMG]?i?B)", output)
         if match:
             total_size, unit, instances = match.groups()
@@ -396,8 +355,7 @@ def get_cache_sizes():
             continue
 
         unit = unit.lower().rstrip("ib")
-        bytes_per_instance = (
-            int(total_size) * unit_map[unit]) // int(instances)
+        bytes_per_instance = (int(total_size) * unit_map[unit]) // int(instances)
         results.append(bytes_per_instance)
 
     return results  # Format: [L1_size, L2_size, L3_size] in bytes
