@@ -3,7 +3,9 @@ import triton
 import triton.language as tl
 import triton.language.extra.smt as smt
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
+
 
 @triton.jit
 def mm_kernel(
@@ -57,7 +59,7 @@ def mm_kernel(
         b = smt.view(b_descriptor_load, (0, 0), (BLOCK_SIZE_K, BLOCK_SIZE_N), (MICRO_K, MICRO_N))
         sub_num = (min(BLOCK_SIZE_M, M - BLOCK_SIZE_M * pid_m) + SUB_BLK_M - 1) // SUB_BLK_M
         for s in smt.parallel(0, sub_num):
-            a_descriptor_load = smt.descriptor_load(a_block_ptr, (0,0))
+            a_descriptor_load = smt.descriptor_load(a_block_ptr, (0, 0))
             a = smt.view(a_descriptor_load, (s * SUB_BLK_M, 0), (SUB_BLK_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K))
             accumulator = smt.dot(a, b)
             accumulator = smt.view(accumulator, (0, 0), (SUB_BLK_M, BLOCK_SIZE_N), (1, 1))
@@ -66,17 +68,17 @@ def mm_kernel(
                 base=c_ptr,
                 shape=[M, N],
                 strides=[stride_cm, stride_cn],
-                offsets=[pid_m * BLOCK_SIZE_M + s*SUB_BLK_M, pid_n * BLOCK_SIZE_N],
+                offsets=[pid_m * BLOCK_SIZE_M + s * SUB_BLK_M, pid_n * BLOCK_SIZE_N],
                 block_shape=[SUB_BLK_M, BLOCK_SIZE_N],
                 order=[1, 0],
             )
-            tl.store(c_block_ptr,c,boundary_check=(0, 1))
+            tl.store(c_block_ptr, c, boundary_check=(0, 1))
 
     elif SPLIT_MN:
         sub_num_m = (min(BLOCK_SIZE_M, M - BLOCK_SIZE_M * pid_m) + SUB_BLK_M - 1) // SUB_BLK_M
         sub_num_n = (min(BLOCK_SIZE_N, N - BLOCK_SIZE_N * pid_n) + SUB_BLK_N - 1) // SUB_BLK_N
         total_sub_blocks = sub_num_m * sub_num_n
-        b_alloc_ptr =  smt.alloc(shape=[BLOCK_SIZE_K, BLOCK_SIZE_N])
+        b_alloc_ptr = smt.alloc(shape=[BLOCK_SIZE_K, BLOCK_SIZE_N])
         b_alloc_view_ptr = smt.view(b_alloc_ptr, (0, 0), (BLOCK_SIZE_K, BLOCK_SIZE_N), (MICRO_K, MICRO_N))
         bar0 = smt.mbarrier(flag=0, expect_count=1)
         bar1 = smt.mbarrier(flag=0, expect_count=1)
@@ -108,11 +110,11 @@ def mm_kernel(
                 base=c_ptr,
                 shape=[M, N],
                 strides=[stride_cm, stride_cn],
-                offsets=[pid_m * BLOCK_SIZE_M + s_m*SUB_BLK_M, pid_n * BLOCK_SIZE_N+s_n*SUB_BLK_N],
+                offsets=[pid_m * BLOCK_SIZE_M + s_m * SUB_BLK_M, pid_n * BLOCK_SIZE_N + s_n * SUB_BLK_N],
                 block_shape=[SUB_BLK_M, SUB_BLK_N],
                 order=[1, 0],
             )
-            tl.store(c_block_ptr,c,boundary_check=(0, 1))
+            tl.store(c_block_ptr, c, boundary_check=(0, 1))
 
     elif SPLIT_K:
         accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=a_ptr.type.element_ty)
@@ -179,11 +181,12 @@ def triton_mm(a, b):
         SUB_BLK_M=8,
         SUB_BLK_N=64,
         SUB_BLK_K=256,
-        MICRO_M=16,
+        MICRO_M=32,
         MICRO_N=32,
-        MICRO_K=8,
+        MICRO_K=32,
     )
     return c
+
 
 def _run_correctness(M: int, N: int, K: int, dtype=torch.float16, device: str = "cpu"):
     A = torch.randn((M, K), dtype=dtype, device=device, requires_grad=False)
@@ -229,10 +232,8 @@ def benchmark_gops(
     ops = 2.0 * float(M) * float(N) * float(K)
     gops = ops / avg_s / 1e9
 
-    print(
-        f"[PERF] M={M}, N={N}, K={K}, iters={iters}, "
-        f"avg={avg_s * 1e3:.3f} ms, GOPS={gops:.3f}"
-    )
+    print(f"[PERF] M={M}, N={N}, K={K}, iters={iters}, "
+          f"avg={avg_s * 1e3:.3f} ms, GOPS={gops:.3f}")
 
 
 # Run perf by env var:

@@ -155,6 +155,7 @@ def _llir_to_so(llir: str, metadata):
         if cpu_arch == "riscv64":
             llc_flags.extend([
                 "--march=riscv64",
+                "--mattr=64bit,a,b,c,d,f,i,m,v,zfh,zvfh,zmatrix,zicbop,zicbom,zicboz",
                 "-mcpu={}".format(ai_cpu_arch) if ai_cpu_arch is not None else "",
             ])
 
