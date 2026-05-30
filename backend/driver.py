@@ -485,6 +485,110 @@ class CPULauncher(object):
         self.launch(*args, **kwargs)
 
 
+class RPCLauncher(object):
+    """Launcher that sends compiled kernel to a remote RISC-V device via RPC."""
+
+    _client = None
+    _kernel_cache = {}
+
+    @classmethod
+    def get_client(cls):
+        if cls._client is None:
+            from .rpc_client import SpineTritonRPCClient
+            host = os.environ.get("SPINE_TRITON_RPC_HOST", "127.0.0.1")
+            port = int(os.environ.get("SPINE_TRITON_RPC_PORT", "9999"))
+            if ":" in host:
+                host, port_str = host.rsplit(":", 1)
+                port = int(port_str)
+            cls._client = SpineTritonRPCClient(host, port)
+            cls._client.connect()
+        return cls._client
+
+    def __init__(self, src, metadata):
+        self.metadata = metadata
+        self.client = self.get_client()
+
+        # Get the compiled .so binary
+        binary = src.asm.get("so")
+        if not binary:
+            raise RuntimeError("No .so binary in compiled kernel")
+
+        kernel_name = metadata.name if hasattr(metadata, 'name') else "unknown"
+        cache_key = f"{kernel_name}_{hash(binary)}"
+
+        if cache_key in RPCLauncher._kernel_cache:
+            self.kernel_handle = RPCLauncher._kernel_cache[cache_key]
+        else:
+            self.kernel_handle = self.client.load_kernel(kernel_name, binary)
+            RPCLauncher._kernel_cache[cache_key] = self.kernel_handle
+
+    def __call__(self, gridX, gridY, gridZ, stream, function,
+                 kernel_metadata, launch_metadata,
+                 launch_enter_hook, launch_exit_hook, *args):
+        if launch_enter_hook is not None:
+            launch_enter_hook(launch_metadata)
+
+        # Prepare arguments: transfer tensor data to remote device
+        rpc_args = []
+        remote_addrs = []
+        for arg in args:
+            if hasattr(arg, 'data_ptr'):
+                # PyTorch tensor
+                import torch
+                data = arg.cpu().contiguous().numpy().tobytes()
+                addr = self.client.alloc_memory(len(data))
+                self.client.write_memory(addr, data)
+                rpc_args.append(addr)
+                remote_addrs.append((addr, arg, len(data)))
+            elif isinstance(arg, int):
+                rpc_args.append(arg)
+            elif isinstance(arg, float):
+                rpc_args.append(arg)
+            else:
+                # Try to get data_ptr from the object
+                try:
+                    ptr_val = int(arg)
+                    rpc_args.append(ptr_val)
+                except (TypeError, ValueError):
+                    rpc_args.append(0)
+
+        # Execute kernel
+        self.client.execute_kernel(
+            self.kernel_handle,
+            (gridX, gridY, gridZ),
+            rpc_args
+        )
+
+        # Read back output tensors
+        for addr, tensor, size in remote_addrs:
+            import numpy as np
+            data = self.client.read_memory(addr, size)
+            arr = np.frombuffer(data, dtype=self._torch_to_numpy_dtype(tensor.dtype))
+            arr = arr.reshape(tensor.shape)
+            tensor.copy_(torch.from_numpy(arr))
+            self.client.free_memory(addr)
+
+        if launch_exit_hook is not None:
+            launch_exit_hook(launch_metadata)
+
+    @staticmethod
+    def _torch_to_numpy_dtype(dtype):
+        import numpy as np
+        import torch
+        mapping = {
+            torch.float16: np.float16,
+            torch.float32: np.float32,
+            torch.float64: np.float64,
+            torch.int8: np.int8,
+            torch.int16: np.int16,
+            torch.int32: np.int32,
+            torch.int64: np.int64,
+            torch.uint8: np.uint8,
+            torch.bfloat16: np.float16,
+        }
+        return mapping.get(dtype, np.float32)
+
+
 class CPUDeviceInterface:
 
     class HooksTimeAccessor:
@@ -545,8 +649,17 @@ class CPUDriver(DriverBase):
     def __init__(self):
         super().__init__()
         self.utils = CPUUtils()
-        self.launcher_cls = CPULauncher
         self.binary_ext = "so"
+
+        # Detect RPC mode
+        rpc_host = os.environ.get("SPINE_TRITON_RPC_HOST", "")
+        if rpc_host:
+            self.launcher_cls = RPCLauncher
+            self.rpc_mode = True
+        else:
+            self.launcher_cls = CPULauncher
+            self.rpc_mode = False
+
         self.current_arch_id = self.utils.get_arch_id()
         self.cpu_arch = get_cpu_name_from_arch_id(self.current_arch_id)
         self.num_cores = self.utils.get_num_cores()
@@ -580,6 +693,13 @@ class CPUDriver(DriverBase):
         return
 
     def get_current_target(self):
+        if self.rpc_mode:
+            # In RPC mode, target is the remote RISC-V device
+            target_arch_id = os.environ.get("SPACEMIT_EP_QEMU_SET_CORE_ARCH", "0xF000")
+            target_cpu = get_cpu_name_from_arch_id(target_arch_id)
+            num_threads = int(os.environ.get("SPINE_TRITON_RPC_THREADS", "8"))
+            return AICPUTarget("cpu", target_cpu, 0, 8, num_threads,
+                               target_arch_id, num_threads, self.force_vector_interleave)
         return AICPUTarget("cpu", self.cpu_arch, 0, self.num_cores, self.num_of_stream_threads, self.current_arch_id,
                            self.num_of_stream_threads, self.force_vector_interleave)
 

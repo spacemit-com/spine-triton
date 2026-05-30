@@ -125,13 +125,16 @@ def _optimize_llir(llir: str):
 
 
 def _llir_to_so(llir: str, metadata):
-    cpu_arch = platform.machine()
+    host_arch = platform.machine()
     target_arch_id = metadata["target"].arch_id
     ai_cpu_arch = get_cpu_name_from_arch_id(target_arch_id)
 
     if ai_cpu_arch == "spacemit-a60":
-        # special case for a60
         ai_cpu_arch = "spacemit-x60"
+
+    # Determine if we're cross-compiling (x86 host targeting riscv64)
+    target_arch = os.getenv("SPINE_TRITON_TARGET_ARCH", host_arch)
+    cross_toolchain = os.getenv("SPINE_TRITON_CROSS_TOOLCHAIN", "")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, ".ll")
@@ -141,7 +144,7 @@ def _llir_to_so(llir: str, metadata):
 
         llopt_path = get_llvm_bin_path("opt")
         llopt_flags = []
-        if cpu_arch == "riscv64":
+        if target_arch == "riscv64":
             llopt_flags.extend([
                 "--march=riscv64", "-mcpu={}".format(ai_cpu_arch) if ai_cpu_arch is not None else "",
                 "-passes=loop-vectorize", "--pass-remarks-missed", "-force-vector-width=32",
@@ -152,7 +155,7 @@ def _llir_to_so(llir: str, metadata):
 
         llc_path = get_llvm_bin_path("llc")
         llc_flags = ["-O3", "--float-abi=hard", "--relocation-model=pic"]
-        if cpu_arch == "riscv64":
+        if target_arch == "riscv64":
             llc_flags.extend([
                 "--march=riscv64",
                 "--mattr=64bit,a,b,c,d,f,i,m,v,zfh,zvfh,zmatrix,zicbop,zicbom,zicboz",
@@ -161,48 +164,71 @@ def _llir_to_so(llir: str, metadata):
 
         subprocess.check_call([llc_path, src_opt_path, *llc_flags, "-filetype=obj", "-o", dst_path])
         dump_ir_if_needed([dst_path], metadata["name"])
-        import sys
 
-        py_version = sys.version_info
-        cpu_arch = platform.machine()
-        if platform.system() == "Windows":
-            py_include_dir = os.path.join(sys.base_prefix, "include")
-            py_lib_dir = os.path.join(sys.base_prefix, "libs")
-            py_lib = "{name}{major}{minor}.lib".format(name="python", major=py_version.major, minor=py_version.minor)
-        else:
-            py_include_dir = os.path.join(
-                sys.base_prefix,
-                "include",
-                f"python{sys.version_info.major}.{sys.version_info.minor}",
-            )
-            py_lib_dir = os.path.join(sys.base_prefix, "lib")
-            py_lib = "{name}{major}.{minor}".format(name="python", major=py_version.major, minor=py_version.minor)
         cpu_backend_path = Path(__file__).resolve().parent
         include_dir = os.path.join(cpu_backend_path, "include")
         so_path = os.path.join(tmpdir, ".so")
-
-        # Runtime library path for spine_print_unranked_memref
         runtime_lib_dir = os.path.join(cpu_backend_path.parent.parent, "_C")
 
-        gcc_flags = []
-        if cpu_arch == "riscv64":
-            gcc_flags.extend(["-march=rv64gcv_zfh_zba_zicbop", "-mabi=lp64d", "-O3"])
-        subprocess.check_call([
-            "g++",
-            "-std=c++17",
-            *gcc_flags,
-            dst_path,
-            f"-I{py_include_dir}",
-            f"-I{include_dir}",
-            f"-L{py_lib_dir}",
-            f"-L{runtime_lib_dir}",
-            "-shared",
-            f"-l{py_lib}",
-            "-lSpineTritonRuntime",
-            "-fPIC",
-            "-o",
-            so_path,
-        ])
+        if target_arch == "riscv64" and host_arch != "riscv64":
+            assert os.path.exists(cross_toolchain), "Cross-compilation toolchain path does not exist: {}".format(cross_toolchain)
+            # Cross-compilation mode: use cross-compile toolchain
+            cc = os.path.join(cross_toolchain, "bin", "clang++")
+            sysroot = os.path.join(cross_toolchain, "sysroot")
+            subprocess.check_call([
+                cc,
+                "--target=riscv64-unknown-linux-gnu",
+                f"--sysroot={sysroot}",
+                "-std=c++17",
+                "-march=rv64gcv_zfh_zba_zicbop",
+                "-mabi=lp64d",
+                "-O3",
+                dst_path,
+                f"-I{include_dir}",
+                "-shared",
+                "-fPIC",
+                "-fuse-ld=lld",
+                "-nostdlib++",
+                "-o",
+                so_path,
+            ])
+        else:
+            # Native compilation mode (original behavior)
+            import sys
+            py_version = sys.version_info
+            if platform.system() == "Windows":
+                py_include_dir = os.path.join(sys.base_prefix, "include")
+                py_lib_dir = os.path.join(sys.base_prefix, "libs")
+                py_lib = "{name}{major}{minor}.lib".format(name="python", major=py_version.major, minor=py_version.minor)
+            else:
+                py_include_dir = os.path.join(
+                    sys.base_prefix,
+                    "include",
+                    f"python{sys.version_info.major}.{sys.version_info.minor}",
+                )
+                py_lib_dir = os.path.join(sys.base_prefix, "lib")
+                py_lib = "{name}{major}.{minor}".format(name="python", major=py_version.major, minor=py_version.minor)
+
+            gcc_flags = []
+            if target_arch == "riscv64":
+                gcc_flags.extend(["-march=rv64gcv_zfh_zba_zicbop", "-mabi=lp64d", "-O3"])
+            subprocess.check_call([
+                "g++",
+                "-std=c++17",
+                *gcc_flags,
+                dst_path,
+                f"-I{py_include_dir}",
+                f"-I{include_dir}",
+                f"-L{py_lib_dir}",
+                f"-L{runtime_lib_dir}",
+                "-shared",
+                f"-l{py_lib}",
+                "-lSpineTritonRuntime",
+                "-fPIC",
+                "-o",
+                so_path,
+            ])
+
         dump_ir_if_needed([so_path], metadata["name"])
         with open(so_path, "rb") as f:
             return f.read()
