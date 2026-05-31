@@ -490,6 +490,7 @@ class RPCLauncher(object):
 
     _client = None
     _kernel_cache = {}
+    last_instance = None
 
     @classmethod
     def get_client(cls):
@@ -507,20 +508,30 @@ class RPCLauncher(object):
     def __init__(self, src, metadata):
         self.metadata = metadata
         self.client = self.get_client()
+        self.kernel_handle = None
+        RPCLauncher.last_instance = self
 
-        # Get the compiled .so binary
-        binary = src.asm.get("so")
-        if not binary:
-            raise RuntimeError("No .so binary in compiled kernel")
+        # Save signature info to filter constexpr args at call time
+        signature = src.signature if hasattr(src, "signature") else {}
 
-        kernel_name = metadata.name if hasattr(metadata, 'name') else "unknown"
-        cache_key = f"{kernel_name}_{hash(binary)}"
+        def cst_key(i):
+            if hasattr(src, 'fn') and hasattr(src.fn, 'arg_names'):
+                return src.fn.arg_names.index(i) if isinstance(i, str) else i
+            return i
 
+        self._signature = {cst_key(key): value for key, value in signature.items()}
+        # Identify constexpr arg indices from signature
+        self._constexpr_indices = {k for k, v in self._signature.items() if v == 'constexpr'}
+
+    def load_kernel_binary(self, name, binary):
+        """Load kernel binary to remote device via RPC. Called by rpc_load_binary."""
+        cache_key = f"{name}_{hash(binary)}"
         if cache_key in RPCLauncher._kernel_cache:
             self.kernel_handle = RPCLauncher._kernel_cache[cache_key]
         else:
-            self.kernel_handle = self.client.load_kernel(kernel_name, binary)
+            self.kernel_handle = self.client.load_kernel(name, binary)
             RPCLauncher._kernel_cache[cache_key] = self.kernel_handle
+        return self.kernel_handle
 
     def __call__(self, gridX, gridY, gridZ, stream, function,
                  kernel_metadata, launch_metadata,
@@ -529,28 +540,42 @@ class RPCLauncher(object):
             launch_enter_hook(launch_metadata)
 
         # Prepare arguments: transfer tensor data to remote device
-        rpc_args = []
+        # Filter out constexpr args (they are baked into the compiled kernel)
+        rpc_args = []  # list of (type_tag, value)
         remote_addrs = []
+        arg_idx = 0
         for arg in args:
+            # Skip constexpr arguments
+            if arg_idx in self._constexpr_indices:
+                arg_idx += 1
+                continue
+            sig_type = self._signature.get(arg_idx, "")
+            arg_idx += 1
+
             if hasattr(arg, 'data_ptr'):
-                # PyTorch tensor
                 import torch
                 data = arg.cpu().contiguous().numpy().tobytes()
                 addr = self.client.alloc_memory(len(data))
                 self.client.write_memory(addr, data)
-                rpc_args.append(addr)
+                rpc_args.append(('ptr', addr))
                 remote_addrs.append((addr, arg, len(data)))
-            elif isinstance(arg, int):
-                rpc_args.append(arg)
-            elif isinstance(arg, float):
-                rpc_args.append(arg)
-            else:
-                # Try to get data_ptr from the object
+            elif sig_type.startswith("*"):
+                # Pointer type from signature
                 try:
                     ptr_val = int(arg)
-                    rpc_args.append(ptr_val)
+                    rpc_args.append(('ptr', ptr_val))
                 except (TypeError, ValueError):
-                    rpc_args.append(0)
+                    rpc_args.append(('ptr', 0))
+            elif isinstance(arg, int):
+                rpc_args.append(('i32', arg))
+            elif isinstance(arg, float):
+                rpc_args.append(('f32', arg))
+            else:
+                try:
+                    ptr_val = int(arg)
+                    rpc_args.append(('i32', ptr_val))
+                except (TypeError, ValueError):
+                    rpc_args.append(('i32', 0))
 
         # Execute kernel
         self.client.execute_kernel(
@@ -563,7 +588,7 @@ class RPCLauncher(object):
         for addr, tensor, size in remote_addrs:
             import numpy as np
             data = self.client.read_memory(addr, size)
-            arr = np.frombuffer(data, dtype=self._torch_to_numpy_dtype(tensor.dtype))
+            arr = np.frombuffer(data, dtype=self._torch_to_numpy_dtype(tensor.dtype)).copy()
             arr = arr.reshape(tensor.shape)
             tensor.copy_(torch.from_numpy(arr))
             self.client.free_memory(addr)
@@ -656,6 +681,13 @@ class CPUDriver(DriverBase):
         if rpc_host:
             self.launcher_cls = RPCLauncher
             self.rpc_mode = True
+            # Override load_binary: send binary to remote device via RPC
+            def rpc_load_binary(name, binary, shared, device):
+                launcher = RPCLauncher.last_instance
+                if launcher is not None:
+                    launcher.load_kernel_binary(name, binary)
+                return (0, 0, 0, 0, 1024)
+            self.utils.load_binary = rpc_load_binary
         else:
             self.launcher_cls = CPULauncher
             self.rpc_mode = False
