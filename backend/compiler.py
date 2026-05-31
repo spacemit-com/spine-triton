@@ -5,6 +5,7 @@ from typing import Any, Dict, Tuple
 from types import ModuleType
 import hashlib
 import tempfile
+import shutil
 import os
 import re
 import subprocess
@@ -139,6 +140,7 @@ def _llir_to_so(llir: str, metadata):
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, ".ll")
         src_opt_path = os.path.join(tmpdir, ".opt.ll")
+        asm_path = os.path.join(tmpdir, ".s")
         dst_path = os.path.join(tmpdir, ".o")
         Path(src_path).write_text(llir)
 
@@ -161,6 +163,13 @@ def _llir_to_so(llir: str, metadata):
                 "--mattr=64bit,a,b,c,d,f,i,m,v,zfh,zvfh,zmatrix,zicbop,zicbom,zicboz",
                 "-mcpu={}".format(ai_cpu_arch) if ai_cpu_arch is not None else "",
             ])
+
+        # Generate assembly for dump if SPINE_TRITON_DUMP_PATH exists, but still generate object file for the final output
+        if (dum_dir := os.environ.get("SPINE_TRITON_DUMP_PATH", "")) != "" and os.path.exists(dum_dir):
+            subprocess.check_call([llc_path, src_opt_path, *llc_flags, "-filetype=asm", "-o", asm_path])
+            kernel_name = metadata.get("name", "unknown_kernel")
+            asm_dump_path = os.path.join(dum_dir, "{}.s".format(kernel_name))
+            shutil.copy(asm_path, asm_dump_path)
 
         subprocess.check_call([llc_path, src_opt_path, *llc_flags, "-filetype=obj", "-o", dst_path])
         dump_ir_if_needed([dst_path], metadata["name"])
