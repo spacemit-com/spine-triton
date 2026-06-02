@@ -124,6 +124,52 @@ struct MemrefCastConverter
 
     if (auto unrankedInputTy = dyn_cast<UnrankedMemRefType>(inputTy)) {
       if (auto rankedResultTy = dyn_cast<MemRefType>(resultTy)) {
+        if (unrankedInputTy.getElementType() !=
+            rankedResultTy.getElementType()) {
+          auto loc = op.getLoc();
+          auto rankedInputType = getRankedMemrefTypeForPtrCast(unrankedInputTy);
+          auto rankedInput = memref::ReinterpretCastOp::create(
+              rewriter, loc, rankedInputType, input, rewriter.getIndexAttr(0),
+              ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)},
+              ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)});
+          auto ptrType = getPtrTypeForMemref(rankedInputType);
+          auto toPtr =
+              ptr::ToPtrOp::create(rewriter, loc, ptrType, rankedInput);
+
+          auto resultMemorySpace = getMemorySpaceForMemref(rankedResultTy);
+          auto oneDimResultType = MemRefType::get(
+              {ShapedType::kDynamic}, rankedResultTy.getElementType(),
+              AffineMap(), resultMemorySpace);
+          auto fromPtr = ptr::FromPtrOp::create(rewriter, loc, oneDimResultType,
+                                                toPtr, Value());
+
+          SmallVector<OpFoldResult> sizes;
+          SmallVector<OpFoldResult> strides;
+          for (int64_t i = 0, e = rankedResultTy.getRank(); i < e; ++i) {
+            sizes.push_back(
+                ShapedType::isDynamic(rankedResultTy.getDimSize(i))
+                    ? rewriter.getIndexAttr(1)
+                    : rewriter.getIndexAttr(rankedResultTy.getDimSize(i)));
+            strides.push_back(rewriter.getIndexAttr(1));
+          }
+
+          auto identityResultTy = MemRefType::get(
+              rankedResultTy.getShape(), rankedResultTy.getElementType(),
+              AffineMap(), rankedResultTy.getMemorySpace());
+          auto reinterpreted = memref::ReinterpretCastOp::create(
+              rewriter, loc, identityResultTy, fromPtr,
+              rewriter.getIndexAttr(0), sizes, strides);
+          if (reinterpreted.getType() == rankedResultTy) {
+            rewriter.replaceOp(op, reinterpreted.getResult());
+          } else {
+            if (!memref::CastOp::areCastCompatible(reinterpreted.getType(),
+                                                   rankedResultTy))
+              return failure();
+            rewriter.replaceOpWithNewOp<memref::CastOp>(op, rankedResultTy,
+                                                        reinterpreted);
+          }
+          return success();
+        }
         if (!memref::CastOp::areCastCompatible(unrankedInputTy, rankedResultTy))
           return failure();
         rewriter.replaceOpWithNewOp<memref::CastOp>(op, rankedResultTy, input);

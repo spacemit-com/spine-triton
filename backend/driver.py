@@ -1,6 +1,7 @@
 import hashlib
 import tempfile
 import os
+import shutil
 import subprocess
 import platform
 import importlib.util
@@ -190,46 +191,30 @@ static void _launch(int gridX, int gridY, int gridZ, int64_t stream, kernel_ptr_
   {'proton_enter_kernel(KERNEL_NAME, gridX, gridY, gridZ);' if enable_proton_kernel_capture else ''}
   int64_t stream_threads = spine_get_stream_threads();
   int64_t gridX_out = (gridX + stream_threads - 1) / stream_threads;
-  const char* force_nested_dispatch_1d_env = getenv("SPINE_TRITON_FORCE_NESTED_DISPATCH_1D");
-  bool force_nested_dispatch_1d =
-      force_nested_dispatch_1d_env != nullptr && strcmp(force_nested_dispatch_1d_env, "0") != 0;
-  // 1D grid kernels are sensitive to pid(0) mapping; keep a safe one-level mapping by default.
-  bool use_safe_pid_mapping = (gridY == 1 && gridZ == 1 && !force_nested_dispatch_1d);
   {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
             for i, ty in signature.items() if i not in constants and ty[0] == "*")}
     if constexpr (!smt_parallel_inside) {{
-        if (use_safe_pid_mapping) {{
-            mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
-                int x = block[0];
-                int y = block[1];
-                int z = block[2];
+        mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
+            int x_out = block[0];
+            int y_out = block[1];
+            int z_out = block[2];
+            int64_t current_stream = spine_require_stream();
+            mlir::speir::spineStreamDispatch(reinterpret_cast<void*>(current_stream),
+            [&] (const std::array<int64_t, 3> & cur_grid) {{
+                int x = cur_grid[0] + x_out * stream_threads;
+                if (x >= gridX) {{
+                        return;
+                }}
                 (*kernel_ptr)({kernel_parameters}
-                                     gridX, gridY, gridZ, x, y, z);
+                                     gridX, gridY, gridZ, x, y_out, z_out);
             }},
-             {{gridX, gridY, gridZ}});
-        }} else {{
-            mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
-                int x_out = block[0];
-                int y_out = block[1];
-                int z_out = block[2];
-                int64_t current_stream = spine_require_stream();
-                mlir::speir::spineStreamDispatch(reinterpret_cast<void*>(current_stream),
-                [&] (const std::array<int64_t, 3> & cur_grid) {{
-                    int x = cur_grid[0] + x_out * stream_threads;
-                    if (x >= gridX) {{
-                            return;
-                    }}
-                    (*kernel_ptr)({kernel_parameters}
-                                         gridX, gridY, gridZ, x, y_out, z_out);
-                }},
-                    {{stream_threads, 1, 1}});
+                {{stream_threads, 1, 1}});
 
-                spine_release_stream(current_stream);
-            }},
-                 {{gridX_out, gridY, gridZ}});
-        }}
-  }} else {{
-    mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
+            spine_release_stream(current_stream);
+        }},
+             {{gridX_out, gridY, gridZ}});
+    }} else {{
+        mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
       int x = block[0];
       int y = block[1];
       int z = block[2];
@@ -321,7 +306,7 @@ PyMODINIT_FUNC PyInit___spine_triton_kernel_launcher(void) {{
 """
 
 
-def compile_module(src, name):
+def compile_module(src, name, kernel_name=None):
     py_version = sys.version_info
     cpu_arch = platform.machine()
     if platform.system() == "Windows":
@@ -371,6 +356,13 @@ def compile_module(src, name):
                 so_path = os.path.join(tmpdir, "kernel.so")
 
                 Path(launcher_src_path).write_text(src)
+
+                # Dump main.cxx to SPINE_TRITON_DUMP_PATH if set
+                dump_path = os.getenv("SPINE_TRITON_DUMP_PATH", "")
+                if dump_path:
+                    os.makedirs(dump_path, exist_ok=True)
+                    dump_name = f"{kernel_name}_main.cxx" if kernel_name else "main.cxx"
+                    shutil.copy(launcher_src_path, os.path.join(dump_path, dump_name))
 
                 with open(launcher_src_path, "rb") as f:
                     launcher_src_path = cache.put(f.read(), os.path.basename(launcher_src_path), binary=False)
@@ -478,7 +470,7 @@ class CPULauncher(object):
         # Get kernel name for auto proton capture
         kernel_name = src.fn.__name__ if hasattr(src, 'fn') and hasattr(src.fn, '__name__') else "unknown_kernel"
         launcher_src = _generate_launcher(constants, signature, smt_parallel_inside, kernel_name)
-        mod = compile_module(launcher_src, "__spine_triton_kernel_launcher")
+        mod = compile_module(launcher_src, "__spine_triton_kernel_launcher", kernel_name=kernel_name)
         self.launch = mod.launch
 
     def __call__(self, *args, **kwargs):
@@ -533,9 +525,8 @@ class RPCLauncher(object):
             RPCLauncher._kernel_cache[cache_key] = self.kernel_handle
         return self.kernel_handle
 
-    def __call__(self, gridX, gridY, gridZ, stream, function,
-                 kernel_metadata, launch_metadata,
-                 launch_enter_hook, launch_exit_hook, *args):
+    def __call__(self, gridX, gridY, gridZ, stream, function, kernel_metadata, launch_metadata, launch_enter_hook,
+                 launch_exit_hook, *args):
         if launch_enter_hook is not None:
             launch_enter_hook(launch_metadata)
 
@@ -543,6 +534,7 @@ class RPCLauncher(object):
         # Filter out constexpr args (they are baked into the compiled kernel)
         rpc_args = []  # list of (type_tag, value)
         remote_addrs = []
+        remote_tensor_map = {}
         arg_idx = 0
         for arg in args:
             # Skip constexpr arguments
@@ -553,17 +545,25 @@ class RPCLauncher(object):
             arg_idx += 1
 
             if hasattr(arg, 'data_ptr'):
-                import torch
-                data = arg.cpu().contiguous().numpy().tobytes()
-                addr = self.client.alloc_memory(len(data))
-                self.client.write_memory(addr, data)
-                rpc_args.append(('ptr', addr))
-                remote_addrs.append((addr, arg, len(data)))
+                tensor = arg.unwrap() if hasattr(arg, 'unwrap') else arg
+                tensor = tensor.cpu()
+                # Upload the underlying storage to preserve original strides.
+                # The kernel indexes using the original strides, so we must
+                # not rearrange data with .contiguous().
+                storage = tensor.untyped_storage()
+                storage_bytes = bytes(storage)
+                storage_offset_bytes = tensor.storage_offset() * tensor.element_size()
+                addr = self.client.alloc_memory(len(storage_bytes))
+                self.client.write_memory(addr, storage_bytes)
+                rpc_args.append(('ptr', addr + storage_offset_bytes))
+                remote_addrs.append((addr, arg, len(storage_bytes)))
+                remote_tensor_map[arg.data_ptr()] = addr + storage_offset_bytes
             elif sig_type.startswith("*"):
                 # Pointer type from signature
                 try:
                     ptr_val = int(arg)
-                    rpc_args.append(('ptr', ptr_val))
+                    mapped_ptr = remote_tensor_map.get(ptr_val, ptr_val)
+                    rpc_args.append(('ptr', mapped_ptr))
                 except (TypeError, ValueError):
                     rpc_args.append(('ptr', 0))
             elif isinstance(arg, int):
@@ -578,19 +578,18 @@ class RPCLauncher(object):
                     rpc_args.append(('i32', 0))
 
         # Execute kernel
-        self.client.execute_kernel(
-            self.kernel_handle,
-            (gridX, gridY, gridZ),
-            rpc_args
-        )
+        self.client.execute_kernel(self.kernel_handle, (gridX, gridY, gridZ), rpc_args)
 
         # Read back output tensors
         for addr, tensor, size in remote_addrs:
-            import numpy as np
+            import ctypes
             data = self.client.read_memory(addr, size)
-            arr = np.frombuffer(data, dtype=self._torch_to_numpy_dtype(tensor.dtype)).copy()
-            arr = arr.reshape(tensor.shape)
-            tensor.copy_(torch.from_numpy(arr))
+            real_tensor = tensor.unwrap() if hasattr(tensor, 'unwrap') else tensor
+            real_tensor_cpu = real_tensor.cpu()
+            # Write raw bytes directly to the underlying storage to handle
+            # tensors with overlapping memory (e.g. from broadcast_to)
+            storage = real_tensor_cpu.untyped_storage()
+            ctypes.memmove(storage.data_ptr(), data, len(data))
             self.client.free_memory(addr)
 
         if launch_exit_hook is not None:
@@ -609,6 +608,7 @@ class RPCLauncher(object):
             torch.int32: np.int32,
             torch.int64: np.int64,
             torch.uint8: np.uint8,
+            torch.bool: np.bool_,
             torch.bfloat16: np.float16,
         }
         return mapping.get(dtype, np.float32)
@@ -681,12 +681,14 @@ class CPUDriver(DriverBase):
         if rpc_host:
             self.launcher_cls = RPCLauncher
             self.rpc_mode = True
+
             # Override load_binary: send binary to remote device via RPC
             def rpc_load_binary(name, binary, shared, device):
                 launcher = RPCLauncher.last_instance
                 if launcher is not None:
                     launcher.load_kernel_binary(name, binary)
                 return (0, 0, 0, 0, 1024)
+
             self.utils.load_binary = rpc_load_binary
         else:
             self.launcher_cls = CPULauncher
@@ -730,8 +732,8 @@ class CPUDriver(DriverBase):
             target_arch_id = os.environ.get("SPACEMIT_EP_QEMU_SET_CORE_ARCH", "0xF000")
             target_cpu = get_cpu_name_from_arch_id(target_arch_id)
             num_threads = int(os.environ.get("SPINE_TRITON_RPC_THREADS", "8"))
-            return AICPUTarget("cpu", target_cpu, 0, 8, num_threads,
-                               target_arch_id, num_threads, self.force_vector_interleave)
+            return AICPUTarget("cpu", target_cpu, 0, 8, num_threads, target_arch_id, num_threads,
+                               self.force_vector_interleave)
         return AICPUTarget("cpu", self.cpu_arch, 0, self.num_cores, self.num_of_stream_threads, self.current_arch_id,
                            self.num_of_stream_threads, self.force_vector_interleave)
 

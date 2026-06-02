@@ -161,7 +161,7 @@ def _llir_to_so(llir: str, metadata):
         llc_path = get_llvm_bin_path("llc")
         llc_flags = ["-O3", "--float-abi=hard", "--relocation-model=pic"]
         if target_arch == "riscv64":
-            mattr_list = ["64bit", "a", "b", "c", "d", "f", "i", "m", "v", "zfh", "zvfh", "zicbop"]
+            mattr_list = ["64bit", "a", "b", "c", "d", "f", "i", "m", "v", "zfh", "zvfh", "zicbop", "zicbom", "zicboz", "xsmtvsfu"]
             if ai_cpu_arch_cc in {"spacemit-a200", "spacemit-a200m"}:
                 mattr_list.append("zmatrix")
 
@@ -187,7 +187,8 @@ def _llir_to_so(llir: str, metadata):
         runtime_lib_dir = os.path.join(cpu_backend_path.parent.parent, "_C")
 
         if target_arch == "riscv64" and host_arch != "riscv64":
-            assert os.path.exists(cross_toolchain), "Cross-compilation toolchain path does not exist: {}".format(cross_toolchain)
+            assert os.path.exists(cross_toolchain), "Cross-compilation toolchain path does not exist: {}".format(
+                cross_toolchain)
             # Cross-compilation mode: use cross-compile toolchain
             cc = os.path.join(cross_toolchain, "bin", "clang++")
             sysroot = os.path.join(cross_toolchain, "sysroot")
@@ -215,7 +216,8 @@ def _llir_to_so(llir: str, metadata):
             if platform.system() == "Windows":
                 py_include_dir = os.path.join(sys.base_prefix, "include")
                 py_lib_dir = os.path.join(sys.base_prefix, "libs")
-                py_lib = "{name}{major}{minor}.lib".format(name="python", major=py_version.major, minor=py_version.minor)
+                py_lib = "{name}{major}{minor}.lib".format(name="python", major=py_version.major,
+                                                           minor=py_version.minor)
             else:
                 py_include_dir = os.path.join(
                     sys.base_prefix,
