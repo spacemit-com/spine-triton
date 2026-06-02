@@ -536,6 +536,16 @@ index 490dc7582..d9340d207 100644
              else:
                  assert input.dtype.is_int(), "Expecting input to be integer type"
                  input = input.to(core.int32)
+@@ -243,7 +245,8 @@ def min(input, axis=None, return_indices=False, return_indices_tie_break_left=Tr
+     else:
+         if core.constexpr(input.dtype.primitive_bitwidth) < 32:
+             if core.constexpr(input.dtype.is_floating()):
+-                input = input.to(core.float32)
++                if not core.constexpr(input.dtype.is_fp16()):
++                    input = input.to(core.float32)
+             else:
+                 assert input.dtype.is_int(), "Expecting input to be integer type"
+                 input = input.to(core.int32)
 diff --git a/python/triton/runtime/interpreter.py b/python/triton/runtime/interpreter.py
 index def96711a..e4cf4fec6 100644
 --- a/python/triton/runtime/interpreter.py

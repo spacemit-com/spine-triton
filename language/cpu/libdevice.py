@@ -359,5 +359,5 @@ def isnan(arg0, _semantic=None):
 @core.extern
 def isfinited(arg0, _semantic=None):
     return core.extern_elementwise("", "", [arg0], {
-        (core.dtype("fp64"), ): ("linalg.isfinited", core.dtype("int32")),
+        (core.dtype("fp64"), ): ("math.isfinite", core.dtype("int32")),
     }, is_pure=True, _semantic=_semantic).to(core.int1, _semantic=_semantic)

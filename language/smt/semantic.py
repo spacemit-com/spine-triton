@@ -45,13 +45,13 @@ def descriptor_load_to_destination(base: tl.tensor, offsets, destination, _seman
 
 def view(base: tl.tensor, offsets, shape, packed_size, destination=None, _semantic=None) -> tl.tensor:
     semantic_instance = tl_semantic.TritonSemantic(_semantic.builder)
+    dest_handle = destination.handle if destination is not None else None
+    # Save raw offsets before IR conversion for no-op detection
+    raw_offsets = [o.value if isinstance(o, tl.constexpr) else o for o in offsets]
     offsets = semantic_instance._convert_to_ir_values(offsets, require_i64=False)
 
     shape = [elem.value if isinstance(elem, tl.constexpr) else elem for elem in shape]
     packed_size = [elem.value if isinstance(elem, tl.constexpr) else elem for elem in packed_size]
-
-    # Resolve optional destination handle for DPS
-    dest_handle = destination.handle if destination is not None else None
 
     assert len(shape) == len(packed_size), \
         "Shape and packed_size must have the same length"
@@ -64,24 +64,8 @@ def view(base: tl.tensor, offsets, shape, packed_size, destination=None, _semant
 
     if is_block_ptr:
         element_ty = pointee_type.element_ty
-        # Dispatch to subview or subview_pack
-        if all(s == 0 for s in packed_size):
-            # packed_size=[0,0] means subview (preserve existing packing)
-            handle = _semantic.builder.create_subview(base.handle, offsets, shape)
-        else:
-            # Check if base is already packed (4D) and packed_size matches
-            base_shape = pointee_type.shape
-            if len(base_shape) == 4:
-                base_packed = [base_shape[2], base_shape[3]]
-                if list(packed_size) == base_packed:
-                    # Same packed_size → subview (preserve packing)
-                    handle = _semantic.builder.create_subview(base.handle, offsets, shape)
-                else:
-                    # Different packed_size on ptr → subview_pack
-                    handle = _semantic.builder.create_subview_pack(base.handle, offsets, shape, packed_size)
-            else:
-                # 2D base → subview_pack (apply packing)
-                handle = _semantic.builder.create_subview_pack(base.handle, offsets, shape, packed_size)
+        handle = _semantic.builder.create_viewptr(base.handle, offsets, shape, packed_size)
+
     else:
         element_ty = pointee_type
         # Dispatch to pack, unpack, or repack
@@ -98,11 +82,14 @@ def view(base: tl.tensor, offsets, shape, packed_size, destination=None, _semant
                     handle = _semantic.builder.create_repack(base.handle, offsets, shape, packed_size,
                                                              destination=dest_handle)
                 else:
-                    # 4D input with same packed_size → pack (defensive, shouldn't normally happen)
-                    handle = _semantic.builder.create_pack(base.handle, offsets, shape, packed_size,
-                                                           destination=dest_handle)
+                    base_logical = [base_shape[0] * base_packed[0], base_shape[1] * base_packed[1]]
+                    is_noop = (list(shape) == base_logical and all(isinstance(o, int) and o == 0 for o in raw_offsets))
+                    if is_noop:
+                        handle = base.handle
+                    else:
+                        handle = _semantic.builder.create_repack(base.handle, offsets, shape, packed_size,
+                                                                 destination=dest_handle)
             else:
-                # 2D→4D standard pack
                 handle = _semantic.builder.create_pack(base.handle, offsets, shape, packed_size,
                                                        destination=dest_handle)
 
@@ -261,15 +248,24 @@ def mbarrier_copies(
 
 
 def barrier_arrive(bar: tl.tensor, _semantic=None):
+    semantic_inst = tl_semantic.TritonSemantic(_semantic.builder)
+    if not isinstance(bar, tl.tensor):
+        bar = semantic_inst.to_tensor(bar)
+    bar = semantic_inst.cast(bar, tl.int64)
     _semantic.builder.create_barrier_arrive(bar.handle)
 
 
 def barrier_wait(bar: tl.tensor, flag, arrive_count, _semantic=None):
     from triton.language.core import _unwrap_if_constexpr
+
+    semantic_inst = tl_semantic.TritonSemantic(_semantic.builder)
+    if not isinstance(bar, tl.tensor):
+        bar = semantic_inst.to_tensor(bar)
+    bar = semantic_inst.cast(bar, tl.int64)
+
     flag = _unwrap_if_constexpr(flag)
     arrive_count = _unwrap_if_constexpr(arrive_count)
 
-    semantic_inst = tl_semantic.TritonSemantic(_semantic.builder)
     flag_tensor = semantic_inst.to_tensor(flag)
     arr_tensor = semantic_inst.to_tensor(arrive_count)
 
