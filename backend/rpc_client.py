@@ -1,9 +1,6 @@
 """Spine-Triton RPC Client for communicating with RISC-V RPC Server."""
 import socket
 import struct
-import binascii
-from typing import List, Union
-
 
 PROTOCOL_MAGIC = 0x53545250
 PROTOCOL_VERSION = 0x01
@@ -60,8 +57,7 @@ class SpineTritonRPCClient:
 
     def _send(self, msg_type: int, payload: bytes) -> int:
         seq_id = self._next_seq()
-        hdr = struct.pack(HEADER_FMT, PROTOCOL_MAGIC, PROTOCOL_VERSION,
-                          msg_type, 0, seq_id, len(payload), 0)
+        hdr = struct.pack(HEADER_FMT, PROTOCOL_MAGIC, PROTOCOL_VERSION, msg_type, 0, seq_id, len(payload), 0)
         self.sock.sendall(hdr + payload)
         return seq_id
 
@@ -106,7 +102,19 @@ class SpineTritonRPCClient:
         grid_x, grid_y, grid_z = grid
         args_data = b''
         for arg in args:
-            if isinstance(arg, float):
+            if isinstance(arg, tuple):
+                tag, value = arg
+                if tag == 'ptr':
+                    args_data += struct.pack('<BxxxQ', ARG_TYPE_PTR, int(value))
+                elif tag == 'f32':
+                    args_data += struct.pack('<Bxxxd', ARG_TYPE_F32, float(value))
+                elif tag == 'f64':
+                    args_data += struct.pack('<Bxxxd', ARG_TYPE_F64, float(value))
+                elif tag == 'i64':
+                    args_data += struct.pack('<Bxxxq', ARG_TYPE_I64, int(value))
+                else:
+                    args_data += struct.pack('<Bxxxq', ARG_TYPE_I32, int(value))
+            elif isinstance(arg, float):
                 args_data += struct.pack('<Bxxxd', ARG_TYPE_F64, arg)
             elif isinstance(arg, int):
                 if arg > 0xFFFFFFFF or arg < 0:
@@ -114,7 +122,7 @@ class SpineTritonRPCClient:
                 else:
                     args_data += struct.pack('<Bxxxq', ARG_TYPE_I32, arg)
             else:
-                args_data += struct.pack('<BxxxQ', ARG_TYPE_PTR, arg)
+                args_data += struct.pack('<BxxxQ', ARG_TYPE_PTR, int(arg))
 
         payload = struct.pack('<QIIII', handle, grid_x, grid_y, grid_z, len(args))
         payload += args_data

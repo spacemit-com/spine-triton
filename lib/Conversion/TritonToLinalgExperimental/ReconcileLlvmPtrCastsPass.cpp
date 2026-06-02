@@ -5,12 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Conversion/LLVMCommon/MemRefBuilder.h"
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Ptr/IR/PtrOps.h"
 #include "mlir/Dialect/Ptr/IR/PtrTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -128,19 +131,96 @@ private:
   }
 };
 
+struct RankedMemrefToLlvmDescriptorCastConverter
+    : public OpRewritePattern<UnrealizedConversionCastOp> {
+  RankedMemrefToLlvmDescriptorCastConverter(MLIRContext *context)
+      : OpRewritePattern<UnrealizedConversionCastOp>(context) {}
+
+  LogicalResult matchAndRewrite(UnrealizedConversionCastOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getInputs().size() != 1 || op->getNumResults() != 1)
+      return failure();
+
+    Value input = op.getInputs().front();
+    auto inputType = dyn_cast<MemRefType>(input.getType());
+    if (!inputType || !isa<LLVM::LLVMStructType>(op.getResult(0).getType()))
+      return failure();
+
+    auto fromPtr = input.getDefiningOp<ptr::FromPtrOp>();
+    if (!fromPtr || fromPtr.getMetadata())
+      return failure();
+
+    SmallVector<int64_t> strides;
+    int64_t offset;
+    if (failed(inputType.getStridesAndOffset(strides, offset)))
+      return failure();
+
+    Location loc = op.getLoc();
+    LLVMTypeConverter typeConverter(op->getContext());
+    auto desc =
+        MemRefDescriptor::poison(rewriter, loc, op.getResult(0).getType());
+
+    Value ptr = fromPtr.getPtr();
+    Operation *ptrCastOp = nullptr;
+    if (auto ptrCast = ptr.getDefiningOp<UnrealizedConversionCastOp>()) {
+      if (ptrCast.getInputs().size() == 1 && ptrCast->getNumResults() == 1 &&
+          isa<LLVM::LLVMPointerType>(ptrCast.getInputs().front().getType()) &&
+          isa<ptr::PtrType>(ptrCast.getResult(0).getType())) {
+        ptr = ptrCast.getInputs().front();
+        ptrCastOp = ptrCast.getOperation();
+      }
+    }
+    if (!isa<LLVM::LLVMPointerType>(ptr.getType()))
+      return failure();
+
+    desc.setAllocatedPtr(rewriter, loc, ptr);
+    desc.setAlignedPtr(rewriter, loc, ptr);
+    desc.setConstantOffset(rewriter, loc,
+                           offset == ShapedType::kDynamic ? 0 : offset);
+
+    for (unsigned i = 0, e = inputType.getRank(); i < e; ++i) {
+      if (inputType.isDynamicDim(i)) {
+        auto one = LLVM::ConstantOp::create(
+            rewriter, loc, typeConverter.getIndexType(),
+            rewriter.getIntegerAttr(typeConverter.getIndexType(), 1));
+        desc.setSize(rewriter, loc, i, one);
+      } else {
+        desc.setConstantSize(rewriter, loc, i, inputType.getDimSize(i));
+      }
+      if (strides[i] == ShapedType::kDynamic) {
+        auto one = LLVM::ConstantOp::create(
+            rewriter, loc, typeConverter.getIndexType(),
+            rewriter.getIntegerAttr(typeConverter.getIndexType(), 1));
+        desc.setStride(rewriter, loc, i, one);
+      } else {
+        desc.setConstantStride(rewriter, loc, i, strides[i]);
+      }
+    }
+
+    rewriter.replaceOp(op, static_cast<Value>(desc));
+    if (fromPtr->use_empty())
+      rewriter.eraseOp(fromPtr);
+    if (ptrCastOp && ptrCastOp->use_empty())
+      rewriter.eraseOp(ptrCastOp);
+    return success();
+  }
+};
+
 class ReconcileLlvmPtrCastsPass
     : public triton::impl::ReconcileLlvmPtrCastsBase<
           ReconcileLlvmPtrCastsPass> {
 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<func::FuncDialect, LLVM::LLVMDialect>();
+    registry.insert<func::FuncDialect, LLVM::LLVMDialect, ptr::PtrDialect>();
   }
 
   void runOnOperation() override {
     auto moduleOp = getOperation();
     RewritePatternSet patterns(&getContext());
-    patterns.add<PromoteMemrefToPtrArg>(&getContext());
+    patterns
+        .add<PromoteMemrefToPtrArg, RankedMemrefToLlvmDescriptorCastConverter>(
+            &getContext());
     if (failed(applyPatternsGreedily(moduleOp, std::move(patterns)))) {
       signalPassFailure();
     }

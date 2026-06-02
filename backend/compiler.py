@@ -160,7 +160,7 @@ def _llir_to_so(llir: str, metadata):
         if target_arch == "riscv64":
             llc_flags.extend([
                 "--march=riscv64",
-                "--mattr=64bit,a,b,c,d,f,i,m,v,zfh,zvfh,zmatrix,zicbop,zicbom,zicboz",
+                "--mattr=64bit,a,b,c,d,f,i,m,v,zfh,zvfh,zmatrix,zicbop,zicbom,zicboz,xsmtvsfu",
                 "-mcpu={}".format(ai_cpu_arch) if ai_cpu_arch is not None else "",
             ])
 
@@ -180,7 +180,8 @@ def _llir_to_so(llir: str, metadata):
         runtime_lib_dir = os.path.join(cpu_backend_path.parent.parent, "_C")
 
         if target_arch == "riscv64" and host_arch != "riscv64":
-            assert os.path.exists(cross_toolchain), "Cross-compilation toolchain path does not exist: {}".format(cross_toolchain)
+            assert os.path.exists(cross_toolchain), "Cross-compilation toolchain path does not exist: {}".format(
+                cross_toolchain)
             # Cross-compilation mode: use cross-compile toolchain
             cc = os.path.join(cross_toolchain, "bin", "clang++")
             sysroot = os.path.join(cross_toolchain, "sysroot")
@@ -208,7 +209,8 @@ def _llir_to_so(llir: str, metadata):
             if platform.system() == "Windows":
                 py_include_dir = os.path.join(sys.base_prefix, "include")
                 py_lib_dir = os.path.join(sys.base_prefix, "libs")
-                py_lib = "{name}{major}{minor}.lib".format(name="python", major=py_version.major, minor=py_version.minor)
+                py_lib = "{name}{major}{minor}.lib".format(name="python", major=py_version.major,
+                                                           minor=py_version.minor)
             else:
                 py_include_dir = os.path.join(
                     sys.base_prefix,

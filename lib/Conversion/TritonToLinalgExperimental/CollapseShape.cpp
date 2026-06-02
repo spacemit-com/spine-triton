@@ -199,7 +199,13 @@ struct CollapseTranspose : public OpRewritePattern<linalg::TransposeOp> {
       }
       reassociationMap[dim].push_back(rewriter.getAffineDimExpr(i));
       mapDim.push_back(dim);
-      collapseShapeInput[dim] *= sourceType.getDimSize(i);
+      int64_t dimSize = sourceType.getDimSize(i);
+      if (ShapedType::isDynamic(collapseShapeInput[dim]) ||
+          ShapedType::isDynamic(dimSize)) {
+        collapseShapeInput[dim] = ShapedType::kDynamic;
+      } else {
+        collapseShapeInput[dim] *= dimSize;
+      }
     }
     if (collapseShapeInput.size() == sourceRank) {
       return rewriter.notifyMatchFailure(op, "cannot collapse broadcast shape");
@@ -224,12 +230,15 @@ struct CollapseTranspose : public OpRewritePattern<linalg::TransposeOp> {
     source = tensor::CollapseShapeOp::create(rewriter, loc, sourceType, source,
                                              reassociationMap);
 
+    // Build reassociationMapRe for collapsing op.getInit() into transposedShape
+    // op.getInit() has shape [source[perm[0]], source[perm[1]], ...,
+    // source[perm[n-1]]] We need to map this to transposedShape
     SmallVector<ReassociationExprs> reassociationMapRe(reassociationMap.size());
     int idx = 0;
-    for (size_t i = 0; i < reassociationMap.size(); ++i) {
-      for (size_t j = 0; j < reassociationMap[perm[i]].size(); ++j) {
-        reassociationMapRe[i].push_back(rewriter.getAffineDimExpr(idx++));
-      }
+    for (size_t i = 0; i < perm.size(); ++i) {
+      int collapsedDim = mapDim[perm[i]];
+      reassociationMapRe[collapsedDim].push_back(
+          rewriter.getAffineDimExpr(idx++));
     }
 
     Value transposeInit = tensor::CollapseShapeOp::create(
