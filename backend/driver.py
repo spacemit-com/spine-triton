@@ -483,6 +483,7 @@ class RPCLauncher(object):
     _client = None
     _kernel_cache = {}
     last_instance = None
+    _last_kernel_time_s = 0.0
 
     @classmethod
     def get_client(cls):
@@ -505,6 +506,7 @@ class RPCLauncher(object):
 
         # Save signature info to filter constexpr args at call time
         signature = src.signature if hasattr(src, "signature") else {}
+        constants = src.constants if hasattr(src, "constants") else {}
 
         def cst_key(i):
             if hasattr(src, 'fn') and hasattr(src.fn, 'arg_names'):
@@ -512,6 +514,7 @@ class RPCLauncher(object):
             return i
 
         self._signature = {cst_key(key): value for key, value in signature.items()}
+        self._constant_indices = {cst_key(key) for key in constants}
         # Identify constexpr arg indices from signature
         self._constexpr_indices = {k for k, v in self._signature.items() if v == 'constexpr'}
 
@@ -531,14 +534,14 @@ class RPCLauncher(object):
             launch_enter_hook(launch_metadata)
 
         # Prepare arguments: transfer tensor data to remote device
-        # Filter out constexpr args (they are baked into the compiled kernel)
+        # Filter out constexpr and value-specialized constant args
         rpc_args = []  # list of (type_tag, value)
         remote_addrs = []
         remote_tensor_map = {}
         arg_idx = 0
         for arg in args:
-            # Skip constexpr arguments
-            if arg_idx in self._constexpr_indices:
+            # Skip constexpr and value-specialized constant arguments
+            if arg_idx in self._constexpr_indices or arg_idx in self._constant_indices:
                 arg_idx += 1
                 continue
             sig_type = self._signature.get(arg_idx, "")
@@ -578,7 +581,8 @@ class RPCLauncher(object):
                     rpc_args.append(('i32', 0))
 
         # Execute kernel
-        self.client.execute_kernel(self.kernel_handle, (gridX, gridY, gridZ), rpc_args)
+        exec_time_us = self.client.execute_kernel(self.kernel_handle, (gridX, gridY, gridZ), rpc_args)
+        RPCLauncher._last_kernel_time_s = exec_time_us / 1_000_000.0
 
         # Read back output tensors
         for addr, tensor, size in remote_addrs:
@@ -642,17 +646,21 @@ class CPUDeviceInterface:
         def record(self):
             self.timer = time.perf_counter()
 
-    def __init__(self):
+    def __init__(self, rpc_mode=False):
         self.kernel_times = []
         self.last_start = 0
         self.use_hooks = False
-        triton.compiler.CompiledKernel.launch_enter_hook = None
-        triton.compiler.CompiledKernel.launch_exit_hook = None
+        self.rpc_mode = rpc_mode
 
     def enable_hook_timing(self):
         self.use_hooks = True
-        triton.compiler.CompiledKernel.launch_enter_hook = (lambda arg: self._enter_hook())
-        triton.compiler.CompiledKernel.launch_exit_hook = lambda arg: self._exit_hook()
+        import triton.knobs as knobs
+        if self.rpc_mode:
+            knobs.runtime.launch_enter_hook.add(lambda metadata: None)
+            knobs.runtime.launch_exit_hook.add(lambda metadata: self._rpc_exit_hook())
+        else:
+            knobs.runtime.launch_enter_hook.add(lambda metadata: self._enter_hook())
+            knobs.runtime.launch_exit_hook.add(lambda metadata: self._exit_hook())
 
     def synchronize(self):
         pass
@@ -662,6 +670,9 @@ class CPUDeviceInterface:
 
     def _exit_hook(self):
         self.kernel_times.append(time.perf_counter() - self.last_start)
+
+    def _rpc_exit_hook(self):
+        self.kernel_times.append(RPCLauncher._last_kernel_time_s)
 
     def Event(self, enable_timing=True):
         if self.use_hooks:
@@ -746,7 +757,11 @@ class CPUDriver(DriverBase):
         return args
 
     def get_device_interface(self):
-        return CPUDeviceInterface()
+        if not hasattr(self, '_device_interface'):
+            self._device_interface = CPUDeviceInterface(rpc_mode=self.rpc_mode)
+            if self.rpc_mode:
+                self._device_interface.enable_hook_timing()
+        return self._device_interface
 
     def get_empty_cache_for_benchmark(self):
         import torch

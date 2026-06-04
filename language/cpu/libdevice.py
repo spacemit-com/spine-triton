@@ -340,6 +340,7 @@ def finitef(arg0, _semantic=None):
 def isinf(arg0, _semantic=None):
     return core.extern_elementwise(
         "", "", [arg0], {
+            (core.dtype("fp16"), ): ("math.isinf", core.dtype("int32")),
             (core.dtype("fp32"), ): ("math.isinf", core.dtype("int32")),
             (core.dtype("fp64"), ): ("math.isinf", core.dtype("int32")),
         }, is_pure=True, _semantic=_semantic).to(core.int1, _semantic=_semantic)
@@ -351,6 +352,7 @@ def isnan(arg0, _semantic=None):
         "", "", [
             arg0,
         ], {
+            (core.dtype("fp16"), ): ("math.isnan", core.dtype("int32")),
             (core.dtype("fp32"), ): ("math.isnan", core.dtype("int32")),
             (core.dtype("fp64"), ): ("math.isnan", core.dtype("int32")),
         }, is_pure=True, _semantic=_semantic).to(core.int1, _semantic=_semantic)
