@@ -32,7 +32,7 @@ python3 python/examples/test_smt_mm.py
 # llvm-project hash-tag at spine-triton/triton/cmake/llvm-hash.txt
 git clone https://github.com/llvm/llvm-project.git
 cd llvm-project
-git checkout a992f29451b9e140424f35ac5e20177db4afbdc0
+git checkout f409804208e93ccf0fd10cc805c55f799126f38e
 
 mkdir -p build-llvm-riscv64
 pushd build-llvm-riscv64
@@ -57,7 +57,7 @@ popd
 
 2. download spine-mlir
 ~~~
-https://archive.spacemit.com/spacemit-ai/spine-mlir/spine-mlir-riscv64-0.5.4%2Ba0.tar.gz
+wget https://github.com/spacemit-com/spine-mlir/releases/download/0.5.4/spine-mlir-riscv64-0.5.4.tar.gz
 ~~~
 
 3. install triton

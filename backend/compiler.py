@@ -129,9 +129,11 @@ def _llir_to_so(llir: str, metadata):
     target_arch_id = metadata["target"].arch_id
     ai_cpu_arch = get_cpu_name_from_arch_id(target_arch_id)
 
-    if ai_cpu_arch == "spacemit-a60":
-        # special case for a60
-        ai_cpu_arch = "spacemit-x60"
+    ai_cpu_arch_cc_dict = {
+        "spacemit-a60": "spacemit-x60",
+        "spacemit-a200m": "spacemit-a100",
+    }
+    ai_cpu_arch_cc = ai_cpu_arch_cc_dict.get(ai_cpu_arch, ai_cpu_arch)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, ".ll")
@@ -143,7 +145,7 @@ def _llir_to_so(llir: str, metadata):
         llopt_flags = []
         if cpu_arch == "riscv64":
             llopt_flags.extend([
-                "--march=riscv64", "-mcpu={}".format(ai_cpu_arch) if ai_cpu_arch is not None else "",
+                "--march=riscv64", "-mcpu={}".format(ai_cpu_arch_cc) if ai_cpu_arch_cc is not None else "",
                 "-passes=loop-vectorize", "--pass-remarks-missed", "-force-vector-width=32",
                 "-force-vector-interleave=2"
             ])
@@ -153,10 +155,14 @@ def _llir_to_so(llir: str, metadata):
         llc_path = get_llvm_bin_path("llc")
         llc_flags = ["-O3", "--float-abi=hard", "--relocation-model=pic"]
         if cpu_arch == "riscv64":
+            mattr_list = ["64bit", "a", "b", "c", "d", "f", "i", "m", "v", "zfh", "zvfh", "zicbop"]
+            if ai_cpu_arch_cc in {"spacemit-a200", "spacemit-a200m"}:
+                mattr_list.append("zmatrix")
+
             llc_flags.extend([
                 "--march=riscv64",
-                "--mattr=64bit,a,b,c,d,f,i,m,v,zfh,zvfh,zmatrix,zicbop,zicbom,zicboz",
-                "-mcpu={}".format(ai_cpu_arch) if ai_cpu_arch is not None else "",
+                "--mattr=" + ",".join(mattr_list),
+                "-mcpu={}".format(ai_cpu_arch_cc) if ai_cpu_arch_cc is not None else "",
             ])
 
         subprocess.check_call([llc_path, src_opt_path, *llc_flags, "-filetype=obj", "-o", dst_path])

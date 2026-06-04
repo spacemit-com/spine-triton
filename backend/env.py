@@ -68,9 +68,11 @@ def get_cpu_name_from_arch_id(arch_id: str) -> str:
     target_arch_id_to_cpu_arch = {
         "0x503C": "spacemit-x60",
         "0x5064": "spacemit-x100",
+        "0x50C8": "spacemit-x200",
         "0xA03C": "spacemit-a60",
         "0xA064": "spacemit-a100",
-        "0xF000": "spacemit-a100",
+        "0xA0C8": "spacemit-a200",
+        "0xF000": "spacemit-a200m",
     }
     cpu_name = target_arch_id_to_cpu_arch.get(arch_id, None)
     if cpu_name is None:
