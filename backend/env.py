@@ -1,4 +1,5 @@
 import os
+import platform
 import shutil
 import re
 from ctypes import CDLL, RTLD_GLOBAL, c_int16, c_void_p
@@ -11,6 +12,19 @@ SPINE_MLIR_BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 def get_spine_mlir_cc_debug() -> bool:
     debug_or_not = int(os.getenv("SPINE_MLIR_DEBUG_MODE", "0"))
     return debug_or_not == 1
+
+
+def get_cpu_arch() -> str:
+    return platform.machine()
+
+
+def get_target_arch() -> str:
+    cpu_arch = get_cpu_arch()
+    return os.getenv("SPINE_TRITON_TARGET_ARCH", cpu_arch)
+
+
+def get_cross_toolchain() -> str:
+    return os.getenv("SPINE_TRITON_CROSS_TOOLCHAIN", "")
 
 
 def get_spine_mlir_opt_path() -> str:

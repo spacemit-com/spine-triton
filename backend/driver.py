@@ -3,18 +3,16 @@ import tempfile
 import os
 import shutil
 import subprocess
-import platform
 import importlib.util
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 import time
-import triton
 from triton.runtime.cache import get_cache_manager
 from triton.runtime.build import compile_module_from_src
 from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
-from . import (get_cpu_name_from_arch_id, get_spine_mlir_cc_debug)
+from . import (get_cpu_name_from_arch_id, get_spine_mlir_cc_debug, get_cpu_arch)
 
 dirname = os.path.dirname(os.path.realpath(__file__))
 include_dir = os.path.join(dirname, "include")
@@ -308,89 +306,62 @@ PyMODINIT_FUNC PyInit___spine_triton_kernel_launcher(void) {{
 
 def compile_module(src, name, kernel_name=None):
     py_version = sys.version_info
-    cpu_arch = platform.machine()
-    if platform.system() == "Windows":
-        py_include_dir = os.path.join(sys.base_prefix, "include")
-        py_lib_dir = os.path.join(sys.base_prefix, "libs")
-        py_lib = "{name}{major}{minor}.lib".format(name="python", major=py_version.major, minor=py_version.minor)
-    else:
-        py_include_dir = os.path.join(
-            sys.base_prefix,
-            "include",
-            f"python{sys.version_info.major}.{sys.version_info.minor}",
-        )
-        py_lib_dir = os.path.join(sys.base_prefix, "lib")
-        py_lib = "{name}{major}.{minor}".format(name="python", major=py_version.major, minor=py_version.minor)
+    cpu_arch = get_cpu_arch()
+    py_include_dir = os.path.join(
+        sys.base_prefix,
+        "include",
+        f"python{sys.version_info.major}.{sys.version_info.minor}",
+    )
+    py_lib_dir = os.path.join(sys.base_prefix, "lib")
+    py_lib = "{name}{major}.{minor}".format(name="python", major=py_version.major, minor=py_version.minor)
     cpu_backend_path = Path(__file__).resolve().parent
     include_dir = os.path.join(cpu_backend_path, "include")
     spine_opt_debug = get_spine_mlir_cc_debug()
     key = hashlib.md5(src.encode("utf-8")).hexdigest()
     cache = get_cache_manager(key)
-    if platform.system() == "Windows":
-        filename = f"{name}.pyd"
-    else:
-        filename = f"{name}.so"
+    filename = f"{name}.so"
     cache_path = cache.get_file(filename)
     if cache_path is None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            if platform.system() == "Windows":
-                launcher_src_path = os.path.join(tmpdir, "main.cxx")
-                so_path = os.path.join(tmpdir, "kernel.pyd")
-                Path(launcher_src_path).write_text(src)
-                # Compile it together.
-                subprocess.check_call([
-                    "cl",
-                    "/LD",
-                    "/std:c++17",
-                    launcher_src_path,
-                    f"-I{py_include_dir}",
-                    f"-I{include_dir}",
-                    "/link",
-                    f"/LIBPATH:{py_lib_dir}",
-                    "/link",
-                    f"{py_lib}",
-                    f"/OUT:{so_path}",
-                ])
+            launcher_src_path = os.path.join(tmpdir, "main.cxx")
+            so_path = os.path.join(tmpdir, "kernel.so")
+
+            Path(launcher_src_path).write_text(src)
+
+            # Dump main.cxx to SPINE_TRITON_DUMP_PATH if set
+            dump_path = os.getenv("SPINE_TRITON_DUMP_PATH", "")
+            if dump_path:
+                os.makedirs(dump_path, exist_ok=True)
+                dump_name = f"{kernel_name}_main.cxx" if kernel_name else "main.cxx"
+                shutil.copy(launcher_src_path, os.path.join(dump_path, dump_name))
+
+            with open(launcher_src_path, "rb") as f:
+                launcher_src_path = cache.put(f.read(), os.path.basename(launcher_src_path), binary=False)
+
+            gcc_flags = []
+            if cpu_arch == "riscv64":
+                gcc_flags.extend(["-march=rv64gcv_zfh_zba_zicbop_zihintpause", "-mabi=lp64d"])
+            if spine_opt_debug:
+                gcc_flags.append("-g")
+                gcc_flags.append("-O0")
             else:
-                launcher_src_path = os.path.join(tmpdir, "main.cxx")
-                so_path = os.path.join(tmpdir, "kernel.so")
+                gcc_flags.append("-O3")
 
-                Path(launcher_src_path).write_text(src)
-
-                # Dump main.cxx to SPINE_TRITON_DUMP_PATH if set
-                dump_path = os.getenv("SPINE_TRITON_DUMP_PATH", "")
-                if dump_path:
-                    os.makedirs(dump_path, exist_ok=True)
-                    dump_name = f"{kernel_name}_main.cxx" if kernel_name else "main.cxx"
-                    shutil.copy(launcher_src_path, os.path.join(dump_path, dump_name))
-
-                with open(launcher_src_path, "rb") as f:
-                    launcher_src_path = cache.put(f.read(), os.path.basename(launcher_src_path), binary=False)
-
-                gcc_flags = []
-                if cpu_arch == "riscv64":
-                    gcc_flags.extend(["-march=rv64gcv_zfh_zba_zicbop_zihintpause", "-mabi=lp64d"])
-                if spine_opt_debug:
-                    gcc_flags.append("-g")
-                    gcc_flags.append("-O0")
-                else:
-                    gcc_flags.append("-O3")
-
-                # Compile it together.
-                subprocess.check_call([
-                    "g++",
-                    "-std=c++17",
-                    *gcc_flags,
-                    launcher_src_path,
-                    f"-I{py_include_dir}",
-                    f"-I{include_dir}",
-                    f"-L{py_lib_dir}",
-                    "-shared",
-                    f"-l{py_lib}",
-                    "-fPIC",
-                    "-o",
-                    so_path,
-                ])
+            # Compile it together.
+            subprocess.check_call([
+                "g++",
+                "-std=c++17",
+                *gcc_flags,
+                launcher_src_path,
+                f"-I{py_include_dir}",
+                f"-I{include_dir}",
+                f"-L{py_lib_dir}",
+                "-shared",
+                f"-l{py_lib}",
+                "-fPIC",
+                "-o",
+                so_path,
+            ])
 
             with open(so_path, "rb") as f:
                 cache_path = cache.put(f.read(), filename, binary=True)

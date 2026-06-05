@@ -4,13 +4,13 @@ from dataclasses import dataclass
 from typing import Any, Dict, Tuple
 from types import ModuleType
 import hashlib
+import sys
 import tempfile
 import shutil
 import os
 import re
 import subprocess
 import functools
-import platform
 from pathlib import Path
 from . import (
     get_spine_triton_opt_path,
@@ -20,6 +20,9 @@ from . import (
     extract_kernel_name,
     get_cpu_name_from_arch_id,
     get_spine_mlir_opt_options,
+    get_cpu_arch,
+    get_target_arch,
+    get_cross_toolchain,
 )
 
 
@@ -126,19 +129,12 @@ def _optimize_llir(llir: str):
 
 
 def _llir_to_so(llir: str, metadata):
-    host_arch = platform.machine()
+    cpu_arch = get_cpu_arch()
     target_arch_id = metadata["target"].arch_id
     ai_cpu_arch = get_cpu_name_from_arch_id(target_arch_id)
 
-    ai_cpu_arch_cc_dict = {
-        "spacemit-a60": "spacemit-x60",
-        "spacemit-a200m": "spacemit-a100",
-    }
-    ai_cpu_arch_cc = ai_cpu_arch_cc_dict.get(ai_cpu_arch, ai_cpu_arch)
-
-    # Determine if we're cross-compiling (x86 host targeting riscv64)
-    target_arch = os.getenv("SPINE_TRITON_TARGET_ARCH", host_arch)
-    cross_toolchain = os.getenv("SPINE_TRITON_CROSS_TOOLCHAIN", "")
+    target_arch = get_target_arch()
+    cross_toolchain = get_cross_toolchain()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, ".ll")
@@ -151,9 +147,8 @@ def _llir_to_so(llir: str, metadata):
         llopt_flags = []
         if target_arch == "riscv64":
             llopt_flags.extend([
-                "--march=riscv64", "-mcpu={}".format(ai_cpu_arch_cc) if ai_cpu_arch_cc is not None else "",
-                "-passes=loop-vectorize", "--pass-remarks-missed", "-force-vector-width=32",
-                "-force-vector-interleave=2"
+                "--march=riscv64", f"-mcpu={ai_cpu_arch}", "-passes=loop-vectorize", "--pass-remarks-missed",
+                "-force-vector-width=32", "-force-vector-interleave=2"
             ])
 
         subprocess.check_call([llopt_path, src_path, *llopt_flags, "-o", src_opt_path])
@@ -161,14 +156,14 @@ def _llir_to_so(llir: str, metadata):
         llc_path = get_llvm_bin_path("llc")
         llc_flags = ["-O3", "--float-abi=hard", "--relocation-model=pic"]
         if target_arch == "riscv64":
-            mattr_list = ["64bit", "a", "b", "c", "d", "f", "i", "m", "v", "zfh", "zvfh", "zicbop", "zicbom", "zicboz", "xsmtvsfu"]
-            if ai_cpu_arch_cc in {"spacemit-a200", "spacemit-a200m"}:
-                mattr_list.append("zmatrix")
+            mattr_list = ["64bit", "a", "b", "c", "d", "f", "i", "m", "v", "zfh", "zvfh", "zicbop", "zicbom", "zicboz"]
+            if ai_cpu_arch in {"spacemit-a200", "spacemit-a200m"}:
+                mattr_list.extend(["xsmtvsfu", "zmatrix"])
 
             llc_flags.extend([
                 "--march=riscv64",
                 "--mattr=" + ",".join(mattr_list),
-                "-mcpu={}".format(ai_cpu_arch_cc) if ai_cpu_arch_cc is not None else "",
+                f"-mcpu={ai_cpu_arch}",
             ])
 
         # Generate assembly for dump if SPINE_TRITON_DUMP_PATH exists, but still generate object file for the final output
@@ -186,7 +181,7 @@ def _llir_to_so(llir: str, metadata):
         so_path = os.path.join(tmpdir, ".so")
         runtime_lib_dir = os.path.join(cpu_backend_path.parent.parent, "_C")
 
-        if target_arch == "riscv64" and host_arch != "riscv64":
+        if target_arch == "riscv64" and cpu_arch != "riscv64":
             assert os.path.exists(cross_toolchain), "Cross-compilation toolchain path does not exist: {}".format(
                 cross_toolchain)
             # Cross-compilation mode: use cross-compile toolchain
@@ -210,22 +205,15 @@ def _llir_to_so(llir: str, metadata):
                 so_path,
             ])
         else:
-            # Native compilation mode (original behavior)
-            import sys
+            # Native compilation mode
             py_version = sys.version_info
-            if platform.system() == "Windows":
-                py_include_dir = os.path.join(sys.base_prefix, "include")
-                py_lib_dir = os.path.join(sys.base_prefix, "libs")
-                py_lib = "{name}{major}{minor}.lib".format(name="python", major=py_version.major,
-                                                           minor=py_version.minor)
-            else:
-                py_include_dir = os.path.join(
-                    sys.base_prefix,
-                    "include",
-                    f"python{sys.version_info.major}.{sys.version_info.minor}",
-                )
-                py_lib_dir = os.path.join(sys.base_prefix, "lib")
-                py_lib = "{name}{major}.{minor}".format(name="python", major=py_version.major, minor=py_version.minor)
+            py_include_dir = os.path.join(
+                sys.base_prefix,
+                "include",
+                f"python{sys.version_info.major}.{sys.version_info.minor}",
+            )
+            py_lib_dir = os.path.join(sys.base_prefix, "lib")
+            py_lib = "{name}{major}.{minor}".format(name="python", major=py_version.major, minor=py_version.minor)
 
             gcc_flags = []
             if target_arch == "riscv64":
