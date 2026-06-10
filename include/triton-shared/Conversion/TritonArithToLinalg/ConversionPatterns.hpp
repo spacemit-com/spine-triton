@@ -1,3 +1,4 @@
+
 #ifndef TRITON_CONVERSION_PATTERNS
 #define TRITON_CONVERSION_PATTERNS
 
@@ -23,9 +24,11 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/SmallVectorExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
@@ -1464,19 +1467,31 @@ struct MatmulConverter : public OpConversionPattern<triton::DotOp> {
     bool integers = dstElemType.isInteger();
     bool skipC = isZeroTensor(opc, integers);
 
+    // When the dot op lives inside an scf.for loop with f16 inputs but an f32
+    // accumulator, perform the matmul in f16 and extend the result back to f32.
+    auto opaType = dyn_cast<RankedTensorType>(opa.getType());
+    auto opbType = dyn_cast<RankedTensorType>(opb.getType());
+    bool inputsAreF16 = opaType && opbType &&
+                        opaType.getElementType().isF16() &&
+                        opbType.getElementType().isF16();
+    bool useF16Matmul = (op->getParentOfType<scf::ForOp>() != nullptr) &&
+                        inputsAreF16 && dstElemType.isF32();
+    Type matmulElemType = useF16Matmul ? opaType.getElementType() : dstElemType;
+
     Value res;
 
     {
       auto init = tensor::EmptyOp::create(rewriter, loc, dstType.getShape(),
-                                          dstElemType);
+                                          matmulElemType);
 
       TypedAttr constantAttr =
-          integers
-              ? static_cast<TypedAttr>(rewriter.getIntegerAttr(dstElemType, 0))
-              : static_cast<TypedAttr>(rewriter.getFloatAttr(dstElemType, 0));
+          integers ? static_cast<TypedAttr>(
+                         rewriter.getIntegerAttr(matmulElemType, 0))
+                   : static_cast<TypedAttr>(
+                         rewriter.getFloatAttr(matmulElemType, 0));
 
-      auto zero =
-          arith::ConstantOp::create(rewriter, loc, dstElemType, constantAttr);
+      auto zero = arith::ConstantOp::create(rewriter, loc, matmulElemType,
+                                            constantAttr);
 
       auto zeroes = linalg::FillOp::create(rewriter, loc, ValueRange{zero},
                                            ValueRange{init})
@@ -1490,6 +1505,11 @@ struct MatmulConverter : public OpConversionPattern<triton::DotOp> {
       }
 
       res = matmulOp.getResult(0);
+
+      // Extend the f16 accumulator result back to the f32 destination type.
+      if (useF16Matmul) {
+        res = arith::ExtFOp::create(rewriter, loc, dstType, res);
+      }
 
       if (!skipC) {
         if (integers) {
@@ -1905,11 +1925,76 @@ class ArgMinMaxBaseConverter : public OpConversionPattern<triton::ReduceOp> {
   Value getInitTensor(ConversionPatternRewriter &rewriter,
                       ArrayRef<int64_t> shape, Value fillValue,
                       Location loc) const {
+    if (shape.empty()) {
+      auto initTensorType = RankedTensorType::get({}, fillValue.getType());
+      Value initTensor = bufferization::AllocTensorOp::create(
+          rewriter, loc, initTensorType, ValueRange{});
+      return tensor::InsertOp::create(rewriter, loc, fillValue, initTensor,
+                                      ValueRange{});
+    }
+
     Value initTensor =
         tensor::EmptyOp::create(rewriter, loc, shape, fillValue.getType());
     return linalg::FillOp::create(rewriter, loc, ValueRange{fillValue},
                                   ValueRange{initTensor})
         .result();
+  }
+
+  LogicalResult rewriteScalarReduceToScfFor(ReduceOp op, OpAdaptor adaptor,
+                                            ConversionPatternRewriter &rewriter,
+                                            Value valuesAccBaseVal,
+                                            Value indicesAccBaseVal) const {
+    auto loc = op.getLoc();
+    auto valueInputType =
+        dyn_cast<RankedTensorType>(adaptor.getOperands()[0].getType());
+    auto indexInputType =
+        dyn_cast<RankedTensorType>(adaptor.getOperands()[1].getType());
+    auto indexType = dyn_cast<IntegerType>(indicesAccBaseVal.getType());
+    if (!valueInputType || !indexInputType || valueInputType.getRank() != 1 ||
+        indexInputType.getRank() != 1 || !indexType ||
+        valueInputType.isDynamicDim(0) || indexInputType.isDynamicDim(0) ||
+        adaptor.getAxis() != 0)
+      return failure();
+
+    int64_t tripCount = valueInputType.getDimSize(0);
+    if (tripCount != indexInputType.getDimSize(0))
+      return failure();
+
+    auto makeRangeOp = op.getOperands()[1].getDefiningOp<triton::MakeRangeOp>();
+    if (!makeRangeOp || makeRangeOp.getStart() != 0 ||
+        makeRangeOp.getEnd() != tripCount)
+      return failure();
+
+    Value lowerBound = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value upperBound = arith::ConstantIndexOp::create(rewriter, loc, tripCount);
+    Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
+
+    auto forOp = scf::ForOp::create(
+        rewriter, loc, lowerBound, upperBound, step,
+        ValueRange{valuesAccBaseVal, indicesAccBaseVal},
+        [&](OpBuilder &b, Location loc, Value iv, ValueRange iterArgs) {
+          Value currValue = tensor::ExtractOp::create(
+              b, loc, adaptor.getOperands()[0], ValueRange{iv});
+          Value currIndex = arith::IndexCastOp::create(b, loc, indexType, iv);
+          Value reduceValue = iterArgs[0];
+          Value reduceIndex = iterArgs[1];
+
+          Value eq = arith::CmpFOp::create(b, loc, arith::CmpFPredicate::OEQ,
+                                           currValue, reduceValue);
+          Value slt = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::slt,
+                                            currIndex, reduceIndex);
+          Value tie = arith::AndIOp::create(b, loc, eq, slt);
+          Value cmp = T::createComparisonResult(b, loc, currValue, reduceValue);
+          Value shouldUpdate = arith::OrIOp::create(b, loc, cmp, tie);
+          Value nextValue = arith::SelectOp::create(b, loc, shouldUpdate,
+                                                    currValue, reduceValue);
+          Value nextIndex = arith::SelectOp::create(b, loc, shouldUpdate,
+                                                    currIndex, reduceIndex);
+          scf::YieldOp::create(b, loc, ValueRange{nextValue, nextIndex});
+        });
+
+    rewriter.replaceOp(op, forOp.getResults());
+    return success();
   }
 
 public:
@@ -1998,6 +2083,12 @@ public:
     // rank-0, otherwise we can reuse the original result shape
     auto valueResultType = dyn_cast<RankedTensorType>(op.getType(0));
     const auto isScalarReduce = valueResultType == nullptr;
+    if (isScalarReduce &&
+        succeeded(rewriteScalarReduceToScfFor(
+            op, adaptor, rewriter, valuesAccBaseVal, indicesAccBaseVal))) {
+      return success();
+    }
+
     SmallVector<int64_t> reductionResultShape{
         isScalarReduce ? SmallVector<int64_t>{}
                        : SmallVector<int64_t>(valueResultType.getShape())};
@@ -2069,6 +2160,12 @@ struct ArgMaxConverter : public ArgMinMaxBaseConverter<ArgMaxConverter> {
     return -std::numeric_limits<float>::infinity();
   }
 
+  static Value createComparisonResult(OpBuilder &builder, Location loc,
+                                      Value currValue, Value reduceValue) {
+    return arith::CmpFOp::create(builder, loc, arith::CmpFPredicate::OGT,
+                                 currValue, reduceValue);
+  }
+
   ArgMaxConverter(MLIRContext *context) : ArgMinMaxBaseConverter(context) {}
 };
 
@@ -2098,6 +2195,12 @@ struct ArgMinConverter : public ArgMinMaxBaseConverter<ArgMinConverter> {
 
   static float getBaseReductionValue() {
     return std::numeric_limits<float>::infinity();
+  }
+
+  static Value createComparisonResult(OpBuilder &builder, Location loc,
+                                      Value currValue, Value reduceValue) {
+    return arith::CmpFOp::create(builder, loc, arith::CmpFPredicate::OLT,
+                                 currValue, reduceValue);
   }
 
   ArgMinConverter(MLIRContext *context) : ArgMinMaxBaseConverter(context) {}
@@ -2973,7 +3076,7 @@ private:
     StringRef symbol = op.getSymbol();
     bool isIsNaN = (symbol == "math.isnan");
     bool isIsInf = (symbol == "math.isinf");
-    bool isFinite = (symbol == "math.isfinite");
+    bool isFinite = (symbol == "math.isfinite" || symbol == "linalg.isfinited");
     bool isCos = (symbol == "math.cos");
     bool isSin = (symbol == "math.sin");
     bool isTrunc = (symbol == "math.trunc");
@@ -3064,14 +3167,35 @@ private:
             Value specialOp = math::IsNaNOp::create(b, loc, inputVal);
             if (outputElemType.isInteger(1)) {
               outputVal = specialOp;
+            } else if (auto intTy = dyn_cast<IntegerType>(outputElemType)) {
+              Value one = arith::ConstantOp::create(b, loc, intTy,
+                                                    b.getIntegerAttr(intTy, 1));
+              Value zero = arith::ConstantOp::create(
+                  b, loc, intTy, b.getIntegerAttr(intTy, 0));
+              outputVal = arith::SelectOp::create(b, loc, specialOp, one, zero);
             } else {
               outputVal =
                   arith::ExtUIOp::create(b, loc, outputElemType, specialOp);
             }
           } else if (isIsInf) { // isIsInf
-            Value specialOp = math::IsInfOp::create(b, loc, inputVal);
+            // Avoid math.isinf canonicalization paths that can introduce
+            // problematic i1 scalable-vector conversions in some backends.
+            auto elemTy = cast<FloatType>(inputVal.getType());
+            Value absVal = math::AbsFOp::create(b, loc, inputVal);
+            APFloat inf = APFloat::getInf(elemTy.getFloatSemantics());
+            Value infCst = arith::ConstantOp::create(
+                b, loc, elemTy, FloatAttr::get(elemTy, inf));
+            Value specialOp = arith::CmpFOp::create(
+                b, loc, arith::CmpFPredicate::OEQ, absVal, infCst);
+
             if (outputElemType.isInteger(1)) {
               outputVal = specialOp;
+            } else if (auto intTy = dyn_cast<IntegerType>(outputElemType)) {
+              Value one = arith::ConstantOp::create(b, loc, intTy,
+                                                    b.getIntegerAttr(intTy, 1));
+              Value zero = arith::ConstantOp::create(
+                  b, loc, intTy, b.getIntegerAttr(intTy, 0));
+              outputVal = arith::SelectOp::create(b, loc, specialOp, one, zero);
             } else {
               outputVal =
                   arith::ExtUIOp::create(b, loc, outputElemType, specialOp);
@@ -3080,6 +3204,12 @@ private:
             Value specialOp = math::IsFiniteOp::create(b, loc, inputVal);
             if (outputElemType.isInteger(1)) {
               outputVal = specialOp;
+            } else if (auto intTy = dyn_cast<IntegerType>(outputElemType)) {
+              Value one = arith::ConstantOp::create(b, loc, intTy,
+                                                    b.getIntegerAttr(intTy, 1));
+              Value zero = arith::ConstantOp::create(
+                  b, loc, intTy, b.getIntegerAttr(intTy, 0));
+              outputVal = arith::SelectOp::create(b, loc, specialOp, one, zero);
             } else {
               outputVal =
                   arith::ExtUIOp::create(b, loc, outputElemType, specialOp);

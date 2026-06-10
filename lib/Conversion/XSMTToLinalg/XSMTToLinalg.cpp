@@ -1690,6 +1690,8 @@ private:
 
     auto transposeResultType =
         cast<RankedTensorType>(transposeOp->getResult(0).getType());
+
+    // Use the transpose result type directly, as packedResult should match it
     Value castResult = tensor::CastOp::create(
         rewriter, loc, transposeResultType, packedResult);
 

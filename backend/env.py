@@ -1,7 +1,8 @@
 import os
+import platform
 import shutil
 import re
-from ctypes import CDLL, RTLD_GLOBAL
+from ctypes import CDLL, RTLD_GLOBAL, c_int16, c_void_p
 import triton
 import glob
 
@@ -11,6 +12,19 @@ SPINE_MLIR_BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 def get_spine_mlir_cc_debug() -> bool:
     debug_or_not = int(os.getenv("SPINE_MLIR_DEBUG_MODE", "0"))
     return debug_or_not == 1
+
+
+def get_cpu_arch() -> str:
+    return platform.machine()
+
+
+def get_target_arch() -> str:
+    cpu_arch = get_cpu_arch()
+    return os.getenv("SPINE_TRITON_TARGET_ARCH", cpu_arch)
+
+
+def get_cross_toolchain() -> str:
+    return os.getenv("SPINE_TRITON_CROSS_TOOLCHAIN", "")
 
 
 def get_spine_mlir_opt_path() -> str:
@@ -78,6 +92,33 @@ def get_cpu_name_from_arch_id(arch_id: str) -> str:
     if cpu_name is None:
         raise ValueError(f"Unknown arch_id: {arch_id}")
     return cpu_name
+
+
+def alloc_mbarrier(expect_count: int, flag: int = 0, arrive_count: int = 0, transaction_count: int = 0) -> int:
+    if expect_count <= 0:
+        raise ValueError(f"expect_count must be positive, got {expect_count}")
+    if expect_count > 32767:
+        raise ValueError(f"expect_count must fit int16_t, got {expect_count}")
+    if "libspeirruntime" not in globals():
+        raise RuntimeError("libSpeIRRuntimeLibs is not loaded")
+    alloc_fn = libspeirruntime.spine_mbarrier_alloc
+    alloc_fn.argtypes = [c_int16, c_int16, c_int16, c_int16]
+    alloc_fn.restype = c_void_p
+    handle = alloc_fn(flag, arrive_count, transaction_count, expect_count)
+    if not handle:
+        raise RuntimeError("spine_mbarrier_alloc returned null")
+    return int(handle)
+
+
+def release_mbarrier(handle: int) -> None:
+    if not handle:
+        return
+    if "libspeirruntime" not in globals():
+        raise RuntimeError("libSpeIRRuntimeLibs is not loaded")
+    release_fn = libspeirruntime.spine_mbarrier_release
+    release_fn.argtypes = [c_void_p]
+    release_fn.restype = None
+    release_fn(c_void_p(handle))
 
 
 try:

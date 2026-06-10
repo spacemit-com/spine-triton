@@ -198,18 +198,19 @@ static OpFoldResult accumulateTargetOffset(Location loc,
                                            ArrayRef<OpFoldResult> offsets,
                                            ArrayRef<OpFoldResult> strides,
                                            int gatherDim, OpBuilder &b) {
+  // For gather/scatter, the gather_scatter_offset already encodes the complete
+  // element offset from the base pointer (including contributions from all
+  // dimensions). Only accumulate the gather dimension's offset here; skip
+  // non-gather dimensions to avoid double-counting the base offset that is
+  // already baked into the gather_scatter_offset values.
   OpFoldResult targetOffset = b.getIndexAttr(0);
-  for (int i = 0; i < offsets.size(); i++) {
-
-    OpFoldResult offset = offsets[i];
-    // If this is the gather dimension, multiply the offset by the stride.
-    // Non-gather dimensions are already multiplied by the stride
-    // in the offsets in PtrAnalysis.
+  for (int i = 0; i < (int)offsets.size(); i++) {
     if (i == gatherDim) {
+      OpFoldResult offset = offsets[i];
       OpFoldResult stride = strides[i];
       offset = mulOFRs(offset, stride, loc, b);
+      targetOffset = addOFRs(targetOffset, offset, loc, b);
     }
-    targetOffset = addOFRs(targetOffset, offset, loc, b);
   }
   return targetOffset;
 }

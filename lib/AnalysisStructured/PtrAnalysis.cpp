@@ -1955,12 +1955,34 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
         }
       }
     } else if (origTensorTy && loadTensorTy) {
-      // Handle shape mismatch: when the structured load produces a
-      // lower-rank tensor (e.g. tensor<1xi16> vs tensor<1x1xi16>),
-      // insert tensor.expand_shape to restore the original shape so
-      // that downstream ops see the expected type.
-      if (origTensorTy.getRank() > loadTensorTy.getRank() &&
-          origTensorTy.getElementType() == loadTensorTy.getElementType()) {
+      // Handle shape mismatch: when the structured load produced a
+      // unit-shape tensor (every dim == 1) but the original tt.load
+      // expected tensor<NxT> (e.g. scalar pointer broadcast through an
+      // addptr with a tensor offset that happened to evaluate to a
+      // single distinct element), broadcast the value back to the
+      // original shape with tensor.extract + tensor.splat. Without this,
+      // downstream ops such as arith.cmpi see operands of mismatched
+      // shapes and fail verification.
+      auto isAllOnes = [](ArrayRef<int64_t> shape) {
+        return llvm::all_of(shape, [](int64_t d) { return d == 1; });
+      };
+      if (origTensorTy.getElementType() == loadTensorTy.getElementType() &&
+          isAllOnes(loadTensorTy.getShape()) &&
+          !isAllOnes(origTensorTy.getShape())) {
+        SmallVector<Value> zeros(
+            loadTensorTy.getRank(),
+            arith::ConstantIndexOp::create(builder, loc, 0).getResult());
+        Value scalar = tensor::ExtractOp::create(builder, loc, loadResult,
+                                                 ValueRange{zeros});
+        loadResult = tensor::SplatOp::create(builder, loc, origTensorTy, scalar)
+                         .getResult();
+      } else if (origTensorTy.getRank() > loadTensorTy.getRank() &&
+                 origTensorTy.getElementType() ==
+                     loadTensorTy.getElementType()) {
+        // Handle shape mismatch: when the structured load produces a
+        // lower-rank tensor (e.g. tensor<1xi16> vs tensor<1x1xi16>),
+        // insert tensor.expand_shape to restore the original shape so
+        // that downstream ops see the expected type.
         // Build reassociation indices: map each load dim to the
         // corresponding group of original dims.  Unit dims in the
         // original that are missing in the load are grouped with
