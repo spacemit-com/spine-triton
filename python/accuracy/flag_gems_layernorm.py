@@ -1,9 +1,7 @@
-import time
-import numpy as np
-from functools import wraps
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -13,12 +11,8 @@ if __name__ == "__main__":
         N,
     ]
     A = torch.randn((M, N), dtype=torch.float32, device=flag_gems.device, requires_grad=False)
-    weight = torch.randn(
-            layer_shape, dtype=torch.float32, device=flag_gems.device, requires_grad=True
-    )
-    bias = torch.randn(
-        layer_shape, dtype=torch.float32, device=flag_gems.device, requires_grad=True
-    )
+    weight = torch.randn(layer_shape, dtype=torch.float32, device=flag_gems.device, requires_grad=True)
+    bias = torch.randn(layer_shape, dtype=torch.float32, device=flag_gems.device, requires_grad=True)
     eps = 1e-5
 
     ref_out = torch.layer_norm(

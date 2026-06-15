@@ -2,8 +2,6 @@ import torch
 
 import triton
 import triton.language as tl
-
-
 """
 
 |-----|-----|-----|-----|
@@ -54,9 +52,7 @@ def kernel(
 def test(device):
     n_rows = 512
     n_cols = 256
-    x = torch.arange(0, n_rows * n_cols, 1, device=device, dtype=torch.float32).reshape(
-        [n_rows, n_cols]
-    )
+    x = torch.arange(0, n_rows * n_cols, 1, device=device, dtype=torch.float32).reshape([n_rows, n_cols])
     output = torch.full([n_rows, n_cols], -1, device=device, dtype=x.dtype)
     BLOCK_SIZE_ROW = 4
     BLOCK_SIZE_COL = 2

@@ -1,7 +1,7 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -31,14 +31,9 @@ if __name__ == "__main__":
 
     src = torch.rand(valid_shape, dtype=dtype, device=flag_gems.device)
 
-    ref_out = torch.slice_scatter(
-        inp, dim=dim, src=src, start=start, end=end, step=step
-    )
+    ref_out = torch.slice_scatter(inp, dim=dim, src=src, start=start, end=end, step=step)
 
-    res_out = flag_gems.ops.slice_scatter(
-        inp, dim=dim, src=src, start=start, end=end, step=step
-    )
-
+    res_out = flag_gems.ops.slice_scatter(inp, dim=dim, src=src, start=start, end=end, step=step)
 
     torch.testing.assert_close(ref_out, res_out, atol=1e-2, rtol=0)
     print("PASS")

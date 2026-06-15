@@ -30,11 +30,11 @@ Value getSlice(OpBuilder &b, Location loc, Value source,
   return TypeSwitch<Type, Value>(source.getType())
       .Case<RankedTensorType>([&](RankedTensorType t) -> Value {
         return tensor::ExtractSliceOp::create(b, loc, source, offsets, sizes,
-                                                strides);
+                                              strides);
       })
       .Case<MemRefType>([&](MemRefType type) -> Value {
         return memref::SubViewOp::create(b, loc, source, offsets, sizes,
-                                           strides);
+                                         strides);
       })
       .Default([&](Type t) { return nullptr; });
 }

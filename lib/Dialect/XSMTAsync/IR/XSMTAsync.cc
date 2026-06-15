@@ -26,8 +26,8 @@ void XSMTAsyncDialect::initialize() {
 }
 
 void MBarrierAllocOp::build(OpBuilder &builder, OperationState &result,
-                             Value parity, Value arr_count, Value tx_count,
-                             Value ex_count) {
+                            Value parity, Value arr_count, Value tx_count,
+                            Value ex_count) {
   result.addOperands(parity);
   result.addOperands(arr_count);
   result.addOperands(tx_count);

@@ -27,7 +27,7 @@ def test(device):
     fill_value = 123.456
     expected_result = torch.full((n_rows, n_cols), fill_value, dtype=torch.float32)
     output = torch.empty([n_rows, n_cols], device=device, dtype=expected_result.dtype)
-    grid = lambda meta: (n_rows // 2,)
+    grid = lambda meta: (n_rows // 2, )
 
     splat[grid](
         fill_value,

@@ -24,7 +24,10 @@ pushd triton
 git reset 2>/dev/null || true
 git checkout . 2>/dev/null || true
 git clean -fd 2>/dev/null || true
-ls ${CUR_DIR}/patch/*.patch 2>/dev/null | xargs -n1 git apply 2>/dev/null || true
+for p in ${CUR_DIR}/patch/*.patch; do
+    echo "Applying patch: ${p}"
+    git apply "${p}" || { echo "ERROR: failed to apply patch ${p}"; exit 1; }
+done
 
 export SPINE_MLIR_INSTALL_DIR=${SPINE_MLIR_INSTALL_DIR}
 export SPINE_TRITON_VERSION_NUMBER=${VERSION_NUMBER}

@@ -1,7 +1,7 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -13,7 +13,7 @@ if __name__ == "__main__":
     dim = 0
     FLOAT_DTYPES = [torch.float16, torch.float32]
     if dtype in FLOAT_DTYPES:
-        x = torch.empty((hiddensize,), dtype=dtype, device=flag_gems.device)
+        x = torch.empty((hiddensize, ), dtype=dtype, device=flag_gems.device)
         tmp = torch.tensor(0, dtype=dtype)
         inf = torch.tensor(float("inf"), dtype=dtype)
         for i in range(0, hiddensize):
@@ -26,9 +26,7 @@ if __name__ == "__main__":
     else:
         if flag_gems.device == "musa" and dtype == torch.int16:
             # arange short type on torch of mthreads not supported yet.
-            x = torch.arange(hiddensize, dtype=torch.int32, device=flag_gems.device).to(
-                dtype
-            )
+            x = torch.arange(hiddensize, dtype=torch.int32, device=flag_gems.device).to(dtype)
         else:
             x = torch.arange(hiddensize, dtype=dtype, device=flag_gems.device)
     y = torch.empty((batch_size, hiddensize), dtype=dtype, device=flag_gems.device)

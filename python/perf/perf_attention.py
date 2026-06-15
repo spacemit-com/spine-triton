@@ -111,12 +111,29 @@ def _attn_fwd_inner(
 
 @triton.jit
 def _attn_fwd(
-    Q, K, V, M, Out, acc_buffer,
+    Q,
+    K,
+    V,
+    M,
+    Out,
+    acc_buffer,
     sm_scale,
-    stride_qz: tl.constexpr, stride_qh: tl.constexpr, stride_qm: tl.constexpr, stride_qk: tl.constexpr,
-    stride_kz: tl.constexpr, stride_kh: tl.constexpr, stride_kn: tl.constexpr, stride_kk: tl.constexpr,
-    stride_vz: tl.constexpr, stride_vh: tl.constexpr, stride_vn: tl.constexpr, stride_vk: tl.constexpr,
-    stride_oz: tl.constexpr, stride_oh: tl.constexpr, stride_om: tl.constexpr, stride_on: tl.constexpr,
+    stride_qz: tl.constexpr,
+    stride_qh: tl.constexpr,
+    stride_qm: tl.constexpr,
+    stride_qk: tl.constexpr,
+    stride_kz: tl.constexpr,
+    stride_kh: tl.constexpr,
+    stride_kn: tl.constexpr,
+    stride_kk: tl.constexpr,
+    stride_vz: tl.constexpr,
+    stride_vh: tl.constexpr,
+    stride_vn: tl.constexpr,
+    stride_vk: tl.constexpr,
+    stride_oz: tl.constexpr,
+    stride_oh: tl.constexpr,
+    stride_om: tl.constexpr,
+    stride_on: tl.constexpr,
     Z: tl.constexpr,
     H: tl.constexpr,
     N_CTX: tl.constexpr,
@@ -189,29 +206,55 @@ def _attn_fwd(
 
         if STAGE & 1:
             acc_4d, l_i_2d, m_i_2d = _attn_fwd_inner(
-                acc_4d, l_i_2d, m_i_2d,
-                Q_block_ptr, K_block_ptr, V_block_ptr,
-                task_m_idx, sm_scale,
-                BLOCK_M, HEAD_DIM, BLOCK_N, 4 - STAGE,
-                offs_m, offs_n, N_CTX,
-                MICRO_M, MICRO_K, MICRO_N,
-                num_m_tiles, num_n_tiles,
+                acc_4d,
+                l_i_2d,
+                m_i_2d,
+                Q_block_ptr,
+                K_block_ptr,
+                V_block_ptr,
+                task_m_idx,
+                sm_scale,
+                BLOCK_M,
+                HEAD_DIM,
+                BLOCK_N,
+                4 - STAGE,
+                offs_m,
+                offs_n,
+                N_CTX,
+                MICRO_M,
+                MICRO_K,
+                MICRO_N,
+                num_m_tiles,
+                num_n_tiles,
             )
 
         if STAGE & 2:
             acc_4d, l_i_2d, m_i_2d = _attn_fwd_inner(
-                acc_4d, l_i_2d, m_i_2d,
-                Q_block_ptr, K_block_ptr, V_block_ptr,
-                task_m_idx, sm_scale,
-                BLOCK_M, HEAD_DIM, BLOCK_N, 2,
-                offs_m, offs_n, N_CTX,
-                MICRO_M, MICRO_K, MICRO_N,
-                num_m_tiles, num_n_tiles,
+                acc_4d,
+                l_i_2d,
+                m_i_2d,
+                Q_block_ptr,
+                K_block_ptr,
+                V_block_ptr,
+                task_m_idx,
+                sm_scale,
+                BLOCK_M,
+                HEAD_DIM,
+                BLOCK_N,
+                2,
+                offs_m,
+                offs_n,
+                N_CTX,
+                MICRO_M,
+                MICRO_K,
+                MICRO_N,
+                num_m_tiles,
+                num_n_tiles,
             )
 
         acc_2d = smt.view(acc_4d, (0, 0), (BLOCK_M, HEAD_DIM), (1, 1))
-        m_i = tl.reshape(m_i_2d, (BLOCK_M,))
-        l_i = tl.reshape(l_i_2d, (BLOCK_M,))
+        m_i = tl.reshape(m_i_2d, (BLOCK_M, ))
+        l_i = tl.reshape(l_i_2d, (BLOCK_M, ))
 
         m_i = m_i + tl_extra_shim.log(l_i)
         accumulator = acc_2d / l_i[:, None]
@@ -235,9 +278,7 @@ def flash_attention_forward(q, k, v, sm_scale, is_causal=False, num_ctas=16):
         dtype=q.dtype,
         device=q.device,
     )
-    M = torch.empty(
-        (q.shape[0], q.shape[1], q.shape[2]), device=q.device, dtype=q.dtype
-    )
+    M = torch.empty((q.shape[0], q.shape[1], q.shape[2]), device=q.device, dtype=q.dtype)
 
     STAGE = 3 if is_causal else 1
 
@@ -257,13 +298,30 @@ def flash_attention_forward(q, k, v, sm_scale, is_causal=False, num_ctas=16):
     num_n_tiles = BLOCK_N // MICRO_N
     num_k_tiles = HEAD_DIM_K // MICRO_N
 
-    _attn_fwd[(num_ctas,)](
-        q, k, v, M, o, acc,
+    _attn_fwd[(num_ctas, )](
+        q,
+        k,
+        v,
+        M,
+        o,
+        acc,
         sm_scale,
-        q.stride(0), q.stride(1), q.stride(2), q.stride(3),
-        k.stride(0), k.stride(1), k.stride(2), k.stride(3),
-        v.stride(0), v.stride(1), v.stride(2), v.stride(3),
-        o.stride(0), o.stride(1), o.stride(2), o.stride(3),
+        q.stride(0),
+        q.stride(1),
+        q.stride(2),
+        q.stride(3),
+        k.stride(0),
+        k.stride(1),
+        k.stride(2),
+        k.stride(3),
+        v.stride(0),
+        v.stride(1),
+        v.stride(2),
+        v.stride(3),
+        o.stride(0),
+        o.stride(1),
+        o.stride(2),
+        o.stride(3),
         q.shape[0],
         q.shape[1],
         N_CTX=q.shape[2],
@@ -322,7 +380,7 @@ if __name__ == "__main__":
                     q = torch.randn(test_shape, dtype=test_dtype, device="cpu")
                     k = torch.randn(test_shape, dtype=test_dtype, device="cpu")
                     v = torch.randn(test_shape, dtype=test_dtype, device="cpu")
-                    sm_scale = 1.0 / (head_dim ** 0.5)
+                    sm_scale = 1.0 / (head_dim**0.5)
 
                     out = flash_attention_forward(q, k, v, sm_scale, is_causal, num_ctas)
                     ref = pytorch_attention(q, k, v, sm_scale, is_causal)
@@ -332,7 +390,7 @@ if __name__ == "__main__":
                     max_diff = (out - ref).abs().max().item()
                     status = "PASS" if is_correct else f"FAIL (max_diff={max_diff:.2e})"
                     print(f"  {causal_str:10} | {str(test_dtype):15} | {str(test_shape):25} | {status}")
-                except Exception as e:
+                except Exception:
                     import traceback
                     print(f"  {causal_str:10} | {str(test_dtype):15} | {str(test_shape):25} | ERROR:")
                     traceback.print_exc()
@@ -363,7 +421,7 @@ if __name__ == "__main__":
                     q = torch.randn(test_shape, dtype=test_dtype, device="cpu")
                     k = torch.randn(test_shape, dtype=test_dtype, device="cpu")
                     v = torch.randn(test_shape, dtype=test_dtype, device="cpu")
-                    sm_scale = 1.0 / (head_dim ** 0.5)
+                    sm_scale = 1.0 / (head_dim**0.5)
 
                     # Warmup
                     for _ in range(num_warmup):
@@ -382,7 +440,7 @@ if __name__ == "__main__":
                     gflops = flops / 1e9 / (best_ms / 1000)
 
                     print(f"  {str(test_shape):25} | {best_ms:12.2f} | {gflops:12.2f}")
-                except Exception as e:
+                except Exception:
                     import traceback
                     print(f"  {str(test_shape):25} | ERROR:")
                     traceback.print_exc()

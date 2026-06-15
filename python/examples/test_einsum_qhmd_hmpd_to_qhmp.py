@@ -3,6 +3,7 @@ import torch
 import triton
 import triton.language as tl
 
+
 # This implements einsum(qhmd,hmpd->qhmp).
 @triton.jit
 def einsum_qhmd_hmpd_to_qhmp_kernel(
@@ -92,7 +93,7 @@ def einsum_qhmd_hmpd_to_qhmp_kernel(
     tl.store(C_ptr + c_offset, c_acc, mask=full_mask)
 
 
-def einsum_qhmd_hmpd_to_qhmp(A, B, BLOCK_QHM = 2, BLOCK_P = 2):
+def einsum_qhmd_hmpd_to_qhmp(A, B, BLOCK_QHM=2, BLOCK_P=2):
     """
     A: [Q,H,M,D], B: [H,M,P,D]
     => C: [Q,H,M,P] with sum_{d=0..D-1} A[q,h,m,d]*B[h,m,p,d].
@@ -135,6 +136,7 @@ def einsum_qhmd_hmpd_to_qhmp(A, B, BLOCK_QHM = 2, BLOCK_P = 2):
     )
 
     return C
+
 
 def test(device):
     Q, H, M, D = (1, 2, 2, 2)

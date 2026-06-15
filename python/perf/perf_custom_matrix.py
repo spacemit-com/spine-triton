@@ -7,8 +7,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 
-
 ARCH_ID = triton.runtime.driver.active.current_arch_id
+
 
 # ==================== MM Kernel ====================
 @triton.jit
@@ -54,13 +54,9 @@ def mm_kernel(
     )
 
     a_descriptor_load = smt.descriptor_load(a_block_ptr, (0, 0))
-    a = smt.view(
-        a_descriptor_load, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K)
-    )
+    a = smt.view(a_descriptor_load, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K))
     b_descriptor_load = smt.descriptor_load(b_block_ptr, (0, 0))
-    b = smt.view(
-        b_descriptor_load, (0, 0), (BLOCK_SIZE_K, BLOCK_SIZE_N), (MICRO_K, MICRO_N)
-    )
+    b = smt.view(b_descriptor_load, (0, 0), (BLOCK_SIZE_K, BLOCK_SIZE_N), (MICRO_K, MICRO_N))
 
     accumulator = smt.dot(a, b)
     accumulator = smt.view(accumulator, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_N), (1, 1))
@@ -123,13 +119,9 @@ def addmm_kernel(
     )
 
     a_descriptor_load = smt.descriptor_load(a_block_ptr, (0, 0))
-    a = smt.view(
-        a_descriptor_load, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K)
-    )
+    a = smt.view(a_descriptor_load, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K))
     b_descriptor_load = smt.descriptor_load(b_block_ptr, (0, 0))
-    b = smt.view(
-        b_descriptor_load, (0, 0), (BLOCK_SIZE_K, BLOCK_SIZE_N), (MICRO_K, MICRO_N)
-    )
+    b = smt.view(b_descriptor_load, (0, 0), (BLOCK_SIZE_K, BLOCK_SIZE_N), (MICRO_K, MICRO_N))
 
     accumulator = smt.dot(a, b)
     accumulator = smt.view(accumulator, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_N), (1, 1))
@@ -143,7 +135,7 @@ def addmm_kernel(
         block_shape=[BLOCK_SIZE_N],
         order=[0],
     )
-    bias = tl.load(bias_block_ptr, boundary_check=(0,))
+    bias = tl.load(bias_block_ptr, boundary_check=(0, ))
     # Broadcast bias to [BLOCK_SIZE_M, BLOCK_SIZE_N]
     bias_broadcast = bias[None, :]
 
@@ -215,13 +207,9 @@ def bmm_kernel(
     )
 
     a_descriptor_load = smt.descriptor_load(a_block_ptr, (0, 0))
-    a = smt.view(
-        a_descriptor_load, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K)
-    )
+    a = smt.view(a_descriptor_load, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K))
     b_descriptor_load = smt.descriptor_load(b_block_ptr, (0, 0))
-    b = smt.view(
-        b_descriptor_load, (0, 0), (BLOCK_SIZE_K, BLOCK_SIZE_N), (MICRO_K, MICRO_N)
-    )
+    b = smt.view(b_descriptor_load, (0, 0), (BLOCK_SIZE_K, BLOCK_SIZE_N), (MICRO_K, MICRO_N))
 
     accumulator = smt.dot(a, b)
     accumulator = smt.view(accumulator, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_N), (1, 1))
@@ -293,7 +281,7 @@ def mv_kernel(
                 block_shape=[BLOCK_M],
                 order=[0],
             )
-            b = tl.load(B_block_ptr, boundary_check=(0,)).to(acc_dtype)
+            b = tl.load(B_block_ptr, boundary_check=(0, )).to(acc_dtype)
 
             # Accumulate: a * b (broadcast b to [BLOCK_N, BLOCK_M])
             acc += a * b[None, :]
@@ -310,7 +298,7 @@ def mv_kernel(
             block_shape=[BLOCK_N],
             order=[0],
         )
-        tl.store(C_block_ptr, result.to(C.dtype.element_ty), boundary_check=(0,))
+        tl.store(C_block_ptr, result.to(C.dtype.element_ty), boundary_check=(0, ))
 
 
 # ==================== Outer Kernel ====================
@@ -348,7 +336,7 @@ def outer_kernel(
             block_shape=[BLOCK_SIZE_M],
             order=[0],
         )
-        a = tl.load(a_block_ptr, boundary_check=(0,))
+        a = tl.load(a_block_ptr, boundary_check=(0, ))
 
         # Load b block [BLOCK_SIZE_N]
         b_block_ptr = tl.make_block_ptr(
@@ -359,7 +347,7 @@ def outer_kernel(
             block_shape=[BLOCK_SIZE_N],
             order=[0],
         )
-        b = tl.load(b_block_ptr, boundary_check=(0,))
+        b = tl.load(b_block_ptr, boundary_check=(0, ))
 
         # Compute outer product: a[:, None] * b[None, :] -> [BLOCK_SIZE_M, BLOCK_SIZE_N]
         c = a[:, None] * b[None, :]
@@ -377,6 +365,7 @@ def outer_kernel(
 
 
 # ==================== Wrapper Functions ====================
+
 
 def triton_mm(a, b, block_size_m=128, block_size_n=128, micro_m=None, micro_n=None, micro_k=None):
     """Matrix multiplication using Triton kernel: C = A @ B"""
@@ -420,10 +409,18 @@ def triton_mm(a, b, block_size_m=128, block_size_n=128, micro_m=None, micro_n=No
     BLOCK_SIZE_K = triton.next_power_of_2(K)
 
     mm_kernel[grid](
-        a, b, c, M, N, K,
-        a.stride(0), a.stride(1),
-        b.stride(0), b.stride(1),
-        c.stride(0), c.stride(1),
+        a,
+        b,
+        c,
+        M,
+        N,
+        K,
+        a.stride(0),
+        a.stride(1),
+        b.stride(0),
+        b.stride(1),
+        c.stride(0),
+        c.stride(1),
         BLOCK_SIZE_M=block_size_m,
         BLOCK_SIZE_N=block_size_n,
         BLOCK_SIZE_K=BLOCK_SIZE_K,
@@ -476,10 +473,19 @@ def triton_addmm(bias, a, b, block_size_m=256, block_size_n=256, micro_m=None, m
     BLOCK_SIZE_K = triton.next_power_of_2(K)
 
     addmm_kernel[grid](
-        a, b, bias, c, M, N, K,
-        a.stride(0), a.stride(1),
-        b.stride(0), b.stride(1),
-        c.stride(0), c.stride(1),
+        a,
+        b,
+        bias,
+        c,
+        M,
+        N,
+        K,
+        a.stride(0),
+        a.stride(1),
+        b.stride(0),
+        b.stride(1),
+        c.stride(0),
+        c.stride(1),
         BLOCK_SIZE_M=block_size_m,
         BLOCK_SIZE_N=block_size_n,
         BLOCK_SIZE_K=BLOCK_SIZE_K,
@@ -503,7 +509,7 @@ def triton_bmm(a, b, block_size_m=256, block_size_n=256, micro_m=None, micro_n=N
     _, _, N = b.shape
 
     # Set MICRO parameters based on dtype
-    if a.dtype == torch.float32 and ARCH_ID  == "0xA064":
+    if a.dtype == torch.float32 and ARCH_ID == "0xA064":
         micro_m = micro_m if micro_m is not None else 8
         micro_n = micro_n if micro_n is not None else 32
         micro_k = micro_k if micro_k is not None else 32
@@ -534,10 +540,22 @@ def triton_bmm(a, b, block_size_m=256, block_size_n=256, micro_m=None, micro_n=N
     BLOCK_SIZE_K = triton.next_power_of_2(K)
 
     bmm_kernel[grid](
-        a, b, c, B, M, N, K,
-        a.stride(0), a.stride(1), a.stride(2),
-        b.stride(0), b.stride(1), b.stride(2),
-        c.stride(0), c.stride(1), c.stride(2),
+        a,
+        b,
+        c,
+        B,
+        M,
+        N,
+        K,
+        a.stride(0),
+        a.stride(1),
+        a.stride(2),
+        b.stride(0),
+        b.stride(1),
+        b.stride(2),
+        c.stride(0),
+        c.stride(1),
+        c.stride(2),
         BLOCK_SIZE_M=block_size_m,
         BLOCK_SIZE_N=block_size_n,
         BLOCK_SIZE_K=BLOCK_SIZE_K,
@@ -560,12 +578,16 @@ def triton_mv(mat, vec, block_n=128, block_m=64, num_ctas=16):
     N, M = mat.shape
     assert vec.shape[0] == M, "incompatible dimensions"
 
-    out = torch.empty((N,), device=mat.device, dtype=mat.dtype)
+    out = torch.empty((N, ), device=mat.device, dtype=mat.dtype)
 
-    mv_kernel[(num_ctas,)](
-        mat, vec, out,
-        N, M,
-        mat.stride(0), mat.stride(1),
+    mv_kernel[(num_ctas, )](
+        mat,
+        vec,
+        out,
+        N,
+        M,
+        mat.stride(0),
+        mat.stride(1),
         vec.stride(0),
         out.stride(0),
         BLOCK_N=block_n,
@@ -582,9 +604,14 @@ def triton_outer(a, b, block_size_m=128, block_size_n=128, num_ctas=16):
 
     c = torch.empty((M, N), device=a.device, dtype=a.dtype)
 
-    outer_kernel[(num_ctas,)](
-        a, b, c, M, N,
-        c.stride(0), c.stride(1),
+    outer_kernel[(num_ctas, )](
+        a,
+        b,
+        c,
+        M,
+        N,
+        c.stride(0),
+        c.stride(1),
         BLOCK_SIZE_M=block_size_m,
         BLOCK_SIZE_N=block_size_n,
         num_ctas=num_ctas,
@@ -593,6 +620,7 @@ def triton_outer(a, b, block_size_m=128, block_size_n=128, num_ctas=16):
 
 
 # ==================== Validation Functions ====================
+
 
 def validate_mm(test_name, M, N, K, dtype=torch.float32, atol=1e-2):
     """Validate mm kernel against PyTorch reference"""
@@ -616,7 +644,7 @@ def validate_addmm(test_name, M, N, K, dtype=torch.float32, atol=1e-2):
     torch.manual_seed(0)
     A = torch.randn((M, K), dtype=dtype, device="cpu", requires_grad=False)
     B = torch.randn((K, N), dtype=dtype, device="cpu", requires_grad=False)
-    bias = torch.randn((N,), dtype=dtype, device="cpu", requires_grad=False)
+    bias = torch.randn((N, ), dtype=dtype, device="cpu", requires_grad=False)
 
     output_triton = triton_addmm(bias, A, B)
     output_torch = torch.addmm(bias, A, B)
@@ -650,7 +678,7 @@ def validate_mv(test_name, M, N, dtype=torch.float32, atol=1e-4):
     """Validate mv kernel against PyTorch reference"""
     torch.manual_seed(0)
     mat = torch.randn((M, N), dtype=dtype, device="cpu", requires_grad=False)
-    vec = torch.randn((N,), dtype=dtype, device="cpu", requires_grad=False)
+    vec = torch.randn((N, ), dtype=dtype, device="cpu", requires_grad=False)
 
     output_triton = triton_mv(mat, vec)
     output_torch = torch.mv(mat, vec)
@@ -666,8 +694,8 @@ def validate_mv(test_name, M, N, dtype=torch.float32, atol=1e-4):
 def validate_outer(test_name, M, N, dtype=torch.float32, atol=1e-4):
     """Validate outer kernel against PyTorch reference"""
     torch.manual_seed(0)
-    a = torch.randn((M,), dtype=dtype, device="cpu", requires_grad=False)
-    b = torch.randn((N,), dtype=dtype, device="cpu", requires_grad=False)
+    a = torch.randn((M, ), dtype=dtype, device="cpu", requires_grad=False)
+    b = torch.randn((N, ), dtype=dtype, device="cpu", requires_grad=False)
 
     output_triton = triton_outer(a, b)
     output_torch = torch.outer(a, b)
@@ -789,7 +817,7 @@ def benchmark_addmm(M, N, K, dtype=torch.float32, num_warmup=5, num_iterations=1
     torch.manual_seed(0)
     A = torch.randn((M, K), dtype=dtype, device="cpu", requires_grad=False)
     B = torch.randn((K, N), dtype=dtype, device="cpu", requires_grad=False)
-    bias = torch.randn((N,), dtype=dtype, device="cpu", requires_grad=False)
+    bias = torch.randn((N, ), dtype=dtype, device="cpu", requires_grad=False)
 
     best_config, _ = _tune_best_config(
         ADDMM_TUNING_CONFIGS,
@@ -860,7 +888,7 @@ def benchmark_mv(M, N, dtype=torch.float32, num_warmup=5, num_iterations=100, nu
     """Benchmark mv with config tuning (Triton only)."""
     torch.manual_seed(0)
     mat = torch.randn((M, N), dtype=dtype, device="cpu", requires_grad=False)
-    vec = torch.randn((N,), dtype=dtype, device="cpu", requires_grad=False)
+    vec = torch.randn((N, ), dtype=dtype, device="cpu", requires_grad=False)
 
     best_config, _ = _tune_best_config(
         MV_TUNING_CONFIGS,
@@ -892,8 +920,8 @@ def benchmark_mv(M, N, dtype=torch.float32, num_warmup=5, num_iterations=100, nu
 def benchmark_outer(M, N, dtype=torch.float32, num_warmup=5, num_iterations=100, num_repeats=3):
     """Benchmark outer with config tuning (Triton only)."""
     torch.manual_seed(0)
-    a = torch.randn((M,), dtype=dtype, device="cpu", requires_grad=False)
-    b = torch.randn((N,), dtype=dtype, device="cpu", requires_grad=False)
+    a = torch.randn((M, ), dtype=dtype, device="cpu", requires_grad=False)
+    b = torch.randn((N, ), dtype=dtype, device="cpu", requires_grad=False)
 
     best_config, _ = _tune_best_config(
         OUTER_TUNING_CONFIGS,
@@ -1144,10 +1172,8 @@ if __name__ == "__main__":
                     num_iterations=test_iterations,
                     num_repeats=test_repeats,
                 )
-                config_str = (
-                    f"BN={best_config.kwargs['BLOCK_N']},BM={best_config.kwargs['BLOCK_M']},"
-                    f"CTA={best_config.kwargs['num_ctas']}"
-                )
+                config_str = (f"BN={best_config.kwargs['BLOCK_N']},BM={best_config.kwargs['BLOCK_M']},"
+                              f"CTA={best_config.kwargs['num_ctas']}")
                 print(f"  {str(test_shape):25} | {triton_time:15.4f} | {triton_throughput:15.2f} | {config_str:45}")
             except Exception as e:
                 print(f"  {str(test_shape):25} | Failed: {str(e)}")
@@ -1171,10 +1197,8 @@ if __name__ == "__main__":
                     num_iterations=test_iterations,
                     num_repeats=test_repeats,
                 )
-                config_str = (
-                    f"BM={best_config.kwargs['BLOCK_SIZE_M']},BN={best_config.kwargs['BLOCK_SIZE_N']},"
-                    f"CTA={best_config.kwargs['num_ctas']}"
-                )
+                config_str = (f"BM={best_config.kwargs['BLOCK_SIZE_M']},BN={best_config.kwargs['BLOCK_SIZE_N']},"
+                              f"CTA={best_config.kwargs['num_ctas']}")
                 print(f"  {str(test_shape):25} | {triton_time:15.4f} | {triton_throughput:15.2f} | {config_str:45}")
             except Exception as e:
                 print(f"  {str(test_shape):25} | Failed: {str(e)}")

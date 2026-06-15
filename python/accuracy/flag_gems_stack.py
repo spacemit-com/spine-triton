@@ -1,7 +1,7 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -13,12 +13,7 @@ if __name__ == "__main__":
     if dtype in FLOAT_DTYPES:
         inp = [torch.randn(s, dtype=dtype, device=flag_gems.device) for s in shape]
     else:
-        inp = [
-            torch.randint(low=0, high=0x7FFF, size=s, dtype=dtype, device="cpu").to(
-                flag_gems.device
-            )
-            for s in shape
-        ]
+        inp = [torch.randint(low=0, high=0x7FFF, size=s, dtype=dtype, device="cpu").to(flag_gems.device) for s in shape]
     ref_out = torch.stack(inp, dim)
 
     with flag_gems.use_gems():

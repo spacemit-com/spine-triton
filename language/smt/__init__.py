@@ -35,4 +35,3 @@ __all__ = [
     "barrier_set_expect",
     "storage_kind",
 ]
-

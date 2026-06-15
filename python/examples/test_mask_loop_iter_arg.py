@@ -4,6 +4,7 @@ import pytest
 
 import triton.language as tl
 
+
 @triton.jit
 def mask_loop(
     y_ptr,
@@ -19,7 +20,6 @@ def mask_loop(
     iterations = tl.cdiv(size, 4)
 
     idx = bidx * BLOCK_SIZE + tidx
-    idy = idx + 1
     for it in range(iterations):
         mask = idx < size
         x = tl.load(x_ptr + idx, mask=mask).to(tl.float32)
@@ -56,9 +56,9 @@ def test_mask_loop(b, h, device):
 
     BLOCK_SIZE = 2
 
-    grid = (2,)
+    grid = (2, )
 
-    compiled = mask_loop[grid](
+    mask_loop[grid](
         y,
         x,
         scale_ones,

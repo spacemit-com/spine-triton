@@ -1,6 +1,4 @@
 import pytest
-import os
-import tempfile
 import triton
 from triton.backends.triton_shared.driver import CPUDriver
 
@@ -17,6 +15,7 @@ pytest.mark.interpreter = empty_decorator
 @pytest.fixture
 def device(request):
     return "cpu"
+
 
 # this fixture is used for test_trans_4d && test_trans_reshape
 @pytest.fixture

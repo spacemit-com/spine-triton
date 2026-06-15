@@ -5,6 +5,7 @@ import triton.language as tl
 
 from triton.backends.triton_shared.driver import CPUDriver
 
+
 @triton.jit
 def test_scalar_store(
     output_ptr,
@@ -21,18 +22,9 @@ def test_scalar_store(
 
 
 def compile():
-    src = triton.compiler.ASTSource(
-        fn=test_scalar_store,
-        signature="*fp32",
-        constexprs={
-            "BLOCK_SIZE": 8
-        }
-    )
-    ret = triton.compile(
-        src
-    )
+    src = triton.compiler.ASTSource(fn=test_scalar_store, signature="*fp32", constexprs={"BLOCK_SIZE": 8})
+    ret = triton.compile(src)
     print(ret.asm["ttir"])
-
 
 
 def test(device):
@@ -41,8 +33,8 @@ def test(device):
 
     BLOCK_SIZE = 8
     x = torch.full([BLOCK_SIZE], -1, device=device, dtype=torch.float32)
-    output = torch.full((BLOCK_SIZE,), -99, device=device, dtype=x.dtype)
-    grid = lambda meta: (1,)
+    output = torch.full((BLOCK_SIZE, ), -99, device=device, dtype=x.dtype)
+    grid = lambda meta: (1, )
 
     print(x)
     print(output)

@@ -1,7 +1,7 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -19,7 +19,6 @@ if __name__ == "__main__":
         a = inp1 if a_shape else torch.tensor(0)
         b = inp2 if b_shape else torch.tensor(1)
         c = cond if c_shape else torch.tensor(True)
-
 
         ref_out = torch.where(c, a, b)
         with flag_gems.use_gems():

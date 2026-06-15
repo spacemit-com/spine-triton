@@ -9,8 +9,8 @@
 
 #include "mlir/IR/DialectImplementation.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 using namespace mlir;
 using namespace mlir::xsmt;
@@ -28,20 +28,25 @@ void XSMTDialect::registerTypes() {
 }
 
 mlir::Type BufferType::parse(AsmParser &parser) {
-  if (parser.parseLess()) return Type();
+  if (parser.parseLess())
+    return Type();
   SmallVector<int64_t> shape;
-  if (parser.parseKeyword("shape") || parser.parseEqual() || parser.parseLSquare())
+  if (parser.parseKeyword("shape") || parser.parseEqual() ||
+      parser.parseLSquare())
     return Type();
 
   int64_t dim;
-  if (parser.parseInteger(dim)) return Type();
+  if (parser.parseInteger(dim))
+    return Type();
   shape.push_back(dim);
   while (succeeded(parser.parseOptionalComma())) {
-    if (parser.parseInteger(dim)) return Type();
+    if (parser.parseInteger(dim))
+      return Type();
     shape.push_back(dim);
   }
 
-  if (parser.parseRSquare()) return Type();
+  if (parser.parseRSquare())
+    return Type();
   Type elementType;
   if (parser.parseComma() || parser.parseKeyword("elementType") ||
       parser.parseEqual() || parser.parseType(elementType))
@@ -53,7 +58,8 @@ mlir::Type BufferType::parse(AsmParser &parser) {
       parser.parseInteger(copies64))
     return Type();
   if (kw != "copies" && kw != "numBuffers") {
-    parser.emitError(parser.getCurrentLocation(), "expected copies=... or numBuffers=...");
+    parser.emitError(parser.getCurrentLocation(),
+                     "expected copies=... or numBuffers=...");
     return Type();
   }
   int copies = (int)copies64;
@@ -63,9 +69,11 @@ mlir::Type BufferType::parse(AsmParser &parser) {
       parser.parseEqual() || parser.parseAttribute(storageKind))
     return Type();
 
-  if (parser.parseGreater()) return Type();
+  if (parser.parseGreater())
+    return Type();
 
-  return BufferType::get(parser.getContext(), shape, elementType, copies, storageKind);
+  return BufferType::get(parser.getContext(), shape, elementType, copies,
+                         storageKind);
 }
 
 void BufferType::print(AsmPrinter &printer) const {
@@ -77,13 +85,11 @@ void BufferType::print(AsmPrinter &printer) const {
   printer << ">";
 }
 
-mlir::ShapedType BufferType::cloneWith(std::optional<llvm::ArrayRef<int64_t>> shape,
-                                       mlir::Type elementType) const {
-  auto newTy = BufferType::get(getContext(),
-                               shape.value_or(getShape()),
-                               elementType,
-                               getCopies(),
-                               getStorageKind());
+mlir::ShapedType
+BufferType::cloneWith(std::optional<llvm::ArrayRef<int64_t>> shape,
+                      mlir::Type elementType) const {
+  auto newTy = BufferType::get(getContext(), shape.value_or(getShape()),
+                               elementType, getCopies(), getStorageKind());
   return mlir::cast<mlir::ShapedType>(newTy);
 }
 

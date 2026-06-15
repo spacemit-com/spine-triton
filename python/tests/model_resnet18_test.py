@@ -2,13 +2,16 @@ import copy
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
+
 
 def set_module_names(model):
     """为每个模块设置可读名称"""
     for name, module in model.named_modules():
         module.name = name
+
 
 def compare_outputs(ref_out, test_out, name, atol=1e-2, rtol=1e-2):
     """比较两个输出并返回误差报告"""
@@ -25,18 +28,15 @@ def compare_outputs(ref_out, test_out, name, atol=1e-2, rtol=1e-2):
     passed = torch.allclose(ref_out, test_out, atol=atol, rtol=rtol)
 
     report = {
-        'name': name,
-        'passed': passed,
-        'max_abs_diff': max_abs_diff,
-        'mean_abs_diff': mean_abs_diff,
-        'max_rel_diff': max_rel_diff
+        'name': name, 'passed': passed, 'max_abs_diff': max_abs_diff, 'mean_abs_diff': mean_abs_diff, 'max_rel_diff':
+        max_rel_diff
     }
     return report
 
+
 def test_accuracy_resnet18(dtype, device):
     # 加载模型
-    model = torch.hub.load('/home/share/nfs_share/pytorch_vision_v0.10.0',
-                          'resnet18', pretrained=True, source='local')
+    model = torch.hub.load('/home/share/nfs_share/pytorch_vision_v0.10.0', 'resnet18', pretrained=True, source='local')
 
     # 准备输入
     inputs = torch.randn(1, 3, 224, 224).to(device)
@@ -101,11 +101,7 @@ def test_accuracy_resnet18(dtype, device):
     for name in ref_outputs:
         if name not in test_outputs:
             continue
-        report = compare_outputs(
-            ref_outputs[name],
-            test_outputs[name],
-            name
-        )
+        report = compare_outputs(ref_outputs[name], test_outputs[name], name)
         layer_reports.append(report)
 
     # 打印失败层信息
@@ -123,6 +119,7 @@ def test_accuracy_resnet18(dtype, device):
     assert len(failed_layers) == 0, \
         f"{len(failed_layers)} layers failed accuracy check"
     print("PASS")
+
 
 if __name__ == "__main__":
     dtype = torch.float32

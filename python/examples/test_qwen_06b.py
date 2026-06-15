@@ -2,28 +2,19 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
 model_dir = "/mnt_ai_ws2/Qwen3-0.6B"
 
 tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True, local_files_only=True)
-model = AutoModelForCausalLM.from_pretrained(
-    model_dir, trust_remote_code=True, local_files_only=True,
-    torch_dtype=torch.float32,
-    device_map="auto"
-)
+model = AutoModelForCausalLM.from_pretrained(model_dir, trust_remote_code=True, local_files_only=True,
+                                             torch_dtype=torch.float32, device_map="auto")
 
 prompt = "Give me a short introduction to large language model."
-messages = [
-    {"role": "user", "content": prompt}
-]
-text = tokenizer.apply_chat_template(
-    messages,
-    tokenize=False,
-    add_generation_prompt=True,
-    enable_thinking=True
-)
+messages = [{"role": "user", "content": prompt}]
+text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=True)
 model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
 
 with flag_gems.use_gems():

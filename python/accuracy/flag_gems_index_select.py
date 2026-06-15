@@ -1,7 +1,7 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -13,9 +13,7 @@ if __name__ == "__main__":
     index_size = inp.size(dim)
     from math import floor
 
-    index = torch.randint(
-        0, index_size, [floor(index_size * 0.8)], device=flag_gems.device
-    )
+    index = torch.randint(0, index_size, [floor(index_size * 0.8)], device=flag_gems.device)
 
     ref_out = torch.index_select(inp, dim, index)
     with flag_gems.use_gems():

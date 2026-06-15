@@ -1,9 +1,7 @@
-import time
-import numpy as np
-from functools import wraps
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -12,7 +10,7 @@ if __name__ == "__main__":
     A = torch.randn((M, K), dtype=torch.float32, device=flag_gems.device, requires_grad=False)
     B = torch.randn((K, N), dtype=torch.float32, device=flag_gems.device, requires_grad=False)
     #bias = torch.randn((N,), dtype=torch.float32, device=flag_gems.device, requires_grad=False)
-    bias = torch.zeros((N,), dtype=torch.float32, device=flag_gems.device, requires_grad=False)
+    bias = torch.zeros((N, ), dtype=torch.float32, device=flag_gems.device, requires_grad=False)
 
     with flag_gems.use_gems():
         with torch.no_grad():

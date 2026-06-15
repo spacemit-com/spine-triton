@@ -1,7 +1,7 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -20,9 +20,7 @@ if __name__ == "__main__":
         col_indices = torch.randperm(x.size(1))
         x[bsz, :] = x[bsz, col_indices]
 
-
     ref_value, ref_index = torch.topk(x, topk, largest=largest)
-
 
     with flag_gems.use_gems():
         res_value, res_index = torch.topk(x, topk, largest=largest)

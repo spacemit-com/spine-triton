@@ -3,6 +3,7 @@ import torch
 
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -10,7 +11,6 @@ from .accuracy_utils import (
     ALL_FLOAT_DTYPES,
     ALL_INT_DTYPES,
     BOOL_TYPES,
-    COMPLEX_DTYPES,
     FLOAT_DTYPES,
     INT_DTYPES,
     POINTWISE_SHAPES,
@@ -21,6 +21,7 @@ from .accuracy_utils import (
     unsqueeze_tensor,
     unsqueeze_tuple,
 )
+
 
 @pytest.mark.abs
 @pytest.mark.parametrize("shape", POINTWISE_SHAPES)
@@ -56,13 +57,9 @@ def test_accuracy_abs_(shape, dtype):
 @pytest.mark.parametrize("dtype", INT_DTYPES + BOOL_TYPES)
 def test_accuracy_bitwisenot(shape, dtype):
     if dtype in BOOL_TYPES:
-        inp = torch.randint(0, 2, size=shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
+        inp = torch.randint(0, 2, size=shape, dtype=dtype, device="cpu").to(flag_gems.device)
     else:
-        inp = torch.randint(
-            low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu"
-        ).to(flag_gems.device)
+        inp = torch.randint(low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu").to(flag_gems.device)
     ref_inp = to_reference(inp)
 
     ref_out = torch.bitwise_not(ref_inp)
@@ -80,9 +77,7 @@ def test_accuracy_bitwisenot_(shape, dtype):
     if dtype in BOOL_TYPES:
         res_inp = torch.randint(0, 2, size=shape, dtype=dtype, device=flag_gems.device)
     else:
-        res_inp = torch.randint(
-            low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device=flag_gems.device
-        )
+        res_inp = torch.randint(low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device=flag_gems.device)
     ref_inp = to_reference(res_inp.clone())
 
     ref_out = ref_inp.bitwise_not_()  # NOTE: there is no torch.bitwse_not_
@@ -148,6 +143,7 @@ def test_accuracy_exp_(shape, dtype):
         res_out = torch.exp_(inp)
 
     gems_assert_close(res_out, ref_out, dtype)
+
 
 @pytest.mark.isnan
 @pytest.mark.parametrize("shape", POINTWISE_SHAPES)
@@ -352,9 +348,7 @@ SPECIAL_VALUES = [float("-inf"), float("inf"), -300]
 def test_accuracy_log_sigmoid(shape, dtype):
     inp = torch.randn(shape, dtype=dtype, device=flag_gems.device)
     if len(shape) == 1:
-        special_inputs = torch.tensor(
-            SPECIAL_VALUES, dtype=dtype, device=flag_gems.device
-        )
+        special_inputs = torch.tensor(SPECIAL_VALUES, dtype=dtype, device=flag_gems.device)
         inp = torch.cat((inp, special_inputs))
     ref_inp = to_reference(inp, True)
 
@@ -497,7 +491,8 @@ def get_max_ndim(shape, dims):
     return max_ndim
 
 
-FLIP_DIMS = [(0,), (-2,), (2,), (0, 2), (2, 1), (0, -1, 1)]
+FLIP_DIMS = [(0, ), (-2, ), (2, ), (0, 2), (2, 1), (0, -1, 1)]
+
 
 @pytest.mark.skipif(flag_gems.vendor_name == "spacemit", reason="TODO")
 @pytest.mark.flip
@@ -533,9 +528,7 @@ def test_accuracy_flip_with_non_dense_input(shape, dtype, dims):
     if dtype in ALL_FLOAT_DTYPES:
         inp = torch.randn(shape_dialted, dtype=dtype, device=flag_gems.device)[::2, ::2]
     else:
-        inp = torch.randint(-1000, 1000, shape_dialted, device=flag_gems.device).to(
-            dtype
-        )[::2, ::2]
+        inp = torch.randint(-1000, 1000, shape_dialted, device=flag_gems.device).to(dtype)[::2, ::2]
     ref_inp = to_reference(inp, False)
 
     with flag_gems.use_gems():
@@ -600,7 +593,8 @@ def test_accuracy_masked_fill_(shape, dtype, threshold, value):
     gems_assert_equal(inp, ref_inp)
 
 
-TILE_DIMS = [(0,), (2,), (2, 0), (0, 2), (2, 2), (2, 2, 2), (2, 2, 2, 2)]
+TILE_DIMS = [(0, ), (2, ), (2, 0), (0, 2), (2, 2), (2, 2, 2), (2, 2, 2, 2)]
+
 
 @pytest.mark.skipif(flag_gems.vendor_name == "spacemit", reason="TODO")
 @pytest.mark.tile
@@ -644,9 +638,7 @@ def test_accuracy_logical_not(shape, dtype):
     if dtype in ALL_FLOAT_DTYPES:
         inp = torch.randn(shape, dtype=dtype, device=flag_gems.device)
     elif dtype in ALL_INT_DTYPES:
-        inp = torch.randint(-1000, 1000, shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
+        inp = torch.randint(-1000, 1000, shape, dtype=dtype, device="cpu").to(flag_gems.device)
     elif dtype in BOOL_TYPES:
         inp = torch.randint(0, 2, shape, dtype=dtype, device="cpu").to(flag_gems.device)
 

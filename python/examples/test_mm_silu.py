@@ -3,6 +3,7 @@ import triton
 import triton.language as tl
 import triton.language.extra.smt as smt
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 from triton.language.extra.cpu import libdevice as tl_extra_shim
 
@@ -56,7 +57,6 @@ def mm_silu_kernel(
     c = accumulator.to(c_ptr.dtype.element_ty)
     c = tl_extra_shim.silu(c)
     c = smt.view(c, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_N), (1, 1))
-
 
     c_block_ptr = tl.make_block_ptr(
         base=c_ptr,

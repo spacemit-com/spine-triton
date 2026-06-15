@@ -1,7 +1,7 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -9,7 +9,6 @@ if __name__ == "__main__":
     scale = (2, 2)
     shape = (32, 16, 128, 128)
     dtype = torch.float32
-
 
     input = torch.randn(shape, dtype=dtype, device=flag_gems.device)
     output_size = [int(input.shape[i + 2] * scale[i]) for i in range(2)]

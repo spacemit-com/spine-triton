@@ -6,7 +6,6 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 
-
 MICRO_M = 16
 MICRO_N = 32
 MICRO_K = 8
@@ -103,7 +102,7 @@ def run_case():
     nb = BLOCK_SIZE_N // MICRO_N
     kb = BLOCK_SIZE_K // MICRO_K
 
-    mmt4d_kernel[(1,)](
+    mmt4d_kernel[(1, )](
         a_packed,
         b_packed,
         c,
@@ -149,7 +148,7 @@ def run_n_tail_case(n_value: int):
     nb = BLOCK_SIZE_N // MICRO_N
     kb = BLOCK_SIZE_K // MICRO_K
 
-    mmt4d_kernel[(1,)](
+    mmt4d_kernel[(1, )](
         a_packed,
         b_packed,
         c,

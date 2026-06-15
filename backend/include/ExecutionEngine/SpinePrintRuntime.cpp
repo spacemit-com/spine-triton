@@ -393,9 +393,8 @@ EXPORT void spine_assert(int32_t pid0, int32_t pid1, int32_t pid2, bool cond,
                          const char *msg, const char *file, int32_t line,
                          const char *func) {
   if (!cond) {
-    fprintf(stderr,
-            "(%d, %d, %d) %s:%d: %s: Assertion `%s` failed.\n",
-            pid0, pid1, pid2, file, line, func, msg);
+    fprintf(stderr, "(%d, %d, %d) %s:%d: %s: Assertion `%s` failed.\n", pid0,
+            pid1, pid2, file, line, func, msg);
     abort();
   }
 }

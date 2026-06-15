@@ -41,6 +41,12 @@ exclude: |
   (?x)(
     ^build-riscv64/|
     ^triton/|
+    ^test/|
+    ^tools/spine-triton-opt/|
+    ^patch/|
     ^lib/libSpeIRRuntimeLibs\.so|
-    ^python/examples/test_pmu\.cpp$
+    ^python/examples/test_pmu\.cpp$|
+    ^\.clang-format$|
+    ^python/examples/test_annotations\.py$|
+    ^python/examples/test_core\.py$
   )

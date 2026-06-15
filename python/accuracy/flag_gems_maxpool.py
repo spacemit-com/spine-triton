@@ -1,7 +1,7 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -17,14 +17,8 @@ if __name__ == "__main__":
 
     inp = torch.randn(shape, dtype=dtype, device=flag_gems.device, requires_grad=True)
 
-    ref_pool = torch.nn.MaxPool2d(
-        kernel_size=kernel_size,
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        ceil_mode=ceil_mode,
-        return_indices=False
-    )
+    ref_pool = torch.nn.MaxPool2d(kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation,
+                                  ceil_mode=ceil_mode, return_indices=False)
     ref_out = ref_pool(inp)
     import flag_gems.runtime.backend._spacemit.ops as sp
 

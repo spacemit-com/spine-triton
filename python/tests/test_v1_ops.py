@@ -3,6 +3,7 @@ import torch
 
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 import numpy as np
@@ -27,7 +28,8 @@ from .accuracy_utils import (
     SHAPE_STRIDES,
     SPECIAL_SHAPES,
 )
-MN_SHAPES =  [(1, 32), (160, 1024), (5333, 497)]
+
+MN_SHAPES = [(1, 32), (160, 1024), (5333, 497)]
 MNK_SHAPES = ([(1, 1, 32), (15, 160, 1024), (495, 5333, 71)])
 SHAPE_DIAGONAL = list(zip(POINTWISE_SHAPES, [-2, -2, -1, 0, 1, 3]))
 
@@ -35,49 +37,24 @@ SHAPE_DIAGONAL = list(zip(POINTWISE_SHAPES, [-2, -2, -1, 0, 1, 3]))
 def replace_zeros(inp):
     return torch.where(inp == 0, 1, inp)
 
+
 DIMS_LIST = [1] if QUICK_MODE else [0, 1, [0, 1], [1, 0]]
-KEEPDIM_DIMS = (
-    [(True, DIMS_LIST[0])] if QUICK_MODE else list(zip([True, False] * 2, DIMS_LIST))
-)
+KEEPDIM_DIMS = ([(True, DIMS_LIST[0])] if QUICK_MODE else list(zip([True, False] * 2, DIMS_LIST)))
 DIM_LIST = [1] if QUICK_MODE else [0, 1]
-KEEPDIM_DIMS_SHAPE = (
-    [(True, DIMS_LIST[0], REDUCTION_SHAPES[0])]
-    if QUICK_MODE
-    else list(zip([True, False] * 2, DIMS_LIST, REDUCTION_SHAPES + [(7, 4, 11, 1)]))
-)
-SMOOTH_IGNORE_SHAPE = (
-    [(0.1, 1, REDUCTION_SHAPES[0])]
-    if QUICK_MODE
-    else list(zip([0, 0.1, 1], [1, 200, -100], REDUCTION_SHAPES))
-)
-SMOOTH_SHAPE = (
-    [(0.1, REDUCTION_SHAPES[0])]
-    if QUICK_MODE
-    else list(zip([1, 0.1, 0], REDUCTION_SHAPES))
-)
-DIM_SHAPE_STRIDES = (
-    [(1, *CONTIGUOUS_SHAPE_STRIDES_2D[1])]
-    if QUICK_MODE
-    else list(
-        (random.randint(0, len(shape) - 1), shape, stride)
-        for shape, stride in SHAPE_STRIDES
-    )
-)
-REGULAR_DIM_SHAPE_STRIDES = (
-    [(1, *CONTIGUOUS_SHAPE_STRIDES_2D[1])]
-    if QUICK_MODE
-    else list(
-        (random.randint(0, len(shape) - 1), shape, stride)
-        for shape, stride in CONTIGUOUS_SHAPE_STRIDES_2D
-    )
-)
+KEEPDIM_DIMS_SHAPE = ([(True, DIMS_LIST[0], REDUCTION_SHAPES[0])] if QUICK_MODE else list(
+    zip([True, False] * 2, DIMS_LIST, REDUCTION_SHAPES + [(7, 4, 11, 1)])))
+SMOOTH_IGNORE_SHAPE = ([(0.1, 1, REDUCTION_SHAPES[0])] if QUICK_MODE else list(
+    zip([0, 0.1, 1], [1, 200, -100], REDUCTION_SHAPES)))
+SMOOTH_SHAPE = ([(0.1, REDUCTION_SHAPES[0])] if QUICK_MODE else list(zip([1, 0.1, 0], REDUCTION_SHAPES)))
+DIM_SHAPE_STRIDES = ([(1, *CONTIGUOUS_SHAPE_STRIDES_2D[1])] if QUICK_MODE else list(
+    (random.randint(0,
+                    len(shape) - 1), shape, stride) for shape, stride in SHAPE_STRIDES))
+REGULAR_DIM_SHAPE_STRIDES = ([(1, *CONTIGUOUS_SHAPE_STRIDES_2D[1])] if QUICK_MODE else list(
+    (random.randint(0,
+                    len(shape) - 1), shape, stride) for shape, stride in CONTIGUOUS_SHAPE_STRIDES_2D))
 IRREGULAR_DIM_SHAPE_STRIDES = [(3, *IRREGULAR_SHAPE_STRIDES)]
 
-THRESHOLD_SHAPE = (
-    [(0.3, REDUCTION_SHAPES[0])]
-    if QUICK_MODE
-    else list(zip([0.3, 0.5, 0.7], REDUCTION_SHAPES))
-)
+THRESHOLD_SHAPE = ([(0.3, REDUCTION_SHAPES[0])] if QUICK_MODE else list(zip([0.3, 0.5, 0.7], REDUCTION_SHAPES)))
 CROSS_ENTROPY_LOSS_REDUCTION = ["mean"] if QUICK_MODE else ["mean", "none", "sum"]
 
 
@@ -90,16 +67,17 @@ CROSS_ENTROPY_LOSS_REDUCTION = ["mean"] if QUICK_MODE else ["mean", "none", "sum
 def test_accuracy_addmm(M, N, K, scalar, dtype):
     mat1 = torch.randn((M, K), dtype=dtype, device=flag_gems.device, requires_grad=False)
     mat2 = torch.randn((K, N), dtype=dtype, device=flag_gems.device, requires_grad=False)
-    bias1 = torch.randn((N,), dtype=dtype, device=flag_gems.device, requires_grad=False)
+    bias1 = torch.randn((N, ), dtype=dtype, device=flag_gems.device, requires_grad=False)
 
     alpha = beta = scalar
 
     ref_out1 = torch.addmm(bias1, mat1, mat2, alpha=alpha, beta=beta)
     with flag_gems.use_gems():
-            with torch.no_grad():
-                res_out1 = torch.addmm(bias1, mat1, mat2, alpha=alpha, beta=beta)
+        with torch.no_grad():
+            res_out1 = torch.addmm(bias1, mat1, mat2, alpha=alpha, beta=beta)
 
     gems_assert_close(res_out1, ref_out1, dtype, reduce_dim=K)
+
 
 @pytest.mark.bmm
 @pytest.mark.parametrize("M, N, K", MNK_SHAPES)
@@ -115,9 +93,8 @@ def test_accuracy_bmm(M, N, K, dtype):
 
     gems_assert_close(res_out, ref_out, dtype, reduce_dim=K)
 
-CUMSUM_SHAPES = (
-    [(2, 32)] if QUICK_MODE else REDUCTION_SHAPES + [(2637,), (16, 1025, 255)]
-)
+
+CUMSUM_SHAPES = ([(2, 32)] if QUICK_MODE else REDUCTION_SHAPES + [(2637, ), (16, 1025, 255)])
 
 
 @pytest.mark.cumsum
@@ -158,8 +135,8 @@ def test_accuracy_dropout(shape, p, dtype):
         torch.manual_seed(0)
         torch.cuda.manual_seed_all(0)
 
-    if TO_CPU or shape == (1,):
-        shape = (32768,)
+    if TO_CPU or shape == (1, ):
+        shape = (32768, )
     res_inp = torch.randn(
         shape,
         dtype=dtype,
@@ -185,14 +162,12 @@ def test_accuracy_dropout(shape, p, dtype):
         zero_equal = torch.eq(res_out, torch.zeros_like(res_out))
         num_zero = torch.sum(zero_equal).item()
         assert abs(num_zero / res_inp.numel() - p) <= 0.05
-        scale_equal = torch.isclose(
-            res_out, ref_inp / one_minus_p, rtol=RESOLUTION[dtype]
-        )
+        scale_equal = torch.isclose(res_out, ref_inp / one_minus_p, rtol=RESOLUTION[dtype])
         assert torch.all(torch.logical_or(zero_equal, scale_equal))
     else:
-        assert (
-            abs(num_equal - exp_equal) / exp_equal <= 0.05
-        ), f"num_equal: {num_equal}, exp_equal: {exp_equal}, num_total: {res_inp.numel()}"
+        assert (abs(num_equal - exp_equal) / exp_equal
+                <= 0.05), f"num_equal: {num_equal}, exp_equal: {exp_equal}, num_total: {res_inp.numel()}"
+
 
 @pytest.mark.gelu
 @pytest.mark.parametrize("shape", POINTWISE_SHAPES)
@@ -213,19 +188,14 @@ def test_accuracy_gelu(shape, dtype, approximate):
 @pytest.mark.native_layer_norm
 @pytest.mark.parametrize(
     "shape",
-    (
-        [(2, 40999)]
-        if QUICK_MODE
-        else [
-            (200, 36),
-            (4096, 100),
-            (1, 40999),
-            (100, 40499),
-            (4096, 256),
-        ]
-    ),
+    ([(2, 40999)] if QUICK_MODE else [
+        (200, 36),
+        (4096, 100),
+        (1, 40999),
+        (100, 40499),
+        (4096, 256),
+    ]),
 )
-
 @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
 def test_accuracy_layernorm(shape, dtype):
     if flag_gems.vendor_name == "kunlunxin":
@@ -291,9 +261,7 @@ def test_accuracy_silu(shape, dtype):
 
 
 @pytest.mark.softmax
-@pytest.mark.parametrize(
-    "shape", [(1, 256)] if QUICK_MODE else [(1, 256)]
-)
+@pytest.mark.parametrize("shape", [(1, 256)] if QUICK_MODE else [(1, 256)])
 @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
 @pytest.mark.parametrize("dim", DIM_LIST)
 @pytest.mark.parametrize("neg_inf", [True])

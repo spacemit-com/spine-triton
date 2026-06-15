@@ -1,12 +1,12 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
 if __name__ == "__main__":
-    m = torch.nn.AdaptiveAvgPool2d((1,1))
+    m = torch.nn.AdaptiveAvgPool2d((1, 1))
     shape = (1, 2, 7, 7)
     dtype = torch.float32
     inp1 = torch.randn(shape, dtype=dtype, device=flag_gems.device)

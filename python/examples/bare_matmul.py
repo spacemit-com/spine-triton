@@ -33,7 +33,7 @@ def bench_matmul(N, provider):
     if provider == 'torch' or provider == 'test':
         c_ref = torch.matmul(a, b)
     if provider == 'triton' or provider == 'test':
-        bare_matmul[(1,)](a, b, c, N, N, N, N)
+        bare_matmul[(1, )](a, b, c, N, N, N, N)
         if provider == 'test':
             torch.testing.assert_close(c, c_ref, atol=1e-2, rtol=0)
 

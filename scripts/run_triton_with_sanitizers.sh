@@ -39,7 +39,7 @@ if [ "${sanitizer_type}" = "asan" ]; then
 TRITON_ALWAYS_COMPILE=1 \
 TRITON_SHARED_SANITIZER_TYPE=\"asan\" \
 ASAN_OPTIONS=\"detect_leaks=0\""
-    
+
     # shift command line arguments to the left by 1 to account for "asan"
     shift 1
 elif [ "${sanitizer_type}" = "tsan" ]; then

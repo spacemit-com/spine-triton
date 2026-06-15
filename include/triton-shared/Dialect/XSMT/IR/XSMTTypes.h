@@ -8,8 +8,7 @@
 #include "mlir/IR/Types.h"
 
 namespace mlir {
-namespace xsmt {
-} // namespace xsmt
+namespace xsmt {} // namespace xsmt
 } // namespace mlir
 
 #define GET_TYPEDEF_CLASSES

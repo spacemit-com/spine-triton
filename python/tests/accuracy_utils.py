@@ -54,37 +54,29 @@ sizes_1d = sizes_one + sizes_pow_2 + sizes_noalign
 sizes_2d_nc = [1] if QUICK_MODE else [1, 16, 64, 1000]
 sizes_2d_nr = [1] if QUICK_MODE else [1, 5, 1024]
 
-UT_SHAPES_1D = list((n,) for n in sizes_1d)
+UT_SHAPES_1D = list((n, ) for n in sizes_1d)
 UT_SHAPES_2D = list(itertools.product(sizes_2d_nr, sizes_2d_nc))
-POINTWISE_SHAPES = (
-    [(2, 19, 7)]
-    if QUICK_MODE
-    else [(1,), (1024, 1024), (20, 320, 15), (16, 128, 64, 60), (16, 7, 57, 32, 29)]
-)
-SPECIAL_SHAPES = (
-    [(2, 19, 7)]
-    if QUICK_MODE
-    else [(1,), (1024, 1024), (20, 320, 15), (16, 128, 64, 1280), (16, 7, 57, 32, 29)]
-)
+POINTWISE_SHAPES = ([(2, 19, 7)] if QUICK_MODE else [(1, ), (1024, 1024), (20, 320, 15), (16, 128, 64, 60),
+                                                     (16, 7, 57, 32, 29)])
+SPECIAL_SHAPES = ([(2, 19, 7)] if QUICK_MODE else [(1, ), (1024, 1024), (20, 320, 15), (16, 128, 64, 1280),
+                                                   (16, 7, 57, 32, 29)])
 DISTRIBUTION_SHAPES = [(20, 320, 15)]
 REDUCTION_SHAPES = [(2, 32)] if QUICK_MODE else [(1, 2), (2, 32)]
-REDUCTION_SMALL_SHAPES = (
-    [(1, 32)] if QUICK_MODE else [(1, 2), (4096, 256), (200, 2560, 3)]
-)
+REDUCTION_SMALL_SHAPES = ([(1, 32)] if QUICK_MODE else [(1, 2), (4096, 256), (200, 2560, 3)])
 STACK_SHAPES = [
-    [(16,), (16,)],
+    [(16, ), (16, )],
     [(16, 256), (16, 256)],
     [(20, 320, 15), (20, 320, 15), (20, 320, 15)],
 ]
 CONTIGUOUS_SHAPE_STRIDES_1D = [
-    ((1,), (1,)),
-    ((1024,), (1,)),
-    ((1000000,), (1,)),
+    ((1, ), (1, )),
+    ((1024, ), (1, )),
+    ((1000000, ), (1, )),
 ]
 DILATED_SHAPE_STRIDES_1D = [
-    ((1,), (2,)),
-    ((1024,), (2,)),
-    ((1000000,), (2,)),
+    ((1, ), (2, )),
+    ((1024, ), (2, )),
+    ((1000000, ), (2, )),
 ]
 CONTIGUOUS_SHAPE_STRIDES_2D = [
     ((1, 1024), (1024, 1)),
@@ -102,14 +94,8 @@ TRANSPOSED_SHAPE_STRIDES_3D = [
     ((320, 20, 15), (15, 4800, 1)),
     ((3, 40999, 200), (1, 3, 122997)),
 ]
-SHAPE_STRIDES = (
-    CONTIGUOUS_SHAPE_STRIDES_1D
-    + DILATED_SHAPE_STRIDES_1D
-    + CONTIGUOUS_SHAPE_STRIDES_2D
-    + TRANSPOSED_SHAPE_STRIDES_2D
-    + CONTIGUOUS_SHAPE_STRIDES_3D
-    + TRANSPOSED_SHAPE_STRIDES_3D
-)
+SHAPE_STRIDES = (CONTIGUOUS_SHAPE_STRIDES_1D + DILATED_SHAPE_STRIDES_1D + CONTIGUOUS_SHAPE_STRIDES_2D +
+                 TRANSPOSED_SHAPE_STRIDES_2D + CONTIGUOUS_SHAPE_STRIDES_3D + TRANSPOSED_SHAPE_STRIDES_3D)
 
 IRREGULAR_SHAPE_STRIDES = [((10, 10, 10, 10, 10), (1, 10000, 23, 399, 1024))]
 
@@ -121,22 +107,21 @@ UPSAMPLE_SHAPES = [
     (3, 7, 1023, 1025),
 ]
 
-
 KRON_SHAPES = [
     [(), (2, 3)],
     [(2, 3), ()],
     [(0, 3), (2, 3)],
-    [(2, 3), (0,)],
-    [(0,), (0,)],
+    [(2, 3), (0, )],
+    [(0, ), (0, )],
     [(), ()],
-    [(1,), (2,)],
-    [(2,), (3,)],
+    [(1, ), (2, )],
+    [(2, ), (3, )],
     [(2, 2), (3, 3)],
     [(1, 2, 3), (2, 3, 4)],
-    [(1,), (2, 2)],
+    [(1, ), (2, 2)],
     [(1, 2), (3, 4, 5)],
-    [(2,), (3, 4, 5, 6)],
-    [(2, 3, 4), (1,)],
+    [(2, ), (3, 4, 5, 6)],
+    [(2, 3, 4), (1, )],
     [(5, 5), (4, 4)],
     [(3, 3, 3), (2, 2, 2)],
     [(4, 4, 4, 4), (2, 2, 2, 2)],
@@ -148,8 +133,8 @@ KRON_SHAPES = [
     [(2, 1, 4), (3, 1, 5)],
     [(2, 2, 2, 2, 2), (1, 1, 1, 1, 1)],
     [(1, 2, 3, 4, 5), (2, 3, 4, 5, 6)],
-    [(1,), (1,)],
-    [(10,), (10,)],
+    [(1, ), (1, )],
+    [(10, ), (10, )],
     [(2, 3), (3, 2)],
     [(3, 3), (3, 3)],
     [(1, 1, 1), (2, 2, 2)],
@@ -190,9 +175,7 @@ def to_cpu(res, ref):
 
 def gems_assert_close(res, ref, dtype, equal_nan=False, reduce_dim=1):
     res = to_cpu(res, ref)
-    flag_gems.testing.assert_close(
-        res, ref, dtype, equal_nan=equal_nan, reduce_dim=reduce_dim
-    )
+    flag_gems.testing.assert_close(res, ref, dtype, equal_nan=equal_nan, reduce_dim=reduce_dim)
 
 
 def gems_assert_equal(res, ref, equal_nan=False):
@@ -202,7 +185,7 @@ def gems_assert_equal(res, ref, equal_nan=False):
 
 def unsqueeze_tuple(t, max_len):
     for _ in range(len(t), max_len):
-        t = t + (1,)
+        t = t + (1, )
     return t
 
 

@@ -1,7 +1,7 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -12,12 +12,9 @@ if __name__ == "__main__":
     if dtype in FLOAT_DTYPES:
         inp = torch.randn(shape, dtype=dtype, device=flag_gems.device)
     else:
-        inp = torch.randint(
-            low=-10000, high=10000, size=shape, dtype=dtype, device=flag_gems.device
-        )
+        inp = torch.randint(low=-10000, high=10000, size=shape, dtype=dtype, device=flag_gems.device)
     inp = inp[::2]
     # assert inp.is_contiguous() is False
-
 
     ref_out = inp.contiguous()
     with flag_gems.use_gems():
