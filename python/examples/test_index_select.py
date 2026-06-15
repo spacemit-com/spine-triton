@@ -1,4 +1,3 @@
-import pytest
 import torch
 
 import triton
@@ -25,15 +24,12 @@ def index_select_row_with_mod_kernel(
     row_indices = tl.load(indices + row_offsets * stride_i)
 
     col_offsets = tl.arange(0, BLOCK_N)
-    input_pointers_0 = (
-        input_ptr + (row_indices[:, None] + row_offsets[:,None] % mod_offset) * stride_m + col_offsets[None, :] * stride_n
-    )
+    input_pointers_0 = (input_ptr + (row_indices[:, None] + row_offsets[:, None] % mod_offset) * stride_m +
+                        col_offsets[None, :] * stride_n)
     data = tl.load(input_pointers_0)
 
     tl.store(
-        output_ptr
-        + row_offsets[:, None] * o_stride_m
-        + col_offsets[None, :] * o_stride_n,
+        output_ptr + row_offsets[:, None] * o_stride_m + col_offsets[None, :] * o_stride_n,
         data,
     )
 
@@ -41,16 +37,16 @@ def index_select_row_with_mod_kernel(
 def index_select_row_with_mod(input_tensor, indices, dim, mod_offset):
     M, N = input_tensor.shape
     R = indices.shape[0]
-    output_tensor = torch.empty(
-        R, N, dtype=input_tensor.dtype, device=input_tensor.device
-    )
+    output_tensor = torch.empty(R, N, dtype=input_tensor.dtype, device=input_tensor.device)
     stride_i = indices.stride(0)
     stride_m = input_tensor.stride(0)
     stride_n = input_tensor.stride(1)
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
 
-    index_select_row_with_mod_kernel[1,](
+    index_select_row_with_mod_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -101,15 +97,13 @@ def index_select_row_with_double_mod_kernel(
     row_indices = tl.load(indices + row_offsets * stride_i)
 
     col_offsets = tl.arange(0, BLOCK_N)
-    input_pointers_0 = (
-        input_ptr + (row_indices[:, None] + row_offsets[:,None] % mod_offset) % mod_offset_2 * stride_m + col_offsets[None, :] * stride_n
-    )
+    input_pointers_0 = (input_ptr +
+                        (row_indices[:, None] + row_offsets[:, None] % mod_offset) % mod_offset_2 * stride_m +
+                        col_offsets[None, :] * stride_n)
     data = tl.load(input_pointers_0)
 
     tl.store(
-        output_ptr
-        + row_offsets[:, None] * o_stride_m
-        + col_offsets[None, :] * o_stride_n,
+        output_ptr + row_offsets[:, None] * o_stride_m + col_offsets[None, :] * o_stride_n,
         data,
     )
 
@@ -117,16 +111,16 @@ def index_select_row_with_double_mod_kernel(
 def index_select_row_with_double_mod(input_tensor, indices, dim, mod_offset, mod_offset_2):
     M, N = input_tensor.shape
     R = indices.shape[0]
-    output_tensor = torch.empty(
-        R, N, dtype=input_tensor.dtype, device=input_tensor.device
-    )
+    output_tensor = torch.empty(R, N, dtype=input_tensor.dtype, device=input_tensor.device)
     stride_i = indices.stride(0)
     stride_m = input_tensor.stride(0)
     stride_n = input_tensor.stride(1)
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
 
-    a = index_select_row_with_double_mod_kernel[1,](
+    index_select_row_with_double_mod_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -142,7 +136,9 @@ def index_select_row_with_double_mod(input_tensor, indices, dim, mod_offset, mod
     )
     return output_tensor
 
-    index_select_row_with_mod_kernel[1,](
+    index_select_row_with_mod_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -194,15 +190,13 @@ def index_select_row_with_double_mod_kernel2(
     row_indices = tl.load(indices + row_offsets * stride_i)
 
     col_offsets = tl.arange(0, BLOCK_N)
-    input_pointers_0 = (
-        input_ptr + (row_indices[:, None] + (row_offsets[:,None] % mod_offset + mod_offset_2)) * stride_m + col_offsets[None, :] * stride_n
-    )
+    input_pointers_0 = (input_ptr + (row_indices[:, None] +
+                                     (row_offsets[:, None] % mod_offset + mod_offset_2)) * stride_m +
+                        col_offsets[None, :] * stride_n)
     data = tl.load(input_pointers_0)
 
     tl.store(
-        output_ptr
-        + row_offsets[:, None] * o_stride_m
-        + col_offsets[None, :] * o_stride_n,
+        output_ptr + row_offsets[:, None] * o_stride_m + col_offsets[None, :] * o_stride_n,
         data,
     )
 
@@ -210,16 +204,16 @@ def index_select_row_with_double_mod_kernel2(
 def index_select_row_with_double_mod2(input_tensor, indices, dim, mod_offset, mod_offset_2):
     M, N = input_tensor.shape
     R = indices.shape[0]
-    output_tensor = torch.empty(
-        R, N, dtype=input_tensor.dtype, device=input_tensor.device
-    )
+    output_tensor = torch.empty(R, N, dtype=input_tensor.dtype, device=input_tensor.device)
     stride_i = indices.stride(0)
     stride_m = input_tensor.stride(0)
     stride_n = input_tensor.stride(1)
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
 
-    index_select_row_with_double_mod_kernel2[1,](
+    index_select_row_with_double_mod_kernel2[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -270,15 +264,11 @@ def index_select_row_kernel(
     row_indices = tl.load(indices + row_offsets * stride_i)
 
     col_offsets = tl.arange(0, BLOCK_N)
-    input_pointers_0 = (
-        input_ptr + row_indices[:, None] * stride_m + col_offsets[None, :] * stride_n
-    )
+    input_pointers_0 = (input_ptr + row_indices[:, None] * stride_m + col_offsets[None, :] * stride_n)
     data = tl.load(input_pointers_0)
 
     tl.store(
-        output_ptr
-        + row_offsets[:, None] * o_stride_m
-        + col_offsets[None, :] * o_stride_n,
+        output_ptr + row_offsets[:, None] * o_stride_m + col_offsets[None, :] * o_stride_n,
         data,
     )
 
@@ -286,16 +276,16 @@ def index_select_row_kernel(
 def index_select_row(input_tensor, indices, dim):
     M, N = input_tensor.shape
     R = indices.shape[0]
-    output_tensor = torch.empty(
-        R, N, dtype=input_tensor.dtype, device=input_tensor.device
-    )
+    output_tensor = torch.empty(R, N, dtype=input_tensor.dtype, device=input_tensor.device)
     stride_i = indices.stride(0)
     stride_m = input_tensor.stride(0)
     stride_n = input_tensor.stride(1)
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
 
-    index_select_row_kernel[1,](
+    index_select_row_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -340,17 +330,11 @@ def index_select_row_mask_kernel(
     row_indices = tl.load(indices + row_offsets * stride_i)
 
     col_offsets = tl.arange(0, BLOCK_N)
-    input_pointers_0 = (
-        input_ptr + row_indices[:, None] * stride_m + col_offsets[None, :] * stride_n
-    )
-    data = tl.load(
-        input_pointers_0, mask=col_offsets[None, :] < (BLOCK_N // 2), other=0
-    )
+    input_pointers_0 = (input_ptr + row_indices[:, None] * stride_m + col_offsets[None, :] * stride_n)
+    data = tl.load(input_pointers_0, mask=col_offsets[None, :] < (BLOCK_N // 2), other=0)
 
     tl.store(
-        output_ptr
-        + row_offsets[:, None] * o_stride_m
-        + col_offsets[None, :] * o_stride_n,
+        output_ptr + row_offsets[:, None] * o_stride_m + col_offsets[None, :] * o_stride_n,
         data,
     )
 
@@ -358,16 +342,16 @@ def index_select_row_mask_kernel(
 def index_select_row_mask(input_tensor, indices, dim):
     M, N = input_tensor.shape
     R = indices.shape[0]
-    output_tensor = torch.empty(
-        R, N, dtype=input_tensor.dtype, device=input_tensor.device
-    )
+    output_tensor = torch.empty(R, N, dtype=input_tensor.dtype, device=input_tensor.device)
     stride_i = indices.stride(0)
     stride_m = input_tensor.stride(0)
     stride_n = input_tensor.stride(1)
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
 
-    index_select_row_mask_kernel[1,](
+    index_select_row_mask_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -391,7 +375,7 @@ def test_index_select_row_mask(device):
         triton.runtime.driver.set_active(CPUDriver())
     output_triton = index_select_row_mask(input_tensor, indices, dim)
     output_ref = torch.index_select(input_tensor, dim, indices)
-    output_ref[:, N // 2 :] = 0
+    output_ref[:, N // 2:] = 0
     torch.testing.assert_close(output_triton, output_ref)
 
 
@@ -413,17 +397,11 @@ def index_select_row_index_mask_kernel(
     row_indices = tl.load(indices + row_offsets * stride_i)
 
     col_offsets = tl.arange(0, BLOCK_N)
-    input_pointers_0 = (
-        input_ptr + row_indices[:, None] * stride_m + col_offsets[None, :] * stride_n
-    )
-    data = tl.load(
-        input_pointers_0, mask=row_offsets[:, None] < index_limit, other=0
-    )
+    input_pointers_0 = (input_ptr + row_indices[:, None] * stride_m + col_offsets[None, :] * stride_n)
+    data = tl.load(input_pointers_0, mask=row_offsets[:, None] < index_limit, other=0)
 
     tl.store(
-        output_ptr
-        + row_offsets[:, None] * o_stride_m
-        + col_offsets[None, :] * o_stride_n,
+        output_ptr + row_offsets[:, None] * o_stride_m + col_offsets[None, :] * o_stride_n,
         data,
     )
 
@@ -431,16 +409,16 @@ def index_select_row_index_mask_kernel(
 def index_select_row_index_mask(input_tensor, indices, dim, index_limit):
     M, N = input_tensor.shape
     R = indices.shape[0]
-    output_tensor = torch.empty(
-        R, N, dtype=input_tensor.dtype, device=input_tensor.device
-    )
+    output_tensor = torch.empty(R, N, dtype=input_tensor.dtype, device=input_tensor.device)
     stride_i = indices.stride(0)
     stride_m = input_tensor.stride(0)
     stride_n = input_tensor.stride(1)
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
 
-    index_select_row_index_mask_kernel[1,](
+    index_select_row_index_mask_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -466,7 +444,7 @@ def test_index_select_row_index_mask(device):
     index_limit = indices.shape[0] // 2
     output_triton = index_select_row_index_mask(input_tensor, indices, dim, index_limit)
     output_ref = torch.index_select(input_tensor, dim, indices)
-    output_ref[index_limit:,  :] = 0
+    output_ref[index_limit:, :] = 0
     torch.testing.assert_close(output_triton, output_ref)
 
 
@@ -487,29 +465,25 @@ def index_select_col_kernel(
     col_indices = tl.load(indices + col_offsets)
 
     row_offsets = tl.arange(0, BLOCK_M)
-    input_pointers_0 = (
-        input_ptr + row_offsets[:, None] * stride_m + col_indices[None, :]
-    )
+    input_pointers_0 = (input_ptr + row_offsets[:, None] * stride_m + col_indices[None, :])
     data = tl.load(input_pointers_0)
 
-    tl.store(
-        output_ptr + row_offsets[:, None] * o_stride_m + col_offsets[None, :], data
-    )
+    tl.store(output_ptr + row_offsets[:, None] * o_stride_m + col_offsets[None, :], data)
 
 
 def index_select_col(input_tensor, indices, dim):
     M, N = input_tensor.shape
     R = indices.shape[0]
-    output_tensor = torch.full(
-        (M, R), -1, dtype=input_tensor.dtype, device=input_tensor.device
-    )
+    output_tensor = torch.full((M, R), -1, dtype=input_tensor.dtype, device=input_tensor.device)
     stride_i = indices.stride(0)
     stride_m = input_tensor.stride(0)
     stride_n = input_tensor.stride(1)
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
     print(stride_i, stride_m, stride_n, o_stride_m, o_stride_n)
-    index_select_col_kernel[1,](
+    index_select_col_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -553,31 +527,25 @@ def index_select_col_mask_kernel(
     col_indices = tl.load(indices + col_offsets)
 
     row_offsets = tl.arange(0, BLOCK_M)
-    input_pointers_0 = (
-        input_ptr + row_offsets[:, None] * stride_m + col_indices[None, :]
-    )
-    data = tl.load(
-        input_pointers_0, mask=row_offsets[:, None] < (BLOCK_M // 2), other=0
-    )
+    input_pointers_0 = (input_ptr + row_offsets[:, None] * stride_m + col_indices[None, :])
+    data = tl.load(input_pointers_0, mask=row_offsets[:, None] < (BLOCK_M // 2), other=0)
 
-    tl.store(
-        output_ptr + row_offsets[:, None] * o_stride_m + col_offsets[None, :], data
-    )
+    tl.store(output_ptr + row_offsets[:, None] * o_stride_m + col_offsets[None, :], data)
 
 
 def index_select_col_mask(input_tensor, indices, dim):
     M, N = input_tensor.shape
     R = indices.shape[0]
-    output_tensor = torch.full(
-        (M, R), -1, dtype=input_tensor.dtype, device=input_tensor.device
-    )
+    output_tensor = torch.full((M, R), -1, dtype=input_tensor.dtype, device=input_tensor.device)
     stride_i = indices.stride(0)
     stride_m = input_tensor.stride(0)
     stride_n = input_tensor.stride(1)
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
     print(stride_i, stride_m, stride_n, o_stride_m, o_stride_n)
-    index_select_col_mask_kernel[1,](
+    index_select_col_mask_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -600,7 +568,7 @@ def test_index_select_col_mask(device):
     if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
     output_ref = torch.index_select(input_tensor, dim, indices)
-    output_ref[N // 2 :, :] = 0
+    output_ref[N // 2:, :] = 0
     output_triton = index_select_col_mask(input_tensor, indices, dim)
     torch.testing.assert_close(output_triton, output_ref)
 
@@ -628,29 +596,21 @@ def index_select_3d_kernel(
     m_offsets = tl.arange(0, BLOCK_M)
     k_offsets = tl.arange(0, BLOCK_K)
 
-    input_offsets = (
-        m_offsets[:, None, None] * stride_m
-        + n_indices[None, :, None] * stride_n
-        + k_offsets[None, None, :] * stride_k
-    )
+    input_offsets = (m_offsets[:, None, None] * stride_m + n_indices[None, :, None] * stride_n +
+                     k_offsets[None, None, :] * stride_k)
 
     input_pointers_0 = input_ptr + input_offsets
     data = tl.load(input_pointers_0)
 
-    out_offsets = (
-        m_offsets[:, None, None] * o_stride_m
-        + n_offsets[None, :, None] * o_stride_n
-        + k_offsets[None, None, :] * o_stride_k
-    )
+    out_offsets = (m_offsets[:, None, None] * o_stride_m + n_offsets[None, :, None] * o_stride_n +
+                   k_offsets[None, None, :] * o_stride_k)
     tl.store(output_ptr + out_offsets, data)
 
 
 def index_select_3d(input_tensor, indices, dim):
     M, N, K = input_tensor.shape
     R = indices.shape[0]
-    output_tensor = torch.full(
-        (M, R, K), -1, dtype=input_tensor.dtype, device=input_tensor.device
-    )
+    output_tensor = torch.full((M, R, K), -1, dtype=input_tensor.dtype, device=input_tensor.device)
     stride_i = indices.stride(0)
     stride_m = input_tensor.stride(0)
     stride_n = input_tensor.stride(1)
@@ -658,7 +618,9 @@ def index_select_3d(input_tensor, indices, dim):
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
     o_stride_k = output_tensor.stride(2)
-    index_select_3d_kernel[1,](
+    index_select_3d_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -712,34 +674,25 @@ def index_select_3d_mask_kernel(
     m_offsets = tl.arange(0, BLOCK_M)
     k_offsets = tl.arange(0, BLOCK_K)
 
-    input_offsets = (
-        m_offsets[:, None, None] * stride_m
-        + n_indices[None, :, None] * stride_n
-        + k_offsets[None, None, :] * stride_k
-    )
+    input_offsets = (m_offsets[:, None, None] * stride_m + n_indices[None, :, None] * stride_n +
+                     k_offsets[None, None, :] * stride_k)
 
     input_pointers_0 = input_ptr + input_offsets
     data = tl.load(
         input_pointers_0,
-        mask=m_offsets[:, None, None] < (BLOCK_M // 2)
-        and k_offsets[None, None, :] < (BLOCK_K // 2),
+        mask=m_offsets[:, None, None] < (BLOCK_M // 2) and k_offsets[None, None, :] < (BLOCK_K // 2),
         other=0,
     )
 
-    out_offsets = (
-        m_offsets[:, None, None] * o_stride_m
-        + n_offsets[None, :, None] * o_stride_n
-        + k_offsets[None, None, :] * o_stride_k
-    )
+    out_offsets = (m_offsets[:, None, None] * o_stride_m + n_offsets[None, :, None] * o_stride_n +
+                   k_offsets[None, None, :] * o_stride_k)
     tl.store(output_ptr + out_offsets, data)
 
 
 def index_select_3d_mask(input_tensor, indices, dim):
     M, N, K = input_tensor.shape
     R = indices.shape[0]
-    output_tensor = torch.full(
-        (M, R, K), -1, dtype=input_tensor.dtype, device=input_tensor.device
-    )
+    output_tensor = torch.full((M, R, K), -1, dtype=input_tensor.dtype, device=input_tensor.device)
     stride_i = indices.stride(0)
     stride_m = input_tensor.stride(0)
     stride_n = input_tensor.stride(1)
@@ -747,7 +700,9 @@ def index_select_3d_mask(input_tensor, indices, dim):
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
     o_stride_k = output_tensor.stride(2)
-    index_select_3d_mask_kernel[1,](
+    index_select_3d_mask_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -774,8 +729,8 @@ def test_index_select_3d_mask(device):
     if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
     output_ref = torch.index_select(input_tensor, dim, indices)
-    output_ref[M // 2 :, :, :] = 0
-    output_ref[:, :, K // 2 :] = 0
+    output_ref[M // 2:, :, :] = 0
+    output_ref[:, :, K // 2:] = 0
     output_triton = index_select_3d_mask(input_tensor, indices, dim)
     torch.testing.assert_close(output_triton, output_ref)
 
@@ -803,29 +758,21 @@ def index_select_3d_dim0_kernel(
     n_offsets = tl.arange(0, BLOCK_N)
     k_offsets = tl.arange(0, BLOCK_K)
 
-    input_offsets = (
-        m_indices[:, None, None] * stride_m
-        + n_offsets[None, :, None] * stride_n
-        + k_offsets[None, None, :] * stride_k
-    )
+    input_offsets = (m_indices[:, None, None] * stride_m + n_offsets[None, :, None] * stride_n +
+                     k_offsets[None, None, :] * stride_k)
 
     input_pointers_0 = input_ptr + input_offsets
     data = tl.load(input_pointers_0)
 
-    out_offsets = (
-        m_offsets[:, None, None] * o_stride_m
-        + n_offsets[None, :, None] * o_stride_n
-        + k_offsets[None, None, :] * o_stride_k
-    )
+    out_offsets = (m_offsets[:, None, None] * o_stride_m + n_offsets[None, :, None] * o_stride_n +
+                   k_offsets[None, None, :] * o_stride_k)
     tl.store(output_ptr + out_offsets, data)
 
 
 def index_select_3d_dim0(input_tensor, indices, dim):
     M, N, K = input_tensor.shape
     R = indices.shape[0]
-    output_tensor = torch.full(
-        (R, N, K), -1, dtype=input_tensor.dtype, device=input_tensor.device
-    )
+    output_tensor = torch.full((R, N, K), -1, dtype=input_tensor.dtype, device=input_tensor.device)
     stride_i = indices.stride(0)
     stride_m = input_tensor.stride(0)
     stride_n = input_tensor.stride(1)
@@ -833,7 +780,9 @@ def index_select_3d_dim0(input_tensor, indices, dim):
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
     o_stride_k = output_tensor.stride(2)
-    index_select_3d_dim0_kernel[1,](
+    index_select_3d_dim0_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -887,34 +836,25 @@ def index_select_3d_dim0_mask_kernel(
     n_offsets = tl.arange(0, BLOCK_N)
     k_offsets = tl.arange(0, BLOCK_K)
 
-    input_offsets = (
-        m_indices[:, None, None] * stride_m
-        + n_offsets[None, :, None] * stride_n
-        + k_offsets[None, None, :] * stride_k
-    )
+    input_offsets = (m_indices[:, None, None] * stride_m + n_offsets[None, :, None] * stride_n +
+                     k_offsets[None, None, :] * stride_k)
 
     input_pointers_0 = input_ptr + input_offsets
     data = tl.load(
         input_pointers_0,
-        mask=n_offsets[None, :, None] < (BLOCK_N // 2)
-        and k_offsets[None, None, :] < (BLOCK_K // 2),
+        mask=n_offsets[None, :, None] < (BLOCK_N // 2) and k_offsets[None, None, :] < (BLOCK_K // 2),
         other=0,
     )
 
-    out_offsets = (
-        m_offsets[:, None, None] * o_stride_m
-        + n_offsets[None, :, None] * o_stride_n
-        + k_offsets[None, None, :] * o_stride_k
-    )
+    out_offsets = (m_offsets[:, None, None] * o_stride_m + n_offsets[None, :, None] * o_stride_n +
+                   k_offsets[None, None, :] * o_stride_k)
     tl.store(output_ptr + out_offsets, data)
 
 
 def index_select_3d_dim0_mask(input_tensor, indices, dim):
     M, N, K = input_tensor.shape
     R = indices.shape[0]
-    output_tensor = torch.full(
-        (R, N, K), -1, dtype=input_tensor.dtype, device=input_tensor.device
-    )
+    output_tensor = torch.full((R, N, K), -1, dtype=input_tensor.dtype, device=input_tensor.device)
     stride_i = indices.stride(0)
     stride_m = input_tensor.stride(0)
     stride_n = input_tensor.stride(1)
@@ -922,7 +862,9 @@ def index_select_3d_dim0_mask(input_tensor, indices, dim):
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
     o_stride_k = output_tensor.stride(2)
-    index_select_3d_dim0_mask_kernel[1,](
+    index_select_3d_dim0_mask_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -949,8 +891,8 @@ def test_index_select_3d_dim0_mask(device):
     if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
     output_ref = torch.index_select(input_tensor, dim, indices)
-    output_ref[:, N // 2 :, :] = 0
-    output_ref[:, :, K // 2 :] = 0
+    output_ref[:, N // 2:, :] = 0
+    output_ref[:, :, K // 2:] = 0
     output_triton = index_select_3d_dim0_mask(input_tensor, indices, dim)
     torch.testing.assert_close(output_triton, output_ref)
 
@@ -977,29 +919,21 @@ def index_select_3d_dim2_kernel(
     n_offsets = tl.arange(0, BLOCK_N)
     m_offsets = tl.arange(0, BLOCK_M)
 
-    input_offsets = (
-        m_offsets[:, None, None] * stride_m
-        + n_offsets[None, :, None] * stride_n
-        + k_indices[None, None, :] * stride_k
-    )
+    input_offsets = (m_offsets[:, None, None] * stride_m + n_offsets[None, :, None] * stride_n +
+                     k_indices[None, None, :] * stride_k)
 
     input_pointers_0 = input_ptr + input_offsets
     data = tl.load(input_pointers_0)
 
-    out_offsets = (
-        m_offsets[:, None, None] * o_stride_m
-        + n_offsets[None, :, None] * o_stride_n
-        + k_offsets[None, None, :] * o_stride_k
-    )
+    out_offsets = (m_offsets[:, None, None] * o_stride_m + n_offsets[None, :, None] * o_stride_n +
+                   k_offsets[None, None, :] * o_stride_k)
     tl.store(output_ptr + out_offsets, data)
 
 
 def index_select_3d_dim2(input_tensor, indices, dim):
     M, N, K = input_tensor.shape
     R = indices.shape[0]
-    output_tensor = torch.full(
-        (M, N, R), -1, dtype=input_tensor.dtype, device=input_tensor.device
-    )
+    output_tensor = torch.full((M, N, R), -1, dtype=input_tensor.dtype, device=input_tensor.device)
     stride_i = indices.stride(0)
     stride_m = input_tensor.stride(0)
     stride_n = input_tensor.stride(1)
@@ -1007,7 +941,9 @@ def index_select_3d_dim2(input_tensor, indices, dim):
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
     o_stride_k = output_tensor.stride(2)
-    index_select_3d_dim2_kernel[1,](
+    index_select_3d_dim2_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -1061,34 +997,25 @@ def index_select_3d_dim2_mask_kernel(
     n_offsets = tl.arange(0, BLOCK_N)
     m_offsets = tl.arange(0, BLOCK_M)
 
-    input_offsets = (
-        m_offsets[:, None, None] * stride_m
-        + n_offsets[None, :, None] * stride_n
-        + k_indices[None, None, :] * stride_k
-    )
+    input_offsets = (m_offsets[:, None, None] * stride_m + n_offsets[None, :, None] * stride_n +
+                     k_indices[None, None, :] * stride_k)
 
     input_pointers_0 = input_ptr + input_offsets
     data = tl.load(
         input_pointers_0,
-        mask=n_offsets[None, :, None] < (BLOCK_N // 2)
-        and m_offsets[:, None, None] < (BLOCK_M // 2),
+        mask=n_offsets[None, :, None] < (BLOCK_N // 2) and m_offsets[:, None, None] < (BLOCK_M // 2),
         other=0,
     )
 
-    out_offsets = (
-        m_offsets[:, None, None] * o_stride_m
-        + n_offsets[None, :, None] * o_stride_n
-        + k_offsets[None, None, :] * o_stride_k
-    )
+    out_offsets = (m_offsets[:, None, None] * o_stride_m + n_offsets[None, :, None] * o_stride_n +
+                   k_offsets[None, None, :] * o_stride_k)
     tl.store(output_ptr + out_offsets, data)
 
 
 def index_select_3d_dim2_mask(input_tensor, indices, dim):
     M, N, K = input_tensor.shape
     R = indices.shape[0]
-    output_tensor = torch.full(
-        (M, N, R), -1, dtype=input_tensor.dtype, device=input_tensor.device
-    )
+    output_tensor = torch.full((M, N, R), -1, dtype=input_tensor.dtype, device=input_tensor.device)
     stride_i = indices.stride(0)
     stride_m = input_tensor.stride(0)
     stride_n = input_tensor.stride(1)
@@ -1096,7 +1023,9 @@ def index_select_3d_dim2_mask(input_tensor, indices, dim):
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
     o_stride_k = output_tensor.stride(2)
-    index_select_3d_dim2_mask_kernel[1,](
+    index_select_3d_dim2_mask_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -1123,8 +1052,8 @@ def test_index_select_3d_dim2_mask(device):
     if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
     output_ref = torch.index_select(input_tensor, dim, indices)
-    output_ref[:, N // 2 :, :] = 0
-    output_ref[M // 2 :, :, :] = 0
+    output_ref[:, N // 2:, :] = 0
+    output_ref[M // 2:, :, :] = 0
     output_triton = index_select_3d_dim2_mask(input_tensor, indices, dim)
     torch.testing.assert_close(output_triton, output_ref)
 
@@ -1146,15 +1075,11 @@ def scatter_row_kernel(
     row_indices = tl.load(indices + row_offsets * stride_i)
 
     col_offsets = tl.arange(0, BLOCK_N)
-    input_pointers_0 = (
-        input_ptr + row_offsets[:, None] * stride_m + col_offsets[None, :] * stride_n
-    )
+    input_pointers_0 = (input_ptr + row_offsets[:, None] * stride_m + col_offsets[None, :] * stride_n)
     data = tl.load(input_pointers_0)
 
     tl.store(
-        output_ptr
-        + row_indices[:, None] * o_stride_m
-        + col_offsets[None, :] * o_stride_n,
+        output_ptr + row_indices[:, None] * o_stride_m + col_offsets[None, :] * o_stride_n,
         data,
     )
 
@@ -1169,7 +1094,9 @@ def scatter_row(dst, dim, indices, input_tensor):
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
 
-    scatter_row_kernel[1,](
+    scatter_row_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -1221,15 +1148,11 @@ def scatter_row_mask_kernel(
     row_indices = tl.load(indices + row_offsets * stride_i)
 
     col_offsets = tl.arange(0, BLOCK_N)
-    input_pointers_0 = (
-        input_ptr + row_offsets[:, None] * stride_m + col_offsets[None, :] * stride_n
-    )
+    input_pointers_0 = (input_ptr + row_offsets[:, None] * stride_m + col_offsets[None, :] * stride_n)
     data = tl.load(input_pointers_0)
 
     tl.store(
-        output_ptr
-        + row_indices[:, None] * o_stride_m
-        + col_offsets[None, :] * o_stride_n,
+        output_ptr + row_indices[:, None] * o_stride_m + col_offsets[None, :] * o_stride_n,
         data,
         mask=col_offsets[None, :] < (BLOCK_N // 2),
     )
@@ -1245,7 +1168,9 @@ def scatter_row_mask(dst, dim, indices, input_tensor):
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
 
-    scatter_row_mask_kernel[1,](
+    scatter_row_mask_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -1276,7 +1201,7 @@ def test_scatter_row_mask(device):
     row_indices = indices.reshape(4, 1).repeat(1, N)
 
     output_ref = torch.scatter(dst, dim, row_indices, input_tensor)
-    output_ref[:, N // 2 :] = -1
+    output_ref[:, N // 2:] = -1
     torch.testing.assert_close(output_triton, output_ref)
 
 
@@ -1298,15 +1223,11 @@ def scatter_row_index_mask_kernel(
     row_indices = tl.load(indices + row_offsets * stride_i)
 
     col_offsets = tl.arange(0, BLOCK_N)
-    input_pointers_0 = (
-        input_ptr + row_offsets[:, None] * stride_m + col_offsets[None, :] * stride_n
-    )
+    input_pointers_0 = (input_ptr + row_offsets[:, None] * stride_m + col_offsets[None, :] * stride_n)
     data = tl.load(input_pointers_0)
 
     tl.store(
-        output_ptr
-        + row_indices[:, None] * o_stride_m
-        + col_offsets[None, :] * o_stride_n,
+        output_ptr + row_indices[:, None] * o_stride_m + col_offsets[None, :] * o_stride_n,
         data,
         mask=row_offsets[:, None] < index_limit,
     )
@@ -1322,7 +1243,9 @@ def scatter_row_index_mask(dst, dim, indices, input_tensor, index_limit):
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
 
-    scatter_row_index_mask_kernel[1,](
+    scatter_row_index_mask_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -1358,6 +1281,7 @@ def test_scatter_row_index_mask(device):
     output_ref = torch.scatter(dst, dim, row_indices, input_tensor)
     torch.testing.assert_close(output_triton, output_ref)
 
+
 @triton.jit
 def scatter_col_kernel(
     input_ptr,
@@ -1391,7 +1315,9 @@ def scatter_col(dst, dim, indices, input_tensor):
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
 
-    scatter_col_kernel[1,](
+    scatter_col_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -1462,7 +1388,9 @@ def scatter_col_mask(dst, dim, indices, input_tensor):
     o_stride_m = output_tensor.stride(0)
     o_stride_n = output_tensor.stride(1)
 
-    scatter_col_mask_kernel[1,](
+    scatter_col_mask_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -1493,7 +1421,7 @@ def test_scatter_col_mask(device):
     col_indices = indices.repeat(4, 1)
 
     output_ref = torch.scatter(dst, dim, col_indices, input_tensor)
-    output_ref[M // 2 :, :] = -1
+    output_ref[M // 2:, :] = -1
     torch.testing.assert_close(output_triton, output_ref)
 
 
@@ -1520,20 +1448,14 @@ def scatter_3d_kernel(
     m_offsets = tl.arange(0, BLOCK_M)
     k_offsets = tl.arange(0, BLOCK_K)
 
-    input_offsets = (
-        m_offsets[:, None, None] * stride_m
-        + n_offsets[None, :, None] * stride_n
-        + k_offsets[None, None, :] * stride_k
-    )
+    input_offsets = (m_offsets[:, None, None] * stride_m + n_offsets[None, :, None] * stride_n +
+                     k_offsets[None, None, :] * stride_k)
 
     input_pointers_0 = input_ptr + input_offsets
     data = tl.load(input_pointers_0)
 
-    out_offsets = (
-        m_offsets[:, None, None] * o_stride_m
-        + n_indices[None, :, None] * o_stride_n
-        + k_offsets[None, None, :] * o_stride_k
-    )
+    out_offsets = (m_offsets[:, None, None] * o_stride_m + n_indices[None, :, None] * o_stride_n +
+                   k_offsets[None, None, :] * o_stride_k)
     tl.store(output_ptr + out_offsets, data)
 
 
@@ -1550,7 +1472,9 @@ def scatter_3d(dst, dim, indices, input_tensor):
     o_stride_n = output_tensor.stride(1)
     o_stride_k = output_tensor.stride(2)
     print(stride_i, stride_m, stride_n, stride_k, o_stride_m, o_stride_n, o_stride_k)
-    scatter_3d_kernel[1,](
+    scatter_3d_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -1607,25 +1531,18 @@ def scatter_3d_mask_kernel(
     m_offsets = tl.arange(0, BLOCK_M)
     k_offsets = tl.arange(0, BLOCK_K)
 
-    input_offsets = (
-        m_offsets[:, None, None] * stride_m
-        + n_offsets[None, :, None] * stride_n
-        + k_offsets[None, None, :] * stride_k
-    )
+    input_offsets = (m_offsets[:, None, None] * stride_m + n_offsets[None, :, None] * stride_n +
+                     k_offsets[None, None, :] * stride_k)
 
     input_pointers_0 = input_ptr + input_offsets
     data = tl.load(input_pointers_0)
 
-    out_offsets = (
-        m_offsets[:, None, None] * o_stride_m
-        + n_indices[None, :, None] * o_stride_n
-        + k_offsets[None, None, :] * o_stride_k
-    )
+    out_offsets = (m_offsets[:, None, None] * o_stride_m + n_indices[None, :, None] * o_stride_n +
+                   k_offsets[None, None, :] * o_stride_k)
     tl.store(
         output_ptr + out_offsets,
         data,
-        mask=m_offsets[:, None, None] < (BLOCK_M // 2)
-        and k_offsets[None, None, :] < (BLOCK_K // 2),
+        mask=m_offsets[:, None, None] < (BLOCK_M // 2) and k_offsets[None, None, :] < (BLOCK_K // 2),
     )
 
 
@@ -1642,7 +1559,9 @@ def scatter_3d_mask(dst, dim, indices, input_tensor):
     o_stride_n = output_tensor.stride(1)
     o_stride_k = output_tensor.stride(2)
     print(stride_i, stride_m, stride_n, stride_k, o_stride_m, o_stride_n, o_stride_k)
-    scatter_3d_mask_kernel[1,](
+    scatter_3d_mask_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -1672,8 +1591,8 @@ def test_scatter_3d_mask(device):
         triton.runtime.driver.set_active(CPUDriver())
     col_indices = indices.reshape(2, 1).repeat(M, 1, K)
     output_ref = torch.scatter(dst, dim, col_indices, input_tensor)
-    output_ref[M // 2 :, :, :] = -1
-    output_ref[:, :, K // 2 :] = -1
+    output_ref[M // 2:, :, :] = -1
+    output_ref[:, :, K // 2:] = -1
     output_triton = scatter_3d_mask(dst, dim, indices, input_tensor)
     torch.testing.assert_close(output_triton, output_ref)
 
@@ -1701,20 +1620,14 @@ def scatter_3d_dim0_kernel(
     n_offsets = tl.arange(0, BLOCK_N)
     k_offsets = tl.arange(0, BLOCK_K)
 
-    input_offsets = (
-        m_offsets[:, None, None] * stride_m
-        + n_offsets[None, :, None] * stride_n
-        + k_offsets[None, None, :] * stride_k
-    )
+    input_offsets = (m_offsets[:, None, None] * stride_m + n_offsets[None, :, None] * stride_n +
+                     k_offsets[None, None, :] * stride_k)
 
     input_pointers_0 = input_ptr + input_offsets
     data = tl.load(input_pointers_0)
 
-    out_offsets = (
-        m_indices[:, None, None] * o_stride_m
-        + n_offsets[None, :, None] * o_stride_n
-        + k_offsets[None, None, :] * o_stride_k
-    )
+    out_offsets = (m_indices[:, None, None] * o_stride_m + n_offsets[None, :, None] * o_stride_n +
+                   k_offsets[None, None, :] * o_stride_k)
     tl.store(output_ptr + out_offsets, data)
 
 
@@ -1731,7 +1644,9 @@ def scatter_3d_dim0(dst, dim, indices, input_tensor):
     o_stride_n = output_tensor.stride(1)
     o_stride_k = output_tensor.stride(2)
     print(stride_i, stride_m, stride_n, stride_k, o_stride_m, o_stride_n, o_stride_k)
-    scatter_3d_dim0_kernel[1,](
+    scatter_3d_dim0_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -1787,25 +1702,18 @@ def scatter_3d_dim0_mask_kernel(
     n_offsets = tl.arange(0, BLOCK_N)
     k_offsets = tl.arange(0, BLOCK_K)
 
-    input_offsets = (
-        m_offsets[:, None, None] * stride_m
-        + n_offsets[None, :, None] * stride_n
-        + k_offsets[None, None, :] * stride_k
-    )
+    input_offsets = (m_offsets[:, None, None] * stride_m + n_offsets[None, :, None] * stride_n +
+                     k_offsets[None, None, :] * stride_k)
 
     input_pointers_0 = input_ptr + input_offsets
     data = tl.load(input_pointers_0)
 
-    out_offsets = (
-        m_indices[:, None, None] * o_stride_m
-        + n_offsets[None, :, None] * o_stride_n
-        + k_offsets[None, None, :] * o_stride_k
-    )
+    out_offsets = (m_indices[:, None, None] * o_stride_m + n_offsets[None, :, None] * o_stride_n +
+                   k_offsets[None, None, :] * o_stride_k)
     tl.store(
         output_ptr + out_offsets,
         data,
-        mask=n_offsets[None, :, None] < (BLOCK_N // 2)
-        and k_offsets[None, None, :] < (BLOCK_K // 2),
+        mask=n_offsets[None, :, None] < (BLOCK_N // 2) and k_offsets[None, None, :] < (BLOCK_K // 2),
     )
 
 
@@ -1822,7 +1730,9 @@ def scatter_3d_dim0_mask(dst, dim, indices, input_tensor):
     o_stride_n = output_tensor.stride(1)
     o_stride_k = output_tensor.stride(2)
     print(stride_i, stride_m, stride_n, stride_k, o_stride_m, o_stride_n, o_stride_k)
-    scatter_3d_dim0_mask_kernel[1,](
+    scatter_3d_dim0_mask_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -1851,8 +1761,8 @@ def test_scatter_3d_dim0_mask(device):
         triton.runtime.driver.set_active(CPUDriver())
     col_indices = indices.reshape(2, 1, 1).repeat(1, N, K)
     output_ref = torch.scatter(dst, dim, col_indices, input_tensor)
-    output_ref[:, N // 2 :, :] = -1
-    output_ref[:, :, K // 2 :] = -1
+    output_ref[:, N // 2:, :] = -1
+    output_ref[:, :, K // 2:] = -1
     output_triton = scatter_3d_dim0_mask(dst, dim, indices, input_tensor)
     torch.testing.assert_close(output_triton, output_ref)
 
@@ -1880,20 +1790,14 @@ def scatter_3d_dim2_kernel(
     n_offsets = tl.arange(0, BLOCK_N)
     m_offsets = tl.arange(0, BLOCK_M)
 
-    input_offsets = (
-        m_offsets[:, None, None] * stride_m
-        + n_offsets[None, :, None] * stride_n
-        + k_offsets[None, None, :] * stride_k
-    )
+    input_offsets = (m_offsets[:, None, None] * stride_m + n_offsets[None, :, None] * stride_n +
+                     k_offsets[None, None, :] * stride_k)
 
     input_pointers_0 = input_ptr + input_offsets
     data = tl.load(input_pointers_0)
 
-    out_offsets = (
-        m_offsets[:, None, None] * o_stride_m
-        + n_offsets[None, :, None] * o_stride_n
-        + k_indices[None, None, :] * o_stride_k
-    )
+    out_offsets = (m_offsets[:, None, None] * o_stride_m + n_offsets[None, :, None] * o_stride_n +
+                   k_indices[None, None, :] * o_stride_k)
     tl.store(output_ptr + out_offsets, data)
 
 
@@ -1910,7 +1814,9 @@ def scatter_3d_dim2(dst, dim, indices, input_tensor):
     o_stride_n = output_tensor.stride(1)
     o_stride_k = output_tensor.stride(2)
     print(stride_i, stride_m, stride_n, stride_k, o_stride_m, o_stride_n, o_stride_k)
-    scatter_3d_dim2_kernel[1,](
+    scatter_3d_dim2_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -1967,25 +1873,18 @@ def scatter_3d_dim2_mask_kernel(
     n_offsets = tl.arange(0, BLOCK_N)
     m_offsets = tl.arange(0, BLOCK_M)
 
-    input_offsets = (
-        m_offsets[:, None, None] * stride_m
-        + n_offsets[None, :, None] * stride_n
-        + k_offsets[None, None, :] * stride_k
-    )
+    input_offsets = (m_offsets[:, None, None] * stride_m + n_offsets[None, :, None] * stride_n +
+                     k_offsets[None, None, :] * stride_k)
 
     input_pointers_0 = input_ptr + input_offsets
     data = tl.load(input_pointers_0)
 
-    out_offsets = (
-        m_offsets[:, None, None] * o_stride_m
-        + n_offsets[None, :, None] * o_stride_n
-        + k_indices[None, None, :] * o_stride_k
-    )
+    out_offsets = (m_offsets[:, None, None] * o_stride_m + n_offsets[None, :, None] * o_stride_n +
+                   k_indices[None, None, :] * o_stride_k)
     tl.store(
         output_ptr + out_offsets,
         data,
-        mask=n_offsets[None, :, None] < (BLOCK_N // 2)
-        and m_offsets[:, None, None] < (BLOCK_M // 2),
+        mask=n_offsets[None, :, None] < (BLOCK_N // 2) and m_offsets[:, None, None] < (BLOCK_M // 2),
     )
 
 
@@ -2002,7 +1901,9 @@ def scatter_3d_dim2_mask(dst, dim, indices, input_tensor):
     o_stride_n = output_tensor.stride(1)
     o_stride_k = output_tensor.stride(2)
     print(stride_i, stride_m, stride_n, stride_k, o_stride_m, o_stride_n, o_stride_k)
-    scatter_3d_dim2_mask_kernel[1,](
+    scatter_3d_dim2_mask_kernel[
+        1,
+    ](
         input_tensor,
         output_tensor,
         indices,
@@ -2032,7 +1933,7 @@ def test_scatter_3d_dim2_mask(device):
         triton.runtime.driver.set_active(CPUDriver())
     col_indices = indices.repeat(M, N, 1)
     output_ref = torch.scatter(dst, dim, col_indices, input_tensor)
-    output_ref[:, N // 2 :, :] = -1
-    output_ref[M // 2 :, :, :] = -1
+    output_ref[:, N // 2:, :] = -1
+    output_ref[M // 2:, :, :] = -1
     output_triton = scatter_3d_dim2_mask(dst, dim, indices, input_tensor)
     torch.testing.assert_close(output_triton, output_ref)

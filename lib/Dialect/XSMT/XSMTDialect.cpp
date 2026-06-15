@@ -5,11 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
-#include "triton/Dialect/Triton/IR/Interfaces.h"
-#include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.cpp.inc"
+#include "triton/Dialect/Triton/IR/Interfaces.h"
 
 using namespace mlir;
 using namespace mlir::xsmt;

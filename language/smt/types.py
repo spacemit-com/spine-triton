@@ -5,7 +5,9 @@ from triton.language.semantic import TritonSemantic
 
 
 class buffered_tensor(tl.tensor):
-    def __init__(self, handle, element_ty: tl.dtype, shape: List, copies: int, storage: str, semantic: TritonSemantic = None):
+
+    def __init__(self, handle, element_ty: tl.dtype, shape: List, copies: int, storage: str,
+                 semantic: TritonSemantic = None):
         buf_type = buffered_tensor_type(element_ty, shape, copies, storage, semantic)
         super().__init__(handle, buf_type)
 
@@ -17,7 +19,7 @@ class buffered_tensor(tl.tensor):
         self.semantic = semantic
 
     def __getitem__(self, buffer_idx):
-       return buffer_view(self, buffer_idx, _semantic=self.semantic)
+        return buffer_view(self, buffer_idx, _semantic=self.semantic)
 
     def _flatten_ir(self, handles) -> None:
         handles.append(self.handle)
@@ -62,8 +64,7 @@ class buffered_tensor_type(tl.pointer_type):
         return f"buffered_tensor_ptr_<{self.element_ty}, {self.shape}, {self.copies}>"
 
     def __eq__(self, other) -> bool:
-        return (type(self) is type(other) and self.shape == other.shape
-                and self.copies == other.copies)
+        return (type(self) is type(other) and self.shape == other.shape and self.copies == other.copies)
 
     def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
         out.append(self.to_ir(builder))
@@ -136,6 +137,7 @@ class mbarrier_type(tl.dtype):
     def __hash__(self):
         return hash(('mbarrier_type', self.num))
 
+
 class barrier_view:
     """
     A view into a single barrier from mbarrier copies.
@@ -159,17 +161,14 @@ class barrier_view:
     def __repr__(self):
         return f"barrier_view(index={self.index}, parent_num={self.parent.num})"
 
+
 class mbarrier(tl.tensor):
     """
     Handle for multi-copy mbarrier.
     """
 
-    def __init__(self, handle, num: int,
-                 flag: int = 0,
-                 arrive_count: int = 0,
-                 transaction_count: int = 0,
-                 expect_count: int = 1,
-                 semantics=None):
+    def __init__(self, handle, num: int, flag: int = 0, arrive_count: int = 0, transaction_count: int = 0,
+                 expect_count: int = 1, semantics=None):
         self._type = mbarrier_type(num, semantics)
         self.handle = handle
         self.num = num

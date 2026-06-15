@@ -107,21 +107,16 @@ class LayerNorm(torch.autograd.Function):
 
 
 @pytest.mark.parametrize("M, N, dtype, eps", [  #
-    (M, N, dtype, eps)
-    for M in [1151]
-    for N in [8192]
-    for dtype in [torch.float16]
-    for eps in [1e-5]
+    (M, N, dtype, eps) for M in [1151] for N in [8192] for dtype in [torch.float16] for eps in [1e-5]
 ])
 def test_layer_norm(M, N, dtype, eps, device):
-    layer_norm = LayerNorm.apply
+    layer_norm = LayerNorm.apply  # noqa: F841
     # create data
     x_shape = (M, N)
     w_shape = (x_shape[-1], )
-    weight = torch.rand(w_shape, dtype=dtype, device=device, requires_grad=False)
-    bias = torch.rand(w_shape, dtype=dtype, device=device, requires_grad=False)
+    weight = torch.rand(w_shape, dtype=dtype, device=device, requires_grad=False)  # noqa: F841
+    bias = torch.rand(w_shape, dtype=dtype, device=device, requires_grad=False)  # noqa: F841
     x = -2.3 + 0.5 * torch.randn(x_shape, dtype=dtype, device=device)
-    dy = .1 * torch.randn_like(x)
     x.requires_grad_(False)
 
     # forward pass
@@ -138,19 +133,17 @@ def test_layer_norm(M, N, dtype, eps, device):
 
 @benchmark.measure()
 def bench_layernorm(size, provider):
-    layer_norm = LayerNorm.apply
+    layer_norm = LayerNorm.apply  # noqa: F841
     device = 'cpu'
-    eps = 1e-5
+    eps = 1e-5  # noqa: F841
     dtype = torch.float16
     x_shape = (size, size)
     w_shape = (x_shape[-1], )
-    weight = torch.rand(w_shape, dtype=dtype, device=device, requires_grad=False)
-    bias = torch.rand(w_shape, dtype=dtype, device=device, requires_grad=False)
+    weight = torch.rand(w_shape, dtype=dtype, device=device, requires_grad=False)  # noqa: F841
+    bias = torch.rand(w_shape, dtype=dtype, device=device, requires_grad=False)  # noqa: F841
     x = -2.3 + 0.5 * torch.randn(x_shape, dtype=dtype, device=device)
-    dy = .1 * torch.randn_like(x)
     x.requires_grad_(False)
     # forward pass
-    y_tri = layer_norm(x, w_shape, weight, bias, eps, device)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -10,9 +10,7 @@ if __name__ == "__main__":
     dtype = torch.float32
     INT_DTYPES = [torch.int16, torch.int32]
     if dtype == torch.bool:
-        inp = torch.randint(0, 2, shape, dtype=torch.int, device=flag_gems.device).to(
-            dtype
-        )
+        inp = torch.randint(0, 2, shape, dtype=torch.int, device=flag_gems.device).to(dtype)
     elif dtype in INT_DTYPES:
         inp = torch.randint(-3, 3, shape, device=flag_gems.device).to(dtype)
     else:

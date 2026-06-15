@@ -63,8 +63,8 @@ tensor::ExtractSliceOp MaskState::getExtractSlice(Value source,
   SmallVector<OpFoldResult> offsets(getRank(), builder.getIndexAttr(0));
   SmallVector<OpFoldResult> strides(getRank(), builder.getIndexAttr(1));
 
-  return tensor::ExtractSliceOp::create(builder, loc, source, offsets,
-                                                dims, strides);
+  return tensor::ExtractSliceOp::create(builder, loc, source, offsets, dims,
+                                        strides);
 }
 
 memref::SubViewOp MaskState::getSubview(Value source, const Location loc,
@@ -76,7 +76,7 @@ memref::SubViewOp MaskState::getSubview(Value source, const Location loc,
       memref::SubViewOp::inferResultType(sourceType, offsets, dims, strides);
 
   return memref::SubViewOp::create(builder, loc, cast<MemRefType>(dstType),
-                                           source, offsets, dims, strides);
+                                   source, offsets, dims, strides);
 }
 
 static memref::SubViewOp createSubview(Value src, Location loc, OpBuilder &b,
@@ -87,7 +87,7 @@ static memref::SubViewOp createSubview(Value src, Location loc, OpBuilder &b,
   auto dstType =
       memref::SubViewOp::inferResultType(srcType, offsets, sizes, strides);
   return memref::SubViewOp::create(b, loc, cast<MemRefType>(dstType), src,
-                                     offsets, sizes, strides);
+                                   offsets, sizes, strides);
 }
 
 // Assume block1 wraps around and the remainder is block2.
@@ -150,7 +150,8 @@ MaskState::getSideBySideSubviews(Value block1, Value block2, const Location loc,
                                  OpBuilder &builder) const {
   OpFoldResult subviewRowFull = dims[0];
   OpFoldResult subviewColFull = dims[1];
-  OpFoldResult col1 = memref::DimOp::create(builder, loc, block1, 1).getResult();
+  OpFoldResult col1 =
+      memref::DimOp::create(builder, loc, block1, 1).getResult();
   OpFoldResult subviewCol1 = minOFRs(col1, subviewColFull, loc, builder);
   OpFoldResult subviewCol2 = subOFRs(subviewColFull, subviewCol1, loc, builder);
 
@@ -169,7 +170,8 @@ MaskState::getStackedSubviews(Value block1, Value block2, const Location loc,
                               OpBuilder &builder) const {
   OpFoldResult subviewRowFull = dims[0];
   OpFoldResult subviewColFull = dims[1];
-  OpFoldResult row1 = memref::DimOp::create(builder, loc, block1, 0).getResult();
+  OpFoldResult row1 =
+      memref::DimOp::create(builder, loc, block1, 0).getResult();
   OpFoldResult subviewRow1 = minOFRs(row1, subviewRowFull, loc, builder);
   OpFoldResult subviewRow2 = subOFRs(subviewRowFull, subviewRow1, loc, builder);
 
@@ -601,8 +603,8 @@ LogicalResult MaskState::parseSplat(triton::SplatOp splatOp, const Location loc,
   // This ensures correct semantics when combined with another mask via AND:
   //   result[i] = min(select(bool, shape[i], 0), other[i])
   //
-  // When bool=true:  min(shape[i], other[i]) = other[i] (since other[i] <= shape[i])
-  // When bool=false: min(0, other[i]) = 0
+  // When bool=true:  min(shape[i], other[i]) = other[i] (since other[i] <=
+  // shape[i]) When bool=false: min(0, other[i]) = 0
   //
   // This is the correct "all or nothing" behavior for row masks.
   auto srcType = cast<IntegerType>(src.getType());
@@ -612,8 +614,7 @@ LogicalResult MaskState::parseSplat(triton::SplatOp splatOp, const Location loc,
       auto shapeAttr = builder.getIndexAttr(s);
       // Create: select(src, shape[i], 0)
       auto selectOp = arith::SelectOp::create(
-          builder, loc, src,
-          ofrToIndexValue(shapeAttr, loc, builder),
+          builder, loc, src, ofrToIndexValue(shapeAttr, loc, builder),
           ofrToIndexValue(zeroAttr, loc, builder));
       this->dims.push_back(selectOp.getResult());
     }

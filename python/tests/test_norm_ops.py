@@ -1,11 +1,10 @@
-import math
-
 import numpy as np
 import pytest
 import torch
 
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -19,9 +18,7 @@ from .conftest import QUICK_MODE
 
 FLOAT_DTYPES = [torch.float32] if QUICK_MODE else FLOAT_DTYPES
 DIMS_LIST = [1] if QUICK_MODE else [0, 1, [0, 1], [1, 0]]
-KEEPDIM_DIMS = (
-    [(True, DIMS_LIST[0])] if QUICK_MODE else list(zip([True, False] * 2, DIMS_LIST))
-)
+KEEPDIM_DIMS = ([(True, DIMS_LIST[0])] if QUICK_MODE else list(zip([True, False] * 2, DIMS_LIST)))
 
 
 @pytest.mark.group_norm
@@ -52,22 +49,18 @@ def test_accuracy_groupnorm(N, C, H, W, num_groups, dtype, wb_none):
         res_weight = None
         res_bias = None
     else:
-        res_weight = torch.randn(size=(C,), dtype=dtype, device=flag_gems.device)
-        res_bias = torch.randn(size=(C,), dtype=dtype, device=flag_gems.device)
+        res_weight = torch.randn(size=(C, ), dtype=dtype, device=flag_gems.device)
+        res_bias = torch.randn(size=(C, ), dtype=dtype, device=flag_gems.device)
     eps = 1e-5
 
     ref_inp = to_reference(res_inp, True)
     ref_weight = to_reference(res_weight, True)
     ref_bias = to_reference(res_bias, True)
 
-    ref_out = torch.nn.functional.group_norm(
-        ref_inp, num_groups, weight=ref_weight, bias=ref_bias, eps=eps
-    )
+    ref_out = torch.nn.functional.group_norm(ref_inp, num_groups, weight=ref_weight, bias=ref_bias, eps=eps)
 
     with flag_gems.use_gems():
-        res_out = torch.group_norm(
-            res_inp, num_groups, weight=res_weight, bias=res_bias, eps=eps
-        )
+        res_out = torch.group_norm(res_inp, num_groups, weight=res_weight, bias=res_bias, eps=eps)
 
     gems_assert_close(res_out, ref_out, dtype)
 
@@ -77,17 +70,13 @@ def test_accuracy_groupnorm(N, C, H, W, num_groups, dtype, wb_none):
 @pytest.mark.native_layer_norm
 @pytest.mark.parametrize(
     "shape",
-    (
-        [(2, 40999)]
-        if QUICK_MODE
-        else [
-            (200, 36),
-            (4096, 100),
-            # (1, 40999),
-            (100, 40499),
-            (4096, 256),
-        ]
-    ),
+    ([(2, 40999)] if QUICK_MODE else [
+        (200, 36),
+        (4096, 100),
+        # (1, 40999),
+        (100, 40499),
+        (4096, 256),
+    ]),
 )
 @pytest.mark.parametrize("wb_none", [False, True])
 @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
@@ -145,9 +134,7 @@ def test_accuracy_rmsnorm(shape, dtype):
     np_weight = np.random.uniform(-0.1, 0.1, layer_shape).astype(np.float32)
 
     inp = torch.tensor(np_inp, dtype=dtype, device=flag_gems.device, requires_grad=True)
-    weight = torch.tensor(
-        np_weight, dtype=dtype, device=flag_gems.device, requires_grad=True
-    )
+    weight = torch.tensor(np_weight, dtype=dtype, device=flag_gems.device, requires_grad=True)
 
     eps = 1e-5
 
@@ -164,15 +151,11 @@ def test_accuracy_rmsnorm(shape, dtype):
     ref_out = _torch_rms_norm(ref_inp, weight=ref_weight, eps=eps)
     res_out = flag_gems.rms_norm(inp, list(layer_shape), weight=weight, eps=eps)
 
-    res_grad = torch.tensor(
-        np_grad, dtype=dtype, device=flag_gems.device, requires_grad=True
-    )
+    res_grad = torch.tensor(np_grad, dtype=dtype, device=flag_gems.device, requires_grad=True)
     ref_grad = to_reference(res_grad)
 
     res_grad, res_weight_grad = torch.autograd.grad(res_out, (inp, weight), res_grad)
-    ref_grad, ref_weight_grad = torch.autograd.grad(
-        ref_out, (ref_inp, ref_weight), ref_grad
-    )
+    ref_grad, ref_weight_grad = torch.autograd.grad(ref_out, (ref_inp, ref_weight), ref_grad)
 
     gems_assert_close(res_out, ref_out, dtype)
     if flag_gems.vendor_name == "kunlunxin" and shape == (200, 40999, 3):
@@ -209,9 +192,7 @@ def test_accuracy_skip_layernorm(shape, dtype):
         bias=ref_bias,
         eps=eps,
     )
-    res_out = flag_gems.skip_layer_norm(
-        inp, residual, list(layer_shape), weight=weight, bias=bias, eps=eps
-    )
+    res_out = flag_gems.skip_layer_norm(inp, residual, list(layer_shape), weight=weight, bias=bias, eps=eps)
 
     gems_assert_close(res_out, ref_out, dtype)
 
@@ -248,9 +229,7 @@ def test_accuracy_skip_rmsnorm(shape, dtype):
         eps=eps,
     )
 
-    res_out = flag_gems.skip_rms_norm(
-        inp, residual, list(layer_shape), weight=weight, eps=eps
-    )
+    res_out = flag_gems.skip_rms_norm(inp, residual, list(layer_shape), weight=weight, eps=eps)
 
     gems_assert_close(res_out, ref_out, dtype)
 
@@ -276,15 +255,11 @@ def test_accuracy_batch_norm(shape, dtype, affine):
         torch.manual_seed(42)
     C = shape[1]
     inp = torch.randn(size=shape, dtype=dtype, device=flag_gems.device)
-    weight = (
-        torch.randn(size=(C,), dtype=dtype, device=flag_gems.device) if affine else None
-    )
-    bias = (
-        torch.randn(size=(C,), dtype=dtype, device=flag_gems.device) if affine else None
-    )
+    weight = (torch.randn(size=(C, ), dtype=dtype, device=flag_gems.device) if affine else None)
+    bias = (torch.randn(size=(C, ), dtype=dtype, device=flag_gems.device) if affine else None)
 
-    running_mean = torch.zeros(size=(C,), dtype=dtype, device=flag_gems.device)
-    running_var = torch.ones(size=(C,), dtype=dtype, device=flag_gems.device)
+    running_mean = torch.zeros(size=(C, ), dtype=dtype, device=flag_gems.device)
+    running_var = torch.ones(size=(C, ), dtype=dtype, device=flag_gems.device)
 
     eps = 1e-5
 

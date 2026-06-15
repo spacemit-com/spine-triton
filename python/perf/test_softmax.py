@@ -3,11 +3,10 @@ import torch
 
 import triton
 import triton.language as tl
-import triton.language.extra.smt as smt
 from triton.language.extra.cpu import libdevice as tl_extra_shim
 from triton.backends.spine_triton.driver import CPUDriver
-triton.runtime.driver.set_active(CPUDriver())
 
+triton.runtime.driver.set_active(CPUDriver())
 
 SOFTMAX_TUNING_CONFIGS = [
     triton.Config({"ROW_SIZE": 1, "COL_SIZE": 32}, num_warps=1),
@@ -34,31 +33,21 @@ def _best_of_repeats(run_once, num_warmup=5, num_iterations=100, num_repeats=3):
 
 
 @triton.jit
-def softmax_kernel(
-    output_ptr, input_ptr,
-    input_row_stride, output_row_stride,
-    n_rows, n_cols,
-    ROW_SIZE: tl.constexpr,
-    COL_SIZE: tl.constexpr
-):
+def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n_rows, n_cols, ROW_SIZE: tl.constexpr,
+                   COL_SIZE: tl.constexpr):
     row_start = tl.program_id(0) * ROW_SIZE
     element_ty = input_ptr.type.element_ty
 
     for row_idx in range(row_start, row_start + ROW_SIZE):
         if row_idx < n_rows:
-            denominator = tl.zeros((1,), dtype=element_ty)
-            row_max = tl.full((COL_SIZE,), -float('inf'), dtype=element_ty)
+            denominator = tl.zeros((1, ), dtype=element_ty)
+            row_max = tl.full((COL_SIZE, ), -float('inf'), dtype=element_ty)
 
             for col_idx in range(0, n_cols, COL_SIZE):
-                input_block_ptr = tl.make_block_ptr(
-                    base=input_ptr + row_idx * input_row_stride,
-                    shape=(n_cols),
-                    strides=(1,),
-                    offsets=(col_idx,),
-                    block_shape=(COL_SIZE,),
-                    order=(0,)
-                )
-                row = tl.load(input_block_ptr, boundary_check=(0,), padding_option="neg_inf")
+                input_block_ptr = tl.make_block_ptr(base=input_ptr + row_idx * input_row_stride, shape=(n_cols),
+                                                    strides=(1, ), offsets=(col_idx, ), block_shape=(COL_SIZE, ),
+                                                    order=(0, ))
+                row = tl.load(input_block_ptr, boundary_check=(0, ), padding_option="neg_inf")
                 row_max = tl.maximum(row, row_max)
 
             # tl.max promotes fp16/bf16 to fp32 in this frontend.
@@ -66,50 +55,35 @@ def softmax_kernel(
             row_max_total = tl.max(row_max, axis=0).to(element_ty)
 
             for col_idx in range(0, n_cols, COL_SIZE):
-                input_block_ptr = tl.make_block_ptr(
-                    base=input_ptr + row_idx * input_row_stride,
-                    shape=(n_cols),
-                    strides=(1,),
-                    offsets=(col_idx,),
-                    block_shape=(COL_SIZE,),
-                    order=(0,)
-                )
-                output_block_ptr = tl.make_block_ptr(
-                    base=output_ptr + row_idx * output_row_stride,
-                    shape=(n_cols,),
-                    strides=(1,),
-                    offsets=(col_idx,),
-                    block_shape=(COL_SIZE,),
-                    order=(0,)
-                )
-                row = tl.load(input_block_ptr, boundary_check=(0,), padding_option="neg_inf")
+                input_block_ptr = tl.make_block_ptr(base=input_ptr + row_idx * input_row_stride, shape=(n_cols),
+                                                    strides=(1, ), offsets=(col_idx, ), block_shape=(COL_SIZE, ),
+                                                    order=(0, ))
+                output_block_ptr = tl.make_block_ptr(base=output_ptr + row_idx * output_row_stride, shape=(n_cols, ),
+                                                     strides=(1, ), offsets=(col_idx, ), block_shape=(COL_SIZE, ),
+                                                     order=(0, ))
+                row = tl.load(input_block_ptr, boundary_check=(0, ), padding_option="neg_inf")
                 row_minus_max = row - row_max_total
                 numerator = tl_extra_shim.exp(row_minus_max).to(element_ty)
                 denominator += tl.sum(numerator, axis=0)
-                tl.store(output_block_ptr, numerator, boundary_check=(0,))
+                tl.store(output_block_ptr, numerator, boundary_check=(0, ))
 
-            one = tl.full((1,), 1, dtype=element_ty)
+            one = tl.full((1, ), 1, dtype=element_ty)
             inv_denom = one / denominator
 
             for col_idx in range(0, n_cols, COL_SIZE):
-                output_block_ptr = tl.make_block_ptr(
-                    base=output_ptr + row_idx * output_row_stride,
-                    shape=(n_cols,),
-                    strides=(1,),
-                    offsets=(col_idx,),
-                    block_shape=(COL_SIZE,),
-                    order=(0,)
-                )
-                exp_out = tl.load(output_block_ptr, boundary_check=(0,))
+                output_block_ptr = tl.make_block_ptr(base=output_ptr + row_idx * output_row_stride, shape=(n_cols, ),
+                                                     strides=(1, ), offsets=(col_idx, ), block_shape=(COL_SIZE, ),
+                                                     order=(0, ))
+                exp_out = tl.load(output_block_ptr, boundary_check=(0, ))
                 softmax_output = exp_out * inv_denom
-                tl.store(output_block_ptr, softmax_output, boundary_check=(0,))
+                tl.store(output_block_ptr, softmax_output, boundary_check=(0, ))
 
 
 def _launch_softmax(x, y, row_size, col_size):
     n_rows, n_cols = x.shape
 
     def grid(META):
-        return (triton.cdiv(n_rows, META["ROW_SIZE"]),)
+        return (triton.cdiv(n_rows, META["ROW_SIZE"]), )
 
     softmax_kernel[grid](
         y,
@@ -150,10 +124,8 @@ def tune_softmax_config(
         except Exception as e:
             last_error = (config, e)
             if verbose:
-                print(
-                    f"[tune_softmax_config] config failed: ROW_SIZE={row_size}, COL_SIZE={col_size}, "
-                    f"dtype={x.dtype}, shape={tuple(x.shape)}, err={type(e).__name__}: {e}"
-                )
+                print(f"[tune_softmax_config] config failed: ROW_SIZE={row_size}, COL_SIZE={col_size}, "
+                      f"dtype={x.dtype}, shape={tuple(x.shape)}, err={type(e).__name__}: {e}")
             continue
 
         if config_time_ms < best_time_ms:
@@ -162,17 +134,13 @@ def tune_softmax_config(
 
     if best_config is None:
         if last_error is None:
-            raise RuntimeError(
-                f"No valid softmax Triton config found for shape={tuple(x.shape)}, dtype={x.dtype}."
-            )
+            raise RuntimeError(f"No valid softmax Triton config found for shape={tuple(x.shape)}, dtype={x.dtype}.")
         failed_cfg, failed_exc = last_error
-        raise RuntimeError(
-            "No valid softmax Triton config found for "
-            f"shape={tuple(x.shape)}, dtype={x.dtype}. "
-            f"Last error at ROW_SIZE={failed_cfg.kwargs['ROW_SIZE']}, "
-            f"COL_SIZE={failed_cfg.kwargs['COL_SIZE']}: "
-            f"{type(failed_exc).__name__}: {failed_exc}"
-        ) from failed_exc
+        raise RuntimeError("No valid softmax Triton config found for "
+                           f"shape={tuple(x.shape)}, dtype={x.dtype}. "
+                           f"Last error at ROW_SIZE={failed_cfg.kwargs['ROW_SIZE']}, "
+                           f"COL_SIZE={failed_cfg.kwargs['COL_SIZE']}: "
+                           f"{type(failed_exc).__name__}: {failed_exc}") from failed_exc
 
     return best_config, best_time_ms
 
@@ -218,6 +186,7 @@ def benchmark_softmax(
     )
 
     return best_time_ms, best_config
+
 
 if __name__ == "__main__":
     torch.manual_seed(0)

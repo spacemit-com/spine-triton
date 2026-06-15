@@ -23,8 +23,8 @@ Usage:
 import torch
 import triton
 import triton.language as tl
-import triton.language.extra.smt as smt
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import argparse
 
@@ -68,7 +68,7 @@ def test_scalar_pass():
     print("TEST: scalar assert (all pass)")
     print("=" * 60)
     X = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32)
-    kernel_scalar_assert_pass[(4,)](X, N=4)
+    kernel_scalar_assert_pass[(4, )](X, N=4)
     print("[PASS] scalar assert with all-positive values completed.\n")
 
 
@@ -78,7 +78,7 @@ def test_scalar_fail():
     print("=" * 60)
     X = torch.tensor([1.0, -2.0, 3.0, 4.0], dtype=torch.float32)
     # Element at pid=1 is -2.0, assert should fire
-    kernel_scalar_assert_fail[(4,)](X, N=4)
+    kernel_scalar_assert_fail[(4, )](X, N=4)
     print("[ERROR] Should have aborted but didn't!\n")
 
 
@@ -89,7 +89,7 @@ def test_tensor_pass():
     BLOCK_SIZE = 8
     N_BLOCKS = 2
     X = torch.arange(1, N_BLOCKS * BLOCK_SIZE + 1, dtype=torch.float32)
-    kernel_tensor_assert_pass[(N_BLOCKS,)](X, BLOCK_SIZE=BLOCK_SIZE)
+    kernel_tensor_assert_pass[(N_BLOCKS, )](X, BLOCK_SIZE=BLOCK_SIZE)
     print("[PASS] tensor assert with all-positive values completed.\n")
 
 
@@ -101,21 +101,20 @@ def test_tensor_fail():
     N_BLOCKS = 2
     X = torch.arange(1, N_BLOCKS * BLOCK_SIZE + 1, dtype=torch.float32)
     X[5] = -1.0  # Inject a negative value in block 0
-    kernel_tensor_assert_fail[(N_BLOCKS,)](X, BLOCK_SIZE=BLOCK_SIZE)
+    kernel_tensor_assert_fail[(N_BLOCKS, )](X, BLOCK_SIZE=BLOCK_SIZE)
     print("[ERROR] Should have aborted but didn't!\n")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Test device_assert")
-    parser.add_argument("--pass-only", action="store_true",
-                        help="Run only passing tests (no abort)")
-    parser.add_argument("--test", type=str, default=None,
-                        choices=["scalar_fail", "tensor_fail"],
+    parser.add_argument("--pass-only", action="store_true", help="Run only passing tests (no abort)")
+    parser.add_argument("--test", type=str, default=None, choices=["scalar_fail", "tensor_fail"],
                         help="Run a specific failing test (will abort)")
     args = parser.parse_args()
 
     # Clear triton cache to force recompilation
-    import shutil, os
+    import shutil
+    import os
     cache_dirs = [
         os.path.expanduser("~/.triton/cache"),
         os.path.expanduser("~/.cache/spine-triton"),

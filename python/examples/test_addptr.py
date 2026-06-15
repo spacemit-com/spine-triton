@@ -20,11 +20,10 @@ def addptr(in0, out0):
         tl.store(out2, a2)
 
 
-
 def test(device):
     input = torch.arange(0, 11, device=device, dtype=torch.float32)
-    output = torch.full((11,), 0, device=device, dtype=torch.float32)
-    grid = lambda meta: (1,)
+    output = torch.full((11, ), 0, device=device, dtype=torch.float32)
+    grid = lambda meta: (1, )
 
     print(output)
     addptr[grid](input, output)
@@ -37,7 +36,5 @@ def test(device):
         fn=addptr,
         signature={"in0": "*fp32", "out0": "*fp32"},
     )
-    ret = triton.compile(
-        src,
-    )
+    ret = triton.compile(src, )
     print(ret.asm["ttir"])

@@ -1,5 +1,4 @@
 import logging
-import math
 import random
 
 import numpy as np
@@ -7,6 +6,7 @@ import pytest
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -143,19 +143,11 @@ def test_accuracy_add_scalar_scalar(dtype):
 @pytest.mark.parametrize("dtype", INT_DTYPES + BOOL_TYPES)
 def test_accuracy_bitwiseand(shape, dtype):
     if dtype in BOOL_TYPES:
-        inp1 = torch.randint(0, 2, size=shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
-        inp2 = torch.randint(0, 2, size=shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
+        inp1 = torch.randint(0, 2, size=shape, dtype=dtype, device="cpu").to(flag_gems.device)
+        inp2 = torch.randint(0, 2, size=shape, dtype=dtype, device="cpu").to(flag_gems.device)
     else:
-        inp1 = torch.randint(
-            low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu"
-        ).to(flag_gems.device)
-        inp2 = torch.randint(
-            low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu"
-        ).to(flag_gems.device)
+        inp1 = torch.randint(low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu").to(flag_gems.device)
+        inp2 = torch.randint(low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu").to(flag_gems.device)
     ref_inp1 = to_reference(inp1)
     ref_inp2 = to_reference(inp2)
 
@@ -175,12 +167,8 @@ def test_accuracy_bitwiseand_(shape, dtype):
         inp1 = torch.randint(0, 2, size=shape, dtype=dtype, device=flag_gems.device)
         inp2 = torch.randint(0, 2, size=shape, dtype=dtype, device=flag_gems.device)
     else:
-        inp1 = torch.randint(
-            low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device=flag_gems.device
-        )
-        inp2 = torch.randint(
-            low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device=flag_gems.device
-        )
+        inp1 = torch.randint(low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device=flag_gems.device)
+        inp2 = torch.randint(low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device=flag_gems.device)
     ref_inp1 = to_reference(inp1.clone())
     ref_inp2 = to_reference(inp2)
 
@@ -196,14 +184,10 @@ def test_accuracy_bitwiseand_(shape, dtype):
 @pytest.mark.parametrize("dtype", INT_DTYPES + BOOL_TYPES)
 def test_accuracy_bitwiseand_scalar(shape, dtype):
     if dtype in BOOL_TYPES:
-        inp1 = torch.randint(0, 2, size=shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
+        inp1 = torch.randint(0, 2, size=shape, dtype=dtype, device="cpu").to(flag_gems.device)
         inp2 = bool(random.randint(0, 2))
     else:
-        inp1 = torch.randint(
-            low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu"
-        ).to(flag_gems.device)
+        inp1 = torch.randint(low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu").to(flag_gems.device)
         inp2 = 0x00FF
     ref_inp1 = to_reference(inp1)
 
@@ -223,9 +207,7 @@ def test_accuracy_bitwiseand_scalar_(shape, dtype):
         inp1 = torch.randint(0, 2, size=shape, dtype=dtype, device=flag_gems.device)
         inp2 = bool(random.randint(0, 2))
     else:
-        inp1 = torch.randint(
-            low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device=flag_gems.device
-        )
+        inp1 = torch.randint(low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device=flag_gems.device)
         inp2 = 0x00FF
     ref_inp1 = to_reference(inp1.clone())
 
@@ -242,14 +224,10 @@ def test_accuracy_bitwiseand_scalar_(shape, dtype):
 def test_accuracy_bitwiseand_scalar_tensor(shape, dtype):
     if dtype in BOOL_TYPES:
         inp1 = bool(random.randint(0, 2))
-        inp2 = torch.randint(0, 2, size=shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
+        inp2 = torch.randint(0, 2, size=shape, dtype=dtype, device="cpu").to(flag_gems.device)
     else:
         inp1 = 0x00FF
-        inp2 = torch.randint(
-            low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu"
-        ).to(flag_gems.device)
+        inp2 = torch.randint(low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu").to(flag_gems.device)
     ref_inp2 = to_reference(inp2)
 
     ref_out = torch.bitwise_and(inp1, ref_inp2)
@@ -265,19 +243,11 @@ def test_accuracy_bitwiseand_scalar_tensor(shape, dtype):
 @pytest.mark.parametrize("dtype", INT_DTYPES + BOOL_TYPES)
 def test_accuracy_bitwiseor(shape, dtype):
     if dtype in BOOL_TYPES:
-        inp1 = torch.randint(0, 2, size=shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
-        inp2 = torch.randint(0, 2, size=shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
+        inp1 = torch.randint(0, 2, size=shape, dtype=dtype, device="cpu").to(flag_gems.device)
+        inp2 = torch.randint(0, 2, size=shape, dtype=dtype, device="cpu").to(flag_gems.device)
     else:
-        inp1 = torch.randint(
-            low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu"
-        ).to(flag_gems.device)
-        inp2 = torch.randint(
-            low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu"
-        ).to(flag_gems.device)
+        inp1 = torch.randint(low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu").to(flag_gems.device)
+        inp2 = torch.randint(low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu").to(flag_gems.device)
     ref_inp1 = to_reference(inp1)
     ref_inp2 = to_reference(inp2)
 
@@ -298,12 +268,8 @@ def test_accuracy_bitwiseor_(shape, dtype):
         inp1 = torch.randint(0, 2, size=shape, dtype=dtype, device=flag_gems.device)
         inp2 = torch.randint(0, 2, size=shape, dtype=dtype, device=flag_gems.device)
     else:
-        inp1 = torch.randint(
-            low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device=flag_gems.device
-        )
-        inp2 = torch.randint(
-            low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device=flag_gems.device
-        )
+        inp1 = torch.randint(low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device=flag_gems.device)
+        inp2 = torch.randint(low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device=flag_gems.device)
     ref_inp1 = to_reference(inp1.clone())
     ref_inp2 = to_reference(inp2)
 
@@ -320,14 +286,10 @@ def test_accuracy_bitwiseor_(shape, dtype):
 @pytest.mark.parametrize("dtype", INT_DTYPES + BOOL_TYPES)
 def test_accuracy_bitwiseor_scalar(shape, dtype):
     if dtype in BOOL_TYPES:
-        inp1 = torch.randint(0, 2, size=shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
+        inp1 = torch.randint(0, 2, size=shape, dtype=dtype, device="cpu").to(flag_gems.device)
         inp2 = bool(random.randint(0, 2))
     else:
-        inp1 = torch.randint(
-            low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu"
-        ).to(flag_gems.device)
+        inp1 = torch.randint(low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu").to(flag_gems.device)
         inp2 = 0x00FF
     ref_inp1 = to_reference(inp1)
 
@@ -348,9 +310,7 @@ def test_accuracy_bitwiseor_scalar_(shape, dtype):
         inp1 = torch.randint(0, 2, size=shape, dtype=dtype, device=flag_gems.device)
         inp2 = bool(random.randint(0, 2))
     else:
-        inp1 = torch.randint(
-            low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device=flag_gems.device
-        )
+        inp1 = torch.randint(low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device=flag_gems.device)
         inp2 = 0x00FF
     ref_inp1 = to_reference(inp1.clone())
 
@@ -368,14 +328,10 @@ def test_accuracy_bitwiseor_scalar_(shape, dtype):
 def test_accuracy_bitwiseor_scalar_tensor(shape, dtype):
     if dtype in BOOL_TYPES:
         inp1 = bool(random.randint(0, 2))
-        inp2 = torch.randint(0, 2, size=shape, dtype=torch.bool, device="cpu").to(
-            flag_gems.device
-        )
+        inp2 = torch.randint(0, 2, size=shape, dtype=torch.bool, device="cpu").to(flag_gems.device)
     else:
         inp1 = 0x00FF
-        inp2 = torch.randint(
-            low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu"
-        ).to(flag_gems.device)
+        inp2 = torch.randint(low=-0x7FFF, high=0x7FFF, size=shape, dtype=dtype, device="cpu").to(flag_gems.device)
     ref_inp2 = to_reference(inp2)
 
     ref_out = torch.bitwise_or(inp1, ref_inp2)
@@ -1230,6 +1186,7 @@ def test_accuracy_where_scalar_other(shape, scalar, dtype):
 
     gems_assert_equal(res_out, ref_out)
 
+
 @pytest.mark.isclose
 @pytest.mark.parametrize("shape", POINTWISE_SHAPES)
 @pytest.mark.parametrize("dtype", ALL_FLOAT_DTYPES + ALL_INT_DTYPES)
@@ -1238,29 +1195,21 @@ def test_accuracy_where_scalar_other(shape, scalar, dtype):
 @pytest.mark.parametrize("gen_nan", [0, 1, 2, 3, 4])
 def test_accuracy_isclose(shape, dtype, zero_tol, equal_nan, gen_nan):
     # [gen_nan] 1: nan, 2: inf, 3: -inf, 4: inf vs -inf
-    rtol = (
-        torch.rand(1, dtype=torch.float32, device=flag_gems.device).item() * 0.0001
-        if not zero_tol
-        else 0
-    )
+    rtol = (torch.rand(1, dtype=torch.float32, device=flag_gems.device).item() * 0.0001 if not zero_tol else 0)
     if dtype in ALL_FLOAT_DTYPES:
         inp1 = torch.randn(shape, dtype=dtype, device=flag_gems.device)
         inp2 = torch.randn(shape, dtype=dtype, device=flag_gems.device)
         if gen_nan:
             nan_num = torch.full(
-                (1,),
+                (1, ),
                 float("nan" if gen_nan == 1 else "inf"),
                 dtype=dtype,
                 device=flag_gems.device,
             )
             inp1.view(-1)[0] = -nan_num if gen_nan == 3 else nan_num
             inp2.view(-1)[0] = -nan_num if gen_nan >= 3 else nan_num
-        atol = (
-            torch.finfo(dtype).tiny
-            * torch.randint(0, 4, (1,), device=flag_gems.device).item()
-            if not zero_tol
-            else 0
-        )
+        atol = (torch.finfo(dtype).tiny * torch.randint(0, 4,
+                                                        (1, ), device=flag_gems.device).item() if not zero_tol else 0)
     else:
         inp1 = torch.randint(-1000, 1000, shape, device=flag_gems.device).to(dtype)
         inp2 = torch.randint(-1000, 1000, shape, device=flag_gems.device).to(dtype)
@@ -1287,20 +1236,12 @@ def test_accuracy_isclose(shape, dtype, zero_tol, equal_nan, gen_nan):
             if gen_nan == 0:
                 rtol = 0
         else:
-            atol = (
-                (
-                    torch.finfo(torch.float16).eps
-                    * torch.randint(0, 10, (1,), device=flag_gems.device).item()
-                )
-                if not zero_tol
-                else 0
-            )
+            atol = ((torch.finfo(torch.float16).eps *
+                     torch.randint(0, 10, (1, ), device=flag_gems.device).item()) if not zero_tol else 0)
 
     ref_inp1 = to_reference(inp1, False)
     ref_inp2 = to_reference(inp2, False)
-    logging.debug(
-        "shape={}, dtype={}, rtol={}, atol={}".format(shape, dtype, rtol, atol)
-    )
+    logging.debug("shape={}, dtype={}, rtol={}, atol={}".format(shape, dtype, rtol, atol))
 
     with flag_gems.use_gems():
         res_out = torch.isclose(inp1, inp2, rtol, atol, equal_nan=equal_nan)
@@ -1311,23 +1252,19 @@ def test_accuracy_isclose(shape, dtype, zero_tol, equal_nan, gen_nan):
     ref_flat = ref_out.view(-1)
     res_flat = res_out.view(-1)
     if dtype in FLOAT_DTYPES and gen_nan:
-        logging.debug(
-            "equal_nan={}, gen_nan={}: inp1={}, inp2={}, res={}, ref={}".format(
-                equal_nan,
-                gen_nan,
-                inp1_flat[0],
-                inp2_flat[0],
-                res_flat[0],
-                ref_flat[0],
-            )
-        )
+        logging.debug("equal_nan={}, gen_nan={}: inp1={}, inp2={}, res={}, ref={}".format(
+            equal_nan,
+            gen_nan,
+            inp1_flat[0],
+            inp2_flat[0],
+            res_flat[0],
+            ref_flat[0],
+        ))
     if inp1.numel() > 2 and dtype in [torch.int64, torch.int32]:
-        assert (
-            res_flat[1] == ref_flat[1] and res_flat[2] == ref_flat[2]
-        ), "res vs ref: {} vs {}, {} vs {}".format(
-            res_flat[1], ref_flat[1], res_flat[2], ref_flat[2]
-        )
+        assert (res_flat[1] == ref_flat[1] and res_flat[2] == ref_flat[2]), "res vs ref: {} vs {}, {} vs {}".format(
+            res_flat[1], ref_flat[1], res_flat[2], ref_flat[2])
     gems_assert_equal(res_out, ref_out)
+
 
 @pytest.mark.logical_or
 @pytest.mark.parametrize("shape", POINTWISE_SHAPES)
@@ -1337,19 +1274,11 @@ def test_accuracy_logical_or(shape, dtype):
         inp1 = torch.randn(shape, dtype=dtype, device=flag_gems.device)
         inp2 = torch.randn(shape, dtype=dtype, device=flag_gems.device)
     elif dtype in ALL_INT_DTYPES:
-        inp1 = torch.randint(-1000, 1000, shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
-        inp2 = torch.randint(-1000, 1000, shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
+        inp1 = torch.randint(-1000, 1000, shape, dtype=dtype, device="cpu").to(flag_gems.device)
+        inp2 = torch.randint(-1000, 1000, shape, dtype=dtype, device="cpu").to(flag_gems.device)
     elif dtype in BOOL_TYPES:
-        inp1 = torch.randint(0, 2, shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
-        inp2 = torch.randint(0, 2, shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
+        inp1 = torch.randint(0, 2, shape, dtype=dtype, device="cpu").to(flag_gems.device)
+        inp2 = torch.randint(0, 2, shape, dtype=dtype, device="cpu").to(flag_gems.device)
     ref_inp1 = to_reference(inp1)
     ref_inp2 = to_reference(inp2)
 
@@ -1372,19 +1301,11 @@ def test_accuracy_logical_and(shape, dtype):
         inp1 = torch.randn(shape, dtype=dtype, device=flag_gems.device)
         inp2 = torch.randn(shape, dtype=dtype, device=flag_gems.device)
     elif dtype in ALL_INT_DTYPES:
-        inp1 = torch.randint(-1000, 1000, shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
-        inp2 = torch.randint(-1000, 1000, shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
+        inp1 = torch.randint(-1000, 1000, shape, dtype=dtype, device="cpu").to(flag_gems.device)
+        inp2 = torch.randint(-1000, 1000, shape, dtype=dtype, device="cpu").to(flag_gems.device)
     elif dtype in BOOL_TYPES:
-        inp1 = torch.randint(0, 2, shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
-        inp2 = torch.randint(0, 2, shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
+        inp1 = torch.randint(0, 2, shape, dtype=dtype, device="cpu").to(flag_gems.device)
+        inp2 = torch.randint(0, 2, shape, dtype=dtype, device="cpu").to(flag_gems.device)
     ref_inp1 = to_reference(inp1)
     ref_inp2 = to_reference(inp2)
 
@@ -1403,19 +1324,11 @@ def test_accuracy_logical_xor(shape, dtype):
         inp1 = torch.randn(shape, dtype=dtype, device=flag_gems.device)
         inp2 = torch.randn(shape, dtype=dtype, device=flag_gems.device)
     elif dtype in ALL_INT_DTYPES:
-        inp1 = torch.randint(-1000, 1000, shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
-        inp2 = torch.randint(-1000, 1000, shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
+        inp1 = torch.randint(-1000, 1000, shape, dtype=dtype, device="cpu").to(flag_gems.device)
+        inp2 = torch.randint(-1000, 1000, shape, dtype=dtype, device="cpu").to(flag_gems.device)
     elif dtype in BOOL_TYPES:
-        inp1 = torch.randint(0, 2, shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
-        inp2 = torch.randint(0, 2, shape, dtype=dtype, device="cpu").to(
-            flag_gems.device
-        )
+        inp1 = torch.randint(0, 2, shape, dtype=dtype, device="cpu").to(flag_gems.device)
+        inp2 = torch.randint(0, 2, shape, dtype=dtype, device="cpu").to(flag_gems.device)
     ref_inp1 = to_reference(inp1)
     ref_inp2 = to_reference(inp2)
 

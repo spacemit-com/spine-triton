@@ -1307,22 +1307,3 @@ index f73a0f184..0cec77129 100644
    throw std::runtime_error("Unknown profiler: " + name);
  }
 
-diff --git a/third_party/proton/proton/language.py b/third_party/proton/proton/language.py
-index 278593819..4638b4173 100644
---- a/third_party/proton/proton/language.py
-+++ b/third_party/proton/proton/language.py
-@@ -34,11 +34,14 @@ def disable_semantic(semantic_name: str):
-
-
- def record(is_start: tl.constexpr, scope_name: tl.constexpr, semantic):
-+    print(f"[DEBUG] record called: is_start={is_start}, scope_name={scope_name}, instrumentation_on={flags.instrumentation_on}")
-     if not flags.instrumentation_on:
-+        print(f"[DEBUG] instrumentation_on is False, skipping")
-         return
-     _check_supported_semantic(semantic)
-     is_start = tl._unwrap_if_constexpr(is_start)
-     scope_name = tl._unwrap_if_constexpr(scope_name)
-+    print(f"[DEBUG] creating proton record op")
-     return tl.tensor(triton_proton.create_proton_record(semantic.builder, is_start, scope_name), tl.void)
-
-

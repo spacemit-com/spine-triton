@@ -4,7 +4,6 @@ import triton
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import flag_gems
 
 if __name__ == "__main__":
     test_warm_up = 5
@@ -15,9 +14,7 @@ if __name__ == "__main__":
     test_op_list = {
         "layernorm": lambda x: torch.nn.functional.layer_norm(x, x.shape[-1:]),
         "groupnorm": lambda x: torch.nn.functional.group_norm(x, num_groups=1),
-        "batch_norm": lambda x: torch.nn.functional.batch_norm(
-            x, torch.zeros(x.shape[1]), torch.ones(x.shape[1])
-        ),
+        "batch_norm": lambda x: torch.nn.functional.batch_norm(x, torch.zeros(x.shape[1]), torch.ones(x.shape[1])),
     }
 
     print("Normalization Layers Performance Test")
@@ -30,9 +27,7 @@ if __name__ == "__main__":
             for test_shape in test_shape_list:
                 try:
                     if op_name == "batch_norm":
-                        x = torch.randn(
-                            test_shape[0], test_shape[1], device="cpu", dtype=test_dtype
-                        )
+                        x = torch.randn(test_shape[0], test_shape[1], device="cpu", dtype=test_dtype)
                     else:
                         x = torch.randn(test_shape, dtype=test_dtype, device="cpu")
 
@@ -45,7 +40,6 @@ if __name__ == "__main__":
                     end = time.time()
 
                     print(
-                        f"dtype {test_dtype} shape {test_shape}, cost {1000 * (end - start) / test_iterations:.3f} ms"
-                    )
+                        f"dtype {test_dtype} shape {test_shape}, cost {1000 * (end - start) / test_iterations:.3f} ms")
                 except Exception as e:
                     print(f"dtype {test_dtype} shape {test_shape}, Failed: {str(e)}")

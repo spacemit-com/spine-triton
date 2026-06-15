@@ -4,6 +4,7 @@ import triton
 import triton.language as tl
 import benchmark
 
+
 # `triton.jit`'ed functions can be auto-tuned by using the `triton.autotune` decorator, which consumes:
 #   - A list of `triton.Config` objects that define different configurations of
 #       meta-parameters (e.g., `BLOCK_SIZE_M`) and compilation options (e.g., `num_warps`) to try
@@ -108,7 +109,6 @@ def matmul_kernel(
     tl.store(c_ptrs, c, mask=c_mask)
 
 
-
 # We can fuse `leaky_relu` by providing it as an `ACTIVATION` meta-parameter in `_matmul`.
 @triton.jit
 def leaky_relu(x):
@@ -134,11 +134,7 @@ def matmul(a, b, activation=""):
         b.stride(0), b.stride(1),  #
         c.stride(0), c.stride(1),  #
         ACTIVATION=activation,  #
-        BLOCK_SIZE_M=32,
-        BLOCK_SIZE_N=64,
-        BLOCK_SIZE_K=16,
-        GROUP_SIZE_M=8
-    )
+        BLOCK_SIZE_M=32, BLOCK_SIZE_N=64, BLOCK_SIZE_K=16, GROUP_SIZE_M=8)
     return c
 
 

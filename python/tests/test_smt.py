@@ -3,6 +3,7 @@ import torch
 import triton
 
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import triton.language as tl
 import pytest
@@ -10,15 +11,13 @@ import triton.language.extra.smt as smt
 import os
 
 
-@pytest.mark.parametrize(
-    "M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICRO_K",
-    [
-        (512, 64, 32, 256, 16, 8),
-    ]
-)
+@pytest.mark.parametrize("M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICRO_K", [
+    (512, 64, 32, 256, 16, 8),
+])
 def test_descriptor_load(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICRO_K):
 
     def run_descriptor_load():
+
         @triton.jit
         def descriptor_load(
             a_ptr,
@@ -75,23 +74,13 @@ def test_descriptor_load(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICR
         output_shape = (num_blocks_m, num_blocks_k, MICRO_M, MICRO_K)
         output = torch.zeros(output_shape, dtype=torch.float16, device=device)
 
-        grid = (triton.cdiv(M, BLOCK_SIZE_M),)
+        grid = (triton.cdiv(M, BLOCK_SIZE_M), )
 
-        descriptor_load[grid](
-            a, output,
-            M, K,
-            a.stride(0), a.stride(1),
-            output.stride(0), output.stride(1), output.stride(2), output.stride(3),
-            num_blocks_m=num_blocks_m,
-            num_blocks_k=num_blocks_k,
-            SUB_BLK_M=SUB_BLK_M,
-            BLOCK_SIZE_M=BLOCK_SIZE_M,
-            BLOCK_SIZE_K=BLOCK_SIZE_K,
-            MICRO_M=MICRO_M,
-            MICRO_K=MICRO_K
-        )
+        descriptor_load[grid](a, output, M, K, a.stride(0), a.stride(1), output.stride(0), output.stride(1),
+                              output.stride(2), output.stride(3), num_blocks_m=num_blocks_m, num_blocks_k=num_blocks_k,
+                              SUB_BLK_M=SUB_BLK_M, BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_K=BLOCK_SIZE_K,
+                              MICRO_M=MICRO_M, MICRO_K=MICRO_K)
         return output
-
 
     os.environ['SPINE_TRITON_USE_REF_PIPELINE'] = '1'
     os.environ['TRITON_ALWAYS_COMPILE'] = '1'
@@ -126,16 +115,13 @@ def test_descriptor_load(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICR
     print("✅ Continuing execution...")
 
 
-
-@pytest.mark.parametrize(
-    "M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICRO_K",
-    [
-        (512, 64, 32, 256, 16, 8),
-    ]
-)
+@pytest.mark.parametrize("M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICRO_K", [
+    (512, 64, 32, 256, 16, 8),
+])
 def test_descriptor_load_transpose(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICRO_K):
 
     def run_descriptor_load_transpose():
+
         @triton.jit
         def descriptor_load_transpose(
             a_ptr,
@@ -193,23 +179,13 @@ def test_descriptor_load_transpose(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MIC
         output_shape = (num_blocks_k, num_blocks_m, MICRO_K, MICRO_M)
         output = torch.zeros(output_shape, dtype=torch.float16, device=device)
 
-        grid = (triton.cdiv(M, BLOCK_SIZE_M),)
+        grid = (triton.cdiv(M, BLOCK_SIZE_M), )
 
-        descriptor_load_transpose[grid](
-            a, output,
-            M, K,
-            a.stride(0), a.stride(1),
-            output.stride(0), output.stride(1), output.stride(2), output.stride(3),
-            num_blocks_m=num_blocks_m,
-            num_blocks_k=num_blocks_k,
-            SUB_BLK_M=SUB_BLK_M,
-            BLOCK_SIZE_M=BLOCK_SIZE_M,
-            BLOCK_SIZE_K=BLOCK_SIZE_K,
-            MICRO_M=MICRO_M,
-            MICRO_K=MICRO_K
-        )
+        descriptor_load_transpose[grid](a, output, M, K, a.stride(0), a.stride(1), output.stride(0), output.stride(1),
+                                        output.stride(2), output.stride(3), num_blocks_m=num_blocks_m,
+                                        num_blocks_k=num_blocks_k, SUB_BLK_M=SUB_BLK_M, BLOCK_SIZE_M=BLOCK_SIZE_M,
+                                        BLOCK_SIZE_K=BLOCK_SIZE_K, MICRO_M=MICRO_M, MICRO_K=MICRO_K)
         return output
-
 
     os.environ['SPINE_TRITON_USE_REF_PIPELINE'] = '1'
     os.environ['TRITON_ALWAYS_COMPILE'] = '1'
@@ -244,16 +220,14 @@ def test_descriptor_load_transpose(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MIC
     print("✅ Continuing execution...")
 
 
-@pytest.mark.parametrize(
-    "BLOCK_SIZE",
-    [
-        (8),
-        (16),
-    ]
-)
+@pytest.mark.parametrize("BLOCK_SIZE", [
+    (8),
+    (16),
+])
 def test_mbarrier(BLOCK_SIZE):
 
     def run_simple_test():
+
         @triton.jit
         def mbarrier_kernel(
             input_ptr,
@@ -278,13 +252,14 @@ def test_mbarrier(BLOCK_SIZE):
         torch.manual_seed(42)
         device = "cpu"
         N = BLOCK_SIZE * 2
-        input_data = torch.randn((N,), dtype=torch.float16, device=device)
-        output = torch.zeros((N,), dtype=torch.float16, device=device)
+        input_data = torch.randn((N, ), dtype=torch.float16, device=device)
+        output = torch.zeros((N, ), dtype=torch.float16, device=device)
 
-        grid = (triton.cdiv(N, BLOCK_SIZE),)
+        grid = (triton.cdiv(N, BLOCK_SIZE), )
 
         mbarrier_kernel[grid](
-            input_data, output,
+            input_data,
+            output,
             N,
             BLOCK_SIZE=BLOCK_SIZE,
         )
@@ -301,18 +276,17 @@ def test_mbarrier(BLOCK_SIZE):
 
     assert torch.allclose(output, expected, rtol=1e-5, atol=1e-8), "Output doesn't match expected"
 
-    print(f"\n✅ mbarrier simple test passed!")
+    print("\n✅ mbarrier simple test passed!")
 
 
-@pytest.mark.parametrize(
-    "BLOCK_SIZE",
-    [
-        (8),
-        (16),
-    ]
-)
+@pytest.mark.parametrize("BLOCK_SIZE", [
+    (8),
+    (16),
+])
 def test_global_mbarrier(BLOCK_SIZE):
+
     def run_simple_test():
+
         @triton.jit
         def global_mbarrier_kernel(
             input_ptr,
@@ -336,13 +310,14 @@ def test_global_mbarrier(BLOCK_SIZE):
         torch.manual_seed(42)
         device = "cpu"
         N = BLOCK_SIZE * 2
-        input_data = torch.randn((N,), dtype=torch.float16, device=device)
-        output = torch.zeros((N,), dtype=torch.float16, device=device)
+        input_data = torch.randn((N, ), dtype=torch.float16, device=device)
+        output = torch.zeros((N, ), dtype=torch.float16, device=device)
 
-        grid = (triton.cdiv(N, BLOCK_SIZE),)
+        grid = (triton.cdiv(N, BLOCK_SIZE), )
 
         global_mbarrier_kernel[grid](
-            input_data, output,
+            input_data,
+            output,
             N,
             BLOCK_SIZE=BLOCK_SIZE,
         )
@@ -362,16 +337,13 @@ def test_global_mbarrier(BLOCK_SIZE):
     print(f"\n✅ global_mbarrier and barrier_set_expect test passed! (BLOCK_SIZE={BLOCK_SIZE})")
 
 
-
-@pytest.mark.parametrize(
-    "M, N, K, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, MICRO_M, MICRO_N, MICRO_K",
-    [
-        (512, 256, 256, 32, 32, 512, 16, 32, 8),
-    ]
-)
+@pytest.mark.parametrize("M, N, K, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, MICRO_M, MICRO_N, MICRO_K", [
+    (512, 256, 256, 32, 32, 512, 16, 32, 8),
+])
 def test_mmt4d(M, N, K, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, MICRO_M, MICRO_N, MICRO_K):
 
     def run_mmt4d():
+
         @triton.jit
         def mmt4d(
             a_ptr,
@@ -448,27 +420,26 @@ def test_mmt4d(M, N, K, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, MICRO_M, MICRO
         # BLOCK_SIZE_K = triton.next_power_of_2(K)
 
         mmt4d[grid](
-        a,
-        b,
-        c,
-        M,
-        N,
-        K,
-        a.stride(0),
-        a.stride(1),
-        b.stride(0),
-        b.stride(1),
-        c.stride(0),
-        c.stride(1),
-        BLOCK_SIZE_M=128,
-        BLOCK_SIZE_N=128,
-        BLOCK_SIZE_K=BLOCK_SIZE_K,
-        MICRO_M=MICRO_M,
-        MICRO_N=MICRO_N,
-        MICRO_K=MICRO_K,
+            a,
+            b,
+            c,
+            M,
+            N,
+            K,
+            a.stride(0),
+            a.stride(1),
+            b.stride(0),
+            b.stride(1),
+            c.stride(0),
+            c.stride(1),
+            BLOCK_SIZE_M=128,
+            BLOCK_SIZE_N=128,
+            BLOCK_SIZE_K=BLOCK_SIZE_K,
+            MICRO_M=MICRO_M,
+            MICRO_N=MICRO_N,
+            MICRO_K=MICRO_K,
         )
         return c
-
 
     os.environ['SPINE_TRITON_USE_REF_PIPELINE'] = '1'
     os.environ['TRITON_ALWAYS_COMPILE'] = '1'

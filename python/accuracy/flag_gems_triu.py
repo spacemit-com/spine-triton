@@ -1,18 +1,20 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
+
 
 def unsqueeze_tensor(inp, max_ndim):
     for _ in range(inp.ndim, max_ndim):
         inp = inp.unsqueeze(-1)
     return inp
 
+
 if __name__ == "__main__":
     diagonal = -2
-    shape = (1,)
+    shape = (1, )
     dtype = torch.float32
     inp = torch.randn(shape, dtype=dtype, device=flag_gems.device)
     inp = unsqueeze_tensor(inp, 2)

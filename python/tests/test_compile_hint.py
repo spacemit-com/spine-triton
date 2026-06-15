@@ -3,6 +3,7 @@ import triton
 import triton.language as tl
 import triton.language.extra.deeplink as dl
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 
 # eg: pytest -v test_compile_hint.py::test_compile_hint
@@ -24,7 +25,6 @@ def triton_compile_hint(in_ptr0, out_ptr0, xnumel, XBLOCK: tl.constexpr, XBLOCK_
         tl.store(out_ptr0 + (xindex), tmp2, xmask)
 
 
-
 def test_compile_hint(param_list):
     dtype_str, shape, ncore, xblock, xblock_sub = param_list
     dtype = getattr(torch, dtype_str)
@@ -36,7 +36,8 @@ def test_compile_hint(param_list):
     print(f'The maximum difference between torch and triton is '
           f'{torch.max(torch.abs(y_cal - y_ref))}')
     assert y_cal.dtype == y_ref.dtype
-    print(f"dtype is same.")
+    print("dtype is same.")
+
 
 if __name__ == "__main__":
     param_list = ['float32', (2, 4096, 8), 2, 32768, 1024]

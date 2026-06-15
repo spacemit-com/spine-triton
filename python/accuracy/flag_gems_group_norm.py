@@ -1,7 +1,7 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -14,19 +14,14 @@ if __name__ == "__main__":
         res_weight = None
         res_bias = None
     else:
-        res_weight = torch.randn(size=(C,), dtype=dtype, device=flag_gems.device)
-        res_bias = torch.randn(size=(C,), dtype=dtype, device=flag_gems.device)
+        res_weight = torch.randn(size=(C, ), dtype=dtype, device=flag_gems.device)
+        res_bias = torch.randn(size=(C, ), dtype=dtype, device=flag_gems.device)
     eps = 1e-5
 
-
-    ref_out = torch.nn.functional.group_norm(
-        res_inp, num_groups, weight=res_weight, bias=res_bias, eps=eps
-    )
+    ref_out = torch.nn.functional.group_norm(res_inp, num_groups, weight=res_weight, bias=res_bias, eps=eps)
 
     with flag_gems.use_gems():
-        res_out = torch.group_norm(
-            res_inp, num_groups, weight=res_weight, bias=res_bias, eps=eps
-        )
+        res_out = torch.group_norm(res_inp, num_groups, weight=res_weight, bias=res_bias, eps=eps)
 
     torch.testing.assert_close(ref_out, res_out, atol=1e-2, rtol=0)
     print("PASS")

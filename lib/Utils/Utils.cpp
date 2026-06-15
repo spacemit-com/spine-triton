@@ -1,9 +1,9 @@
-#include "triton/Dialect/Triton/IR/Dialect.h"
+#include "mlir/Dialect/Arith/IR/Arith.h" // arith::ConstantIndexOp
+#include "mlir/IR/BuiltinAttributes.h"   // IntegerAttr
+#include "mlir/IR/PatternMatch.h"        // matchPattern, m_Zero
 #include "triton-shared/Analysis/OpFoldResultUtils.h"
-#include "mlir/IR/PatternMatch.h"          // matchPattern, m_Zero
-#include "mlir/IR/BuiltinAttributes.h"     // IntegerAttr
-#include "mlir/Dialect/Arith/IR/Arith.h"   // arith::ConstantIndexOp
-#include "llvm/ADT/STLExtras.h"            // llvm::all_of
+#include "triton/Dialect/Triton/IR/Dialect.h"
+#include "llvm/ADT/STLExtras.h" // llvm::all_of
 
 namespace mlir {
 namespace triton {
@@ -15,11 +15,11 @@ bool isPtrTypeLike(Type t) {
 }
 
 Value ensureIndexType(Location loc, Value value, PatternRewriter &rewriter) {
-    auto indexType = rewriter.getIndexType();
-    if (value.getType() == indexType) {
-      return value;
-    }
-    return arith::IndexCastOp::create(rewriter, loc, indexType, value);
+  auto indexType = rewriter.getIndexType();
+  if (value.getType() == indexType) {
+    return value;
+  }
+  return arith::IndexCastOp::create(rewriter, loc, indexType, value);
 }
 
 Value ofrToIndexValue(const Location loc, const OpFoldResult ofr,
@@ -27,20 +27,23 @@ Value ofrToIndexValue(const Location loc, const OpFoldResult ofr,
   if (Value val = dyn_cast<Value>(ofr)) {
     assert(val.getType().isIntOrIndex());
     if (!val.getType().isIndex()) {
-      val = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), val);
+      val = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(),
+                                       val);
     }
     return val;
   }
 
   auto intVal = getIntAttr(ofr);
   if (intVal.has_value()) {
-    return arith::ConstantOp::create(rewriter, loc, rewriter.getIndexAttr(intVal.value()));
+    return arith::ConstantOp::create(rewriter, loc,
+                                     rewriter.getIndexAttr(intVal.value()));
   }
   llvm_unreachable("Unexpected OpFoldResult state");
   return nullptr;
 }
 
-Value createCeilDivUI(PatternRewriter &rewriter, Location loc, Value dividend, Value divisor) {
+Value createCeilDivUI(PatternRewriter &rewriter, Location loc, Value dividend,
+                      Value divisor) {
   auto indexType = rewriter.getIndexType();
   Value dividendIndex = ensureIndexType(loc, dividend, rewriter);
   Value divisorIndex = ensureIndexType(loc, divisor, rewriter);

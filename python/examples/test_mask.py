@@ -7,6 +7,7 @@ from triton.backends.triton_shared.driver import CPUDriver
 
 
 def test_mask(device):
+
     @triton.jit
     def test(in0, out0):
         offs = 100 + tl.arange(0, 4)
@@ -16,20 +17,18 @@ def test_mask(device):
 
     SIZE = 8
     input = torch.arange(0, SIZE, device=device, dtype=torch.int32)
-    output = torch.full((SIZE,), -2, device=device, dtype=torch.int32)
+    output = torch.full((SIZE, ), -2, device=device, dtype=torch.int32)
 
     if device == 'cpu':
         triton.runtime.driver.set_active(CPUDriver())
 
-    grid = lambda meta: (1,)
+    grid = lambda meta: (1, )
 
     src = triton.compiler.ASTSource(
         fn=test,
         signature={"in0": "*fp32", "out0": "*fp32"},
     )
-    ret = triton.compile(
-        src,
-    )
+    ret = triton.compile(src, )
     print(ret.asm["ttir"])
 
     print(output)

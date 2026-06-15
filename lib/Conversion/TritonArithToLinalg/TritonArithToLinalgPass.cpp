@@ -1,8 +1,8 @@
 //===----------------------------------------------------------------------===//
 //
 // SPDX-FileCopyrightText: Copyright (c) 2025 SpacemiT. ALL rights reserved.
-// SPDX-FileCopyrightText: Copyright (c) Microsoft Corporation. All rights reserved.
-// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) Microsoft Corporation. All rights
+// reserved. SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,11 +21,11 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
-#include "llvm/Support/Debug.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Support/LLVM.h"
 #include "triton-shared/Conversion/TritonArithToLinalg/TypeConverter.hpp"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "triton-arith-to-linalg"
 
@@ -184,10 +184,9 @@ public:
     // TODO: Might want to consolidate this flag with addptrToLinalg later.
     if (tensorPtrToLinalg) {
       target.addDynamicallyLegalOp<triton::LoadOp, triton::StoreOp,
-                                   triton::IntToPtrOp>(
-          [](auto op) {
-            return !isa<ShapedType>(op->getOperands()[0].getType());
-          });
+                                   triton::IntToPtrOp>([](auto op) {
+        return !isa<ShapedType>(op->getOperands()[0].getType());
+      });
       populateTritonTensorPtrConversionPatterns(patterns);
     }
 
@@ -216,7 +215,8 @@ public:
     RewritePatternSet patterns1(&getContext());
     // ConversionTarget target1(getContext());
     triton::normalReduceConversionPatterns(patterns1);
-    if (failed(applyPartialConversion(moduleOp, target, std::move(patterns1)))) {
+    if (failed(
+            applyPartialConversion(moduleOp, target, std::move(patterns1)))) {
       signalPassFailure();
     }
 
@@ -232,7 +232,8 @@ public:
         func.getAllArgAttrs(argAttrs);
         func.getAllResultAttrs(resAttrs);
 
-        auto funcFunc = func::FuncOp::create(builder, func.getLoc(), name, type);
+        auto funcFunc =
+            func::FuncOp::create(builder, func.getLoc(), name, type);
         funcFunc.setAllArgAttrs(argAttrs);
         funcFunc.setAllResultAttrs(resAttrs);
 
@@ -259,71 +260,68 @@ public:
 
     bool foldFill2Generic = true;
     if (foldFill2Generic) {
-        moduleOp.walk([&](linalg::GenericOp genericOp) {
+      moduleOp.walk([&](linalg::GenericOp genericOp) {
+        OpBuilder builder(genericOp);
+        SmallVector<Value> inputs = genericOp.getInputs();
+        SmallVector<Value> outputs = genericOp.getOutputs();
+        auto indexingMaps = genericOp.getIndexingMapsAttr();
+        auto iteratorTypes = genericOp.getIteratorTypes();
+        auto resultTypes = genericOp->getResultTypes();
 
-          OpBuilder builder(genericOp);
-          SmallVector<Value> inputs = genericOp.getInputs();
-          SmallVector<Value> outputs = genericOp.getOutputs();
-          auto indexingMaps = genericOp.getIndexingMapsAttr();
-          auto iteratorTypes = genericOp.getIteratorTypes();
-          auto resultTypes = genericOp->getResultTypes();
+        // Modify the input and index mapping
+        bool modified = false;
+        SmallVector<AffineMap> newIndexingMaps;
+        for (auto map : indexingMaps.getAsRange<AffineMapAttr>()) {
+          newIndexingMaps.push_back(map.getValue());
+        }
 
-          // Modify the input and index mapping
-          bool modified = false;
-          SmallVector<AffineMap> newIndexingMaps;
-          for (auto map : indexingMaps.getAsRange<AffineMapAttr>()) {
-              newIndexingMaps.push_back(map.getValue());
+        for (unsigned i = 0; i < inputs.size(); ++i) {
+          if (auto fillOp = inputs[i].getDefiningOp<linalg::FillOp>()) {
+
+            Value fillValue = fillOp.value();
+            if (!fillValue.getType().isIntOrFloat() ||
+                mlir::isa<ShapedType>(fillValue.getType()))
+              continue;
+
+            newIndexingMaps[i] = AffineMap::get(genericOp.getNumParallelLoops(),
+                                                0, {}, builder.getContext());
+            inputs[i] = fillOp.getOperand(0);
+            modified = true;
           }
+        }
+        if (!modified)
+          return;
 
-          for (unsigned i = 0; i < inputs.size(); ++i) {
-              if (auto fillOp = inputs[i].getDefiningOp<linalg::FillOp>()) {
+        builder.setInsertionPoint(genericOp);
+        auto newGenericOp = linalg::GenericOp::create(
+            builder, genericOp.getLoc(), resultTypes, inputs, outputs,
+            builder.getAffineMapArrayAttr(newIndexingMaps), iteratorTypes,
+            genericOp.getDocAttr(), genericOp.getLibraryCallAttr());
 
-                  Value fillValue = fillOp.value();
-                  if (!fillValue.getType().isIntOrFloat() ||
-                      mlir::isa<ShapedType>(fillValue.getType())) continue;
+        IRMapping mapping;
+        genericOp.getRegion().cloneInto(&newGenericOp.getRegion(), mapping);
 
-                  newIndexingMaps[i] = AffineMap::get(
-                      genericOp.getNumParallelLoops(), 0, {}, builder.getContext());
-                  inputs[i] = fillOp.getOperand(0);
-                  modified = true;
-              }
-          }
-          if (!modified) return;
-
-          builder.setInsertionPoint(genericOp);
-          auto newGenericOp = linalg::GenericOp::create(builder, genericOp.getLoc(),
-              resultTypes,
-              inputs,
-              outputs,
-              builder.getAffineMapArrayAttr(newIndexingMaps),
-              iteratorTypes,
-              genericOp.getDocAttr(),
-              genericOp.getLibraryCallAttr()
-          );
-
-          IRMapping mapping;
-          genericOp.getRegion().cloneInto(&newGenericOp.getRegion(), mapping);
-
-          newGenericOp.getRegion().walk([&](linalg::YieldOp yieldOp) {
-              builder.setInsertionPoint(yieldOp);
-              auto newYield = linalg::YieldOp::create(builder, yieldOp.getLoc(), yieldOp.getOperands());
-              yieldOp->replaceAllUsesWith(newYield);
-              yieldOp->erase();
-          });
-
-          for (auto result : llvm::zip(genericOp->getResults(),
-                                    newGenericOp->getResults())) {
-              std::get<0>(result).replaceAllUsesWith(std::get<1>(result));
-          }
-
-          if (genericOp->use_empty()) {
-              builder.setInsertionPointAfter(newGenericOp);
-              genericOp->erase();
-          } else {
-              newGenericOp->emitError("Failed to replace all uses");
-          }
+        newGenericOp.getRegion().walk([&](linalg::YieldOp yieldOp) {
+          builder.setInsertionPoint(yieldOp);
+          auto newYield = linalg::YieldOp::create(builder, yieldOp.getLoc(),
+                                                  yieldOp.getOperands());
+          yieldOp->replaceAllUsesWith(newYield);
+          yieldOp->erase();
         });
-      }
+
+        for (auto result :
+             llvm::zip(genericOp->getResults(), newGenericOp->getResults())) {
+          std::get<0>(result).replaceAllUsesWith(std::get<1>(result));
+        }
+
+        if (genericOp->use_empty()) {
+          builder.setInsertionPointAfter(newGenericOp);
+          genericOp->erase();
+        } else {
+          newGenericOp->emitError("Failed to replace all uses");
+        }
+      });
+    }
   }
 };
 

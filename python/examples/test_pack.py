@@ -4,6 +4,7 @@ import triton.language as tl
 import triton.language.extra.smt as smt
 import time
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 
 
@@ -12,10 +13,9 @@ triton.runtime.driver.set_active(CPUDriver())
 # 对应 mm_kernel 中 A 矩阵的 pack (outer_dims_perm=[0,1])
 # ============================================================
 @triton.jit
-def pack_a_kernel(a_ptr, c_ptr, M, K, num_blocks_m, num_blocks_k,
-                  stride_im0, stride_im1, stride_om0, stride_om1, stride_om2, stride_om3,
-                  BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
-                  MICRO_M: tl.constexpr, MICRO_K: tl.constexpr):
+def pack_a_kernel(a_ptr, c_ptr, M, K, num_blocks_m, num_blocks_k, stride_im0, stride_im1, stride_om0, stride_om1,
+                  stride_om2, stride_om3, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_K: tl.constexpr, MICRO_M: tl.constexpr,
+                  MICRO_K: tl.constexpr):
     pid_m = tl.program_id(0)
     a_block_ptr = tl.make_block_ptr(
         base=a_ptr,
@@ -26,16 +26,14 @@ def pack_a_kernel(a_ptr, c_ptr, M, K, num_blocks_m, num_blocks_k,
         order=[1, 0],
     )
     a_descriptor_load = smt.descriptor_load(a_block_ptr, (0, 0))
-    a = smt.view(a_descriptor_load, (0, 0),
-                 (BLOCK_SIZE_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K))
+    a = smt.view(a_descriptor_load, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K))
 
     c_block_ptr = tl.make_block_ptr(
         base=c_ptr,
         shape=[num_blocks_m, num_blocks_k, MICRO_M, MICRO_K],
         strides=[stride_om0, stride_om1, stride_om2, stride_om3],
         offsets=[pid_m * BLOCK_SIZE_M // MICRO_M, 0, 0, 0],
-        block_shape=[BLOCK_SIZE_M // MICRO_M,
-                     BLOCK_SIZE_K // MICRO_K, MICRO_M, MICRO_K],
+        block_shape=[BLOCK_SIZE_M // MICRO_M, BLOCK_SIZE_K // MICRO_K, MICRO_M, MICRO_K],
         order=[3, 2, 1, 0],
     )
     tl.store(c_block_ptr, a, boundary_check=(0, 1))
@@ -53,11 +51,9 @@ def pack_a_kernel(a_ptr, c_ptr, M, K, num_blocks_m, num_blocks_k,
 # 生成 linalg.pack outer_dims_perm=[1,0] inner_dims_pos=[1,0]
 # ============================================================
 @triton.jit
-def pack_b_kernel(b_ptr, c_ptr, K, N, num_blocks_n, num_blocks_k,
-                  stride_ik, stride_in, stride_om0, stride_om1, stride_om2, stride_om3,
-                  BLOCK_SIZE_K: tl.constexpr, BLOCK_SIZE_N: tl.constexpr,
-                  MICRO_K: tl.constexpr, MICRO_N: tl.constexpr,
-                  DO_TRANS: tl.constexpr):
+def pack_b_kernel(b_ptr, c_ptr, K, N, num_blocks_n, num_blocks_k, stride_ik, stride_in, stride_om0, stride_om1,
+                  stride_om2, stride_om3, BLOCK_SIZE_K: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, MICRO_K: tl.constexpr,
+                  MICRO_N: tl.constexpr, DO_TRANS: tl.constexpr):
     pid_n = tl.program_id(0)
     # 按原始 layout 读 B[K,N]
     b_block_ptr = tl.make_block_ptr(
@@ -70,8 +66,7 @@ def pack_b_kernel(b_ptr, c_ptr, K, N, num_blocks_n, num_blocks_k,
     )
     b_descriptor_load = smt.descriptor_load(b_block_ptr, (0, 0))
     # view 用 (MICRO_K, MICRO_N) -> [K/8, N/32, 8, 32]
-    b = smt.view(b_descriptor_load, (0, 0),
-                 (BLOCK_SIZE_K, BLOCK_SIZE_N), (MICRO_K, MICRO_N))
+    b = smt.view(b_descriptor_load, (0, 0), (BLOCK_SIZE_K, BLOCK_SIZE_N), (MICRO_K, MICRO_N))
     # transpose [1,0,3,2]: [K/8, N/32, 8, 32] -> [N/32, K/8, 32, 8]
     # 编译器识别到此 pattern 后生成 outer_dims_perm=[1,0]
     if DO_TRANS:
@@ -82,8 +77,7 @@ def pack_b_kernel(b_ptr, c_ptr, K, N, num_blocks_n, num_blocks_k,
             shape=[num_blocks_n, num_blocks_k, MICRO_N, MICRO_K],
             strides=[stride_om0, stride_om1, stride_om2, stride_om3],
             offsets=[pid_n * BLOCK_SIZE_N // MICRO_N, 0, 0, 0],
-            block_shape=[BLOCK_SIZE_N // MICRO_N,
-                         BLOCK_SIZE_K // MICRO_K, MICRO_N, MICRO_K],
+            block_shape=[BLOCK_SIZE_N // MICRO_N, BLOCK_SIZE_K // MICRO_K, MICRO_N, MICRO_K],
             order=[3, 2, 1, 0],
         )
         tl.store(c_block_ptr, b, boundary_check=(0, 1))
@@ -94,8 +88,7 @@ def pack_b_kernel(b_ptr, c_ptr, K, N, num_blocks_n, num_blocks_k,
             shape=[num_blocks_k, num_blocks_n, MICRO_K, MICRO_N],
             strides=[stride_om0, stride_om1, stride_om2, stride_om3],
             offsets=[0, pid_n * BLOCK_SIZE_N // MICRO_N, 0, 0],
-            block_shape=[BLOCK_SIZE_K // MICRO_K,
-                         BLOCK_SIZE_N // MICRO_N, MICRO_K, MICRO_N],
+            block_shape=[BLOCK_SIZE_K // MICRO_K, BLOCK_SIZE_N // MICRO_N, MICRO_K, MICRO_N],
             order=[3, 2, 1, 0],
         )
         # 这里 boundary_check 的 (0,1) 对应 outer 的 [Ktiles, Ntiles]
@@ -118,16 +111,25 @@ def triton_pack_a(a):
     M, K = a.shape
     num_blocks_m = triton.cdiv(M, A_MICRO_M)
     num_blocks_k = triton.cdiv(K, A_MICRO_K)
-    c = torch.empty((num_blocks_m, num_blocks_k, A_MICRO_M, A_MICRO_K),
-                    device=a.device, dtype=a.dtype)
-    grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]),)
+    c = torch.empty((num_blocks_m, num_blocks_k, A_MICRO_M, A_MICRO_K), device=a.device, dtype=a.dtype)
+    grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]), )
     pack_a_kernel[grid](
-        a, c, M, K, num_blocks_m, num_blocks_k,
-        a.stride(0), a.stride(1),
-        c.stride(0), c.stride(1), c.stride(2), c.stride(3),
+        a,
+        c,
+        M,
+        K,
+        num_blocks_m,
+        num_blocks_k,
+        a.stride(0),
+        a.stride(1),
+        c.stride(0),
+        c.stride(1),
+        c.stride(2),
+        c.stride(3),
         BLOCK_SIZE_M=BLOCK_SIZE_M,
         BLOCK_SIZE_K=triton.next_power_of_2(K),
-        MICRO_M=A_MICRO_M, MICRO_K=A_MICRO_K,
+        MICRO_M=A_MICRO_M,
+        MICRO_K=A_MICRO_K,
     )
     return c
 
@@ -138,16 +140,25 @@ def triton_pack_b_trans(b):
     K, N = b.shape
     num_blocks_n = triton.cdiv(N, B_MICRO_N)
     num_blocks_k = triton.cdiv(K, B_MICRO_K)
-    c = torch.empty((num_blocks_n, num_blocks_k, B_MICRO_N, B_MICRO_K),
-                    device=b.device, dtype=b.dtype)
-    grid = lambda META: (triton.cdiv(N, META["BLOCK_SIZE_N"]),)
+    c = torch.empty((num_blocks_n, num_blocks_k, B_MICRO_N, B_MICRO_K), device=b.device, dtype=b.dtype)
+    grid = lambda META: (triton.cdiv(N, META["BLOCK_SIZE_N"]), )
     pack_b_kernel[grid](
-        b, c, K, N, num_blocks_n, num_blocks_k,
-        b.stride(0), b.stride(1),
-        c.stride(0), c.stride(1), c.stride(2), c.stride(3),
+        b,
+        c,
+        K,
+        N,
+        num_blocks_n,
+        num_blocks_k,
+        b.stride(0),
+        b.stride(1),
+        c.stride(0),
+        c.stride(1),
+        c.stride(2),
+        c.stride(3),
         BLOCK_SIZE_K=triton.next_power_of_2(K),
         BLOCK_SIZE_N=BLOCK_SIZE_N,
-        MICRO_K=B_MICRO_K, MICRO_N=B_MICRO_N,
+        MICRO_K=B_MICRO_K,
+        MICRO_N=B_MICRO_N,
         DO_TRANS=True,
     )
     return c
@@ -160,16 +171,25 @@ def triton_pack_b_notrans(b):
     K, N = b.shape
     num_blocks_n = triton.cdiv(N, B_MICRO_N)
     num_blocks_k = triton.cdiv(K, B_MICRO_K)
-    c = torch.empty((num_blocks_k, num_blocks_n, B_MICRO_K, B_MICRO_N),
-                    device=b.device, dtype=b.dtype)
-    grid = lambda META: (triton.cdiv(N, META["BLOCK_SIZE_N"]),)
+    c = torch.empty((num_blocks_k, num_blocks_n, B_MICRO_K, B_MICRO_N), device=b.device, dtype=b.dtype)
+    grid = lambda META: (triton.cdiv(N, META["BLOCK_SIZE_N"]), )
     pack_b_kernel[grid](
-        b, c, K, N, num_blocks_n, num_blocks_k,
-        b.stride(0), b.stride(1),
-        c.stride(0), c.stride(1), c.stride(2), c.stride(3),
+        b,
+        c,
+        K,
+        N,
+        num_blocks_n,
+        num_blocks_k,
+        b.stride(0),
+        b.stride(1),
+        c.stride(0),
+        c.stride(1),
+        c.stride(2),
+        c.stride(3),
         BLOCK_SIZE_K=triton.next_power_of_2(K),
         BLOCK_SIZE_N=BLOCK_SIZE_N,
-        MICRO_K=B_MICRO_N, MICRO_N=B_MICRO_K,
+        MICRO_K=B_MICRO_N,
+        MICRO_N=B_MICRO_K,
         DO_TRANS=False,
     )
     return c
@@ -183,8 +203,7 @@ def pack_a_ref(a):
     a_padded = torch.zeros((M_pad, K_pad), device=a.device, dtype=a.dtype)
     a_padded[:M, :K] = a
     # [M/16, 16, K/8, 8] -> permute(0,2,1,3) -> [M/16, K/8, 16, 8]
-    return a_padded.view(M_pad // A_MICRO_M, A_MICRO_M,
-                         K_pad // A_MICRO_K, A_MICRO_K).permute(0, 2, 1, 3).contiguous()
+    return a_padded.view(M_pad // A_MICRO_M, A_MICRO_M, K_pad // A_MICRO_K, A_MICRO_K).permute(0, 2, 1, 3).contiguous()
 
 
 def pack_b_ref(b):
@@ -195,8 +214,7 @@ def pack_b_ref(b):
     b_padded = torch.zeros((K_pad, N_pad), device=b.device, dtype=b.dtype)
     b_padded[:K, :N] = b
     # [K/8, 8, N/32, 32] -> permute(2,0,3,1) -> [N/32, K/8, 32, 8]
-    return b_padded.view(K_pad // B_MICRO_K, B_MICRO_K,
-                         N_pad // B_MICRO_N, B_MICRO_N).permute(2, 0, 3, 1).contiguous()
+    return b_padded.view(K_pad // B_MICRO_K, B_MICRO_K, N_pad // B_MICRO_N, B_MICRO_N).permute(2, 0, 3, 1).contiguous()
 
 
 def pack_b_ref_notrans(b):
@@ -210,8 +228,7 @@ def pack_b_ref_notrans(b):
     b_padded = torch.zeros((K_pad, N_pad), device=b.device, dtype=b.dtype)
     b_padded[:K, :N] = b
     # [K/8, 8, N/32, 32] -> permute(0,2,1,3) -> [K/8, N/32, 8, 32]
-    return b_padded.view(K_pad // B_MICRO_K, B_MICRO_K,
-                         N_pad // B_MICRO_N, B_MICRO_N).permute(0, 2, 1, 3).contiguous()
+    return b_padded.view(K_pad // B_MICRO_K, B_MICRO_K, N_pad // B_MICRO_N, B_MICRO_N).permute(0, 2, 1, 3).contiguous()
 
 
 def triton_pack_b_block(b_block):
@@ -229,16 +246,25 @@ def triton_pack_b_block(b_block):
     out_k_tiles = triton.cdiv(K, B_MICRO_K)  # 64
     num_blocks_n = triton.cdiv(N_remain, B_MICRO_N)
     num_blocks_k = triton.cdiv(K, B_MICRO_K)
-    c = torch.zeros((out_n_tiles, out_k_tiles, B_MICRO_N, B_MICRO_K),
-                    device=b_block.device, dtype=b_block.dtype)
-    grid = (1,)  # 单个 block，只需 1 个 program
+    c = torch.zeros((out_n_tiles, out_k_tiles, B_MICRO_N, B_MICRO_K), device=b_block.device, dtype=b_block.dtype)
+    grid = (1, )  # 单个 block，只需 1 个 program
     pack_b_kernel[grid](
-        b_block, c, K, N_remain, num_blocks_n, num_blocks_k,
-        b_block.stride(0), b_block.stride(1),
-        c.stride(0), c.stride(1), c.stride(2), c.stride(3),
+        b_block,
+        c,
+        K,
+        N_remain,
+        num_blocks_n,
+        num_blocks_k,
+        b_block.stride(0),
+        b_block.stride(1),
+        c.stride(0),
+        c.stride(1),
+        c.stride(2),
+        c.stride(3),
         BLOCK_SIZE_K=triton.next_power_of_2(K),
         BLOCK_SIZE_N=BLOCK_SIZE_N,
-        MICRO_K=B_MICRO_K, MICRO_N=B_MICRO_N,
+        MICRO_K=B_MICRO_K,
+        MICRO_N=B_MICRO_N,
         DO_TRANS=True,
     )
     return c
@@ -256,8 +282,7 @@ def pack_b_block_ref(b_block):
     b_padded = torch.zeros((K_pad, N_pad), device=b_block.device, dtype=b_block.dtype)
     b_padded[:K, :N_remain] = b_block
     # [K/8, 8, N/32, 32] -> permute(2,0,3,1) -> [N/32, K/8, 32, 8]
-    return b_padded.view(K_pad // B_MICRO_K, B_MICRO_K,
-                         N_pad // B_MICRO_N, B_MICRO_N).permute(2, 0, 3, 1).contiguous()
+    return b_padded.view(K_pad // B_MICRO_K, B_MICRO_K, N_pad // B_MICRO_N, B_MICRO_N).permute(2, 0, 3, 1).contiguous()
 
 
 def benchmark(fn, *args, iters=100, warmup=10, name=None):
@@ -284,25 +309,31 @@ if __name__ == "__main__":
     B = torch.randn((K, N), dtype=torch.float16, device="cpu")
 
     # Test pack A: [M,K] -> [ceil(M/16), ceil(K/8), 16, 8]
-    print(f"\n--- Pack A [{M},{K}] -> [{triton.cdiv(M,A_MICRO_M)},{triton.cdiv(K,A_MICRO_K)},{A_MICRO_M},{A_MICRO_K}] ---")
+    print(
+        f"\n--- Pack A [{M},{K}] -> [{triton.cdiv(M,A_MICRO_M)},{triton.cdiv(K,A_MICRO_K)},{A_MICRO_M},{A_MICRO_K}] ---"
+    )
     C_a = triton_pack_a(A)
     C_a_ref = pack_a_ref(A)
     max_err_a = torch.max(torch.abs(C_a - C_a_ref)).item()
     print(f"Pack A max error: {max_err_a}")
-    assert torch.allclose(C_a, C_a_ref, atol=0, rtol=0), f"Pack A FAILED"
+    assert torch.allclose(C_a, C_a_ref, atol=0, rtol=0), "Pack A FAILED"
     print("Pack A PASSED")
 
     # Test pack B (trans): [K,N] -> [ceil(N/32), ceil(K/8), 32, 8]
-    print(f"\n--- Pack B (trans) [{K},{N}] -> [{triton.cdiv(N,B_MICRO_N)},{triton.cdiv(K,B_MICRO_K)},{B_MICRO_N},{B_MICRO_K}] ---")
+    print(
+        f"\n--- Pack B (trans) [{K},{N}] -> [{triton.cdiv(N,B_MICRO_N)},{triton.cdiv(K,B_MICRO_K)},{B_MICRO_N},{B_MICRO_K}] ---"
+    )
     C_b = triton_pack_b_trans(B)
     C_b_ref = pack_b_ref(B)
     max_err_b = torch.max(torch.abs(C_b - C_b_ref)).item()
     print(f"Pack B (trans) max error: {max_err_b}")
-    assert torch.allclose(C_b, C_b_ref, atol=0, rtol=0), f"Pack B (trans) FAILED"
+    assert torch.allclose(C_b, C_b_ref, atol=0, rtol=0), "Pack B (trans) FAILED"
     print("Pack B (trans) PASSED")
 
     # Test pack B (no trans): [K,N] -> [ceil(K/8), ceil(N/32), 8, 32]
-    print(f"\n--- Pack B (no-trans) [{K},{N}] -> [{triton.cdiv(K,B_MICRO_K)},{triton.cdiv(N,B_MICRO_N)},{B_MICRO_K},{B_MICRO_N}] ---")
+    print(
+        f"\n--- Pack B (no-trans) [{K},{N}] -> [{triton.cdiv(K,B_MICRO_K)},{triton.cdiv(N,B_MICRO_N)},{B_MICRO_K},{B_MICRO_N}] ---"
+    )
     C_b_nt = triton_pack_b_notrans(B)
     C_b_nt_ref = pack_b_ref_notrans(B)
     max_err_b_nt = torch.max(torch.abs(C_b_nt - C_b_nt_ref)).item()

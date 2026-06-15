@@ -1,7 +1,7 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -13,16 +13,11 @@ if __name__ == "__main__":
     padding_idx = None
     scale_grad_by_freq = True
     dtype = torch.float32
-    res_indices = torch.randint(
-        0, EmbeddingSize, (Batch, M), device=flag_gems.device, requires_grad=False
-    )
-    res_embedding = torch.randn(
-        (EmbeddingSize, N), device=flag_gems.device, dtype=dtype, requires_grad=True
-    )
+    res_indices = torch.randint(0, EmbeddingSize, (Batch, M), device=flag_gems.device, requires_grad=False)
+    res_embedding = torch.randn((EmbeddingSize, N), device=flag_gems.device, dtype=dtype, requires_grad=True)
 
-    ref_out = torch.nn.functional.embedding(
-        res_indices, res_embedding, padding_idx, scale_grad_by_freq=scale_grad_by_freq
-    )
+    ref_out = torch.nn.functional.embedding(res_indices, res_embedding, padding_idx,
+                                            scale_grad_by_freq=scale_grad_by_freq)
     with flag_gems.use_gems():
         res_out = torch.nn.functional.embedding(
             res_indices,

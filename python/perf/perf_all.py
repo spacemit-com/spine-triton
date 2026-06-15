@@ -4,7 +4,6 @@ import triton
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import flag_gems
 
 if __name__ == "__main__":
     test_warm_up = 5
@@ -29,17 +28,12 @@ if __name__ == "__main__":
         "normalization": {
             "layernorm": lambda x: torch.nn.functional.layer_norm(x, x.shape[-1:]),
             "groupnorm": lambda x: torch.nn.functional.group_norm(x, num_groups=1),
-            "batch_norm": lambda x: torch.nn.functional.batch_norm(
-                x, torch.zeros(x.shape[1]), torch.ones(x.shape[1])
-            ),
+            "batch_norm": lambda x: torch.nn.functional.batch_norm(x, torch.zeros(x.shape[1]), torch.ones(x.shape[1])),
         },
         "convolution": {
-            "conv1d": lambda x: torch.nn.functional.conv1d(
-                x.unsqueeze(0), torch.randn(1, x.shape[1], 3)
-            ).squeeze(0),
-            "conv2d": lambda x: torch.nn.functional.conv2d(
-                x.unsqueeze(0).unsqueeze(0), torch.randn(1, 1, 3, 3)
-            ).squeeze(0),
+            "conv1d": lambda x: torch.nn.functional.conv1d(x.unsqueeze(0), torch.randn(1, x.shape[1], 3)).squeeze(0),
+            "conv2d":
+            lambda x: torch.nn.functional.conv2d(x.unsqueeze(0).unsqueeze(0), torch.randn(1, 1, 3, 3)).squeeze(0),
         },
         "basic_arithmetic": {
             "div": lambda x: torch.div(x, x + 1.0),

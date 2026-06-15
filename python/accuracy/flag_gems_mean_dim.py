@@ -1,16 +1,16 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
 if __name__ == "__main__":
     shape = (1, 2, 7, 7)
     dtype = torch.float32
-    dim = [2,3]
+    dim = [2, 3]
     inp = torch.randn(shape, dtype=dtype, device=flag_gems.device)
-    keepdim =True
+    keepdim = True
 
     ref_out = torch.mean(inp, dim, keepdim)
     with flag_gems.use_gems():

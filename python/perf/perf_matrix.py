@@ -6,9 +6,8 @@ try:
     import triton
     from triton.backends.spine_triton.driver import CPUDriver
     triton.runtime.driver.set_active(CPUDriver())
-    import flag_gems
     triton_init = True
-except:
+except Exception:
     triton_init = False
 
 if __name__ == "__main__":
@@ -52,7 +51,7 @@ if __name__ == "__main__":
                     m, n, k = test_shape
                     A = torch.randn([m, k], dtype=test_dtype, device="cpu", requires_grad=False)
                     B = torch.randn([k, n], dtype=test_dtype, device="cpu", requires_grad=False)
-                    Bias = torch.zeros((n,), dtype=test_dtype, device="cpu", requires_grad=False)
+                    Bias = torch.zeros((n, ), dtype=test_dtype, device="cpu", requires_grad=False)
 
                     for _ in range(test_warm_up):
                         ref = op_func((A, B, Bias))
@@ -65,7 +64,6 @@ if __name__ == "__main__":
                     gops = test_iterations * test_op_ops[op_name](m, n, k) / 1024 / 1024 / 1024 / (end - start)
                     print(
                         f"dtype {test_dtype} shape {test_shape}, cost {1000 * (end - start) / test_iterations:.3f} ms. "
-                        f"gops {gops:.2f}"
-                    )
+                        f"gops {gops:.2f}")
                 except Exception as e:
                     print(f"dtype {test_dtype} shape {test_shape}, Failed: {str(e)}")

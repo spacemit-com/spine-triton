@@ -8,6 +8,7 @@ triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 # import torchvision.models as models
 
+
 def test_accuracy_resnet18(dtype, device):
     # model = models.resnet18(pretrained=False).eval()
     model = torch.hub.load('/home/share/nfs_share/pytorch_vision_v0.10.0', 'resnet18', pretrained=True, source='local')
@@ -29,14 +30,15 @@ def test_accuracy_resnet18(dtype, device):
             res_output = res_model(res_inputs)
 
     score = torch.nn.functional.cosine_similarity(
-            ref_output.flatten(),
-            res_output.flatten(),
-            dim=0,
-            eps=1e-6,
-        )
+        ref_output.flatten(),
+        res_output.flatten(),
+        dim=0,
+        eps=1e-6,
+    )
     print("score", score)
     assert torch.allclose(ref_output, res_output, atol=1e-2, rtol=1e-2)
     print("PASS")
+
 
 if __name__ == "__main__":
     dtype = torch.float32

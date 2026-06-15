@@ -1,7 +1,7 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -15,13 +15,9 @@ if __name__ == "__main__":
         shape = (2, 2)
     inp = torch.randn(shape, dtype=dtype, device=flag_gems.device)
 
-    ref_var, ref_mean = torch.var_mean(
-        inp, dim, correction=correction, keepdim=keepdim
-    )
+    ref_var, ref_mean = torch.var_mean(inp, dim, correction=correction, keepdim=keepdim)
     with flag_gems.use_gems():
-        res_var, res_mean = torch.var_mean(
-            inp, dim, correction=correction, keepdim=keepdim
-        )
+        res_var, res_mean = torch.var_mean(inp, dim, correction=correction, keepdim=keepdim)
 
     torch.testing.assert_close(res_mean, ref_mean, atol=1e-2, rtol=0)
     torch.testing.assert_close(res_var, ref_var, atol=1e-2, rtol=0)

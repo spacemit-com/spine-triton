@@ -1,9 +1,9 @@
-import numpy as np
 import pytest
 # import scipy
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -11,25 +11,14 @@ from .accuracy_utils import DISTRIBUTION_SHAPES, FLOAT_DTYPES
 
 device = flag_gems.device
 
+
 @pytest.mark.normal
 @pytest.mark.parametrize("float", ["none", "mean", "std"])
 @pytest.mark.parametrize("shape", DISTRIBUTION_SHAPES)
 @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
 def test_accuracy_normal(float, shape, dtype):
-    loc = (
-        3.0
-        if float == "mean"
-        else torch.full(
-            size=shape, fill_value=3.0, dtype=dtype, device=flag_gems.device
-        )
-    )
-    scale = (
-        10.0
-        if float == "std"
-        else torch.full(
-            size=shape, fill_value=10.0, dtype=dtype, device=flag_gems.device
-        )
-    )
+    loc = (3.0 if float == "mean" else torch.full(size=shape, fill_value=3.0, dtype=dtype, device=flag_gems.device))
+    scale = (10.0 if float == "std" else torch.full(size=shape, fill_value=10.0, dtype=dtype, device=flag_gems.device))
     with flag_gems.use_gems():
         res_out = torch.normal(loc, scale)
     mean = torch.mean(res_out)

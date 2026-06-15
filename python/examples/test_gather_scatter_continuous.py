@@ -1,4 +1,3 @@
-import pytest
 import torch
 
 import triton
@@ -8,9 +7,7 @@ from triton.backends.triton_shared.driver import CPUDriver
 
 
 @triton.jit
-def gather_row(
-    in0, out0, X: tl.constexpr = 2, Y: tl.constexpr = 4, Z: tl.constexpr = 8
-):
+def gather_row(in0, out0, X: tl.constexpr = 2, Y: tl.constexpr = 4, Z: tl.constexpr = 8):
     offs_2d_x = tl.arange(0, X * Y)
     offs_2d_y = tl.arange(0, Z)
 
@@ -32,19 +29,19 @@ def test_gather_row(device):
     SIZE = 64
     input = torch.arange(2, SIZE + 2, device=device, dtype=torch.int32)
     input3D = input.reshape(2, 4, 8)
-    output = torch.full((SIZE,), -1, device=device, dtype=torch.int32)
+    output = torch.full((SIZE, ), -1, device=device, dtype=torch.int32)
 
     if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
 
-    gather_row[1,](input3D, output)
+    gather_row[
+        1,
+    ](input3D, output)
     torch.testing.assert_close(output, input)
 
 
 @triton.jit
-def gather_row_ld_mask(
-    in0, out0, X: tl.constexpr = 2, Y: tl.constexpr = 4, Z: tl.constexpr = 8
-):
+def gather_row_ld_mask(in0, out0, X: tl.constexpr = 2, Y: tl.constexpr = 4, Z: tl.constexpr = 8):
     offs_2d_x = tl.arange(0, X * Y)
     offs_2d_y = tl.arange(0, Z)
 
@@ -66,24 +63,22 @@ def test_gather_row_ld_mask(device):
     SIZE = 64
     input = torch.arange(2, SIZE + 2, device=device, dtype=torch.int32)
     input3D = input.reshape(2, 4, 8)
-    output = torch.full((SIZE,), -1, device=device, dtype=torch.int32)
+    output = torch.full((SIZE, ), -1, device=device, dtype=torch.int32)
 
     if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
 
-    gather_row_ld_mask[1,](input3D, output)
+    gather_row_ld_mask[
+        1,
+    ](input3D, output)
     ref = input3D
     ref[:, :, 4:] = 0
-    ref = ref.reshape(
-        SIZE,
-    )
+    ref = ref.reshape(SIZE, )
     torch.testing.assert_close(output, ref)
 
 
 @triton.jit
-def gather_row_st_mask(
-    in0, out0, X: tl.constexpr = 2, Y: tl.constexpr = 4, Z: tl.constexpr = 8
-):
+def gather_row_st_mask(in0, out0, X: tl.constexpr = 2, Y: tl.constexpr = 4, Z: tl.constexpr = 8):
     offs_2d_x = tl.arange(0, X * Y)
     offs_2d_y = tl.arange(0, Z)
 
@@ -105,24 +100,22 @@ def test_gather_row_st_mask(device):
     SIZE = 64
     input = torch.arange(2, SIZE + 2, device=device, dtype=torch.int32)
     input3D = input.reshape(2, 4, 8)
-    output = torch.full((SIZE,), -1, device=device, dtype=torch.int32)
+    output = torch.full((SIZE, ), -1, device=device, dtype=torch.int32)
 
     if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
 
-    gather_row_st_mask[1,](input3D, output)
+    gather_row_st_mask[
+        1,
+    ](input3D, output)
     ref = input3D
     ref[:, :, 4:] = -1
-    ref = ref.reshape(
-        SIZE,
-    )
+    ref = ref.reshape(SIZE, )
     torch.testing.assert_close(output, ref)
 
 
 @triton.jit
-def gather_column(
-    in0, out0, X: tl.constexpr = 2, Y: tl.constexpr = 4, Z: tl.constexpr = 8
-):
+def gather_column(in0, out0, X: tl.constexpr = 2, Y: tl.constexpr = 4, Z: tl.constexpr = 8):
     offs_2d_x = tl.arange(0, X)
     offs_2d_y = tl.arange(0, Y * Z)
 
@@ -144,19 +137,19 @@ def test_gather_column(device):
     SIZE = 64
     input = torch.arange(2, SIZE + 2, device=device, dtype=torch.int32)
     input3D = input.reshape(2, 4, 8)
-    output = torch.full((SIZE,), -1, device=device, dtype=torch.int32)
+    output = torch.full((SIZE, ), -1, device=device, dtype=torch.int32)
 
     if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
 
-    r = gather_column[1,](input3D, output)
+    gather_column[
+        1,
+    ](input3D, output)
     torch.testing.assert_close(output, input)
 
 
 @triton.jit
-def gather_column_ld_mask(
-    in0, out0, X: tl.constexpr = 2, Y: tl.constexpr = 4, Z: tl.constexpr = 8
-):
+def gather_column_ld_mask(in0, out0, X: tl.constexpr = 2, Y: tl.constexpr = 4, Z: tl.constexpr = 8):
     offs_2d_x = tl.arange(0, X)
     offs_2d_y = tl.arange(0, Y * Z)
 
@@ -178,25 +171,23 @@ def test_gather_column_ld_mask(device):
     SIZE = 64
     input = torch.arange(2, SIZE + 2, device=device, dtype=torch.int32)
     input3D = input.reshape(2, 4, 8)
-    output = torch.full((SIZE,), -1, device=device, dtype=torch.int32)
+    output = torch.full((SIZE, ), -1, device=device, dtype=torch.int32)
 
     if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
 
-    r = gather_column_ld_mask[1,](input3D, output)
+    gather_column_ld_mask[
+        1,
+    ](input3D, output)
 
     ref = input3D
     ref[1:, :, :] = 0
-    ref = ref.reshape(
-        SIZE,
-    )
+    ref = ref.reshape(SIZE, )
     torch.testing.assert_close(output, ref)
 
 
 @triton.jit
-def gather_column_st_mask(
-    in0, out0, X: tl.constexpr = 2, Y: tl.constexpr = 4, Z: tl.constexpr = 8
-):
+def gather_column_st_mask(in0, out0, X: tl.constexpr = 2, Y: tl.constexpr = 4, Z: tl.constexpr = 8):
     offs_2d_x = tl.arange(0, X)
     offs_2d_y = tl.arange(0, Y * Z)
 
@@ -218,16 +209,16 @@ def test_gather_column_st_mask(device):
     SIZE = 64
     input = torch.arange(2, SIZE + 2, device=device, dtype=torch.int32)
     input3D = input.reshape(2, 4, 8)
-    output = torch.full((SIZE,), -1, device=device, dtype=torch.int32)
+    output = torch.full((SIZE, ), -1, device=device, dtype=torch.int32)
 
     if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
-    r = gather_column_st_mask[1,](input3D, output)
+    gather_column_st_mask[
+        1,
+    ](input3D, output)
     ref = input3D
     ref[1:, :, :] = -1
-    ref = ref.reshape(
-        SIZE,
-    )
+    ref = ref.reshape(SIZE, )
     torch.testing.assert_close(output, ref)
 
 
@@ -257,12 +248,7 @@ def gather_block(
     stride_z = W
     stride_w = 1
 
-    offs = (
-        offs_4d_x * stride_x
-        + offs_4d_y * stride_y
-        + offs_4d_z * stride_z
-        + offs_4d_w * stride_w
-    )
+    offs = (offs_4d_x * stride_x + offs_4d_y * stride_y + offs_4d_z * stride_z + offs_4d_w * stride_w)
 
     a = tl.load(in0 + offs)
     tl.store(out0 + offs, a)
@@ -272,12 +258,14 @@ def test_gather_block(device):
     SIZE = 1024
     input = torch.arange(2, SIZE + 2, device=device, dtype=torch.int32)
     input4D = input.reshape(2, 4, 8, 16)
-    output = torch.full((SIZE,), -1, device=device, dtype=torch.int32)
+    output = torch.full((SIZE, ), -1, device=device, dtype=torch.int32)
 
     if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
 
-    r = gather_block[1,](input4D, output)
+    gather_block[
+        1,
+    ](input4D, output)
     torch.testing.assert_close(output, input)
 
 
@@ -307,12 +295,7 @@ def gather_block_ld_mask(
     stride_z = W
     stride_w = 1
 
-    offs = (
-        offs_4d_x * stride_x
-        + offs_4d_y * stride_y
-        + offs_4d_z * stride_z
-        + offs_4d_w * stride_w
-    )
+    offs = (offs_4d_x * stride_x + offs_4d_y * stride_y + offs_4d_z * stride_z + offs_4d_w * stride_w)
 
     a = tl.load(in0 + offs, mask=offs_4d_x < 1 and offs_4d_w < 8, other=0)
     tl.store(out0 + offs, a)
@@ -322,19 +305,19 @@ def test_gather_block_ld_mask(device):
     SIZE = 1024
     input = torch.arange(2, SIZE + 2, device=device, dtype=torch.int32)
     input4D = input.reshape(2, 4, 8, 16)
-    output = torch.full((SIZE,), -1, device=device, dtype=torch.int32)
+    output = torch.full((SIZE, ), -1, device=device, dtype=torch.int32)
 
     if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
 
-    r = gather_block_ld_mask[1,](input4D, output)
+    gather_block_ld_mask[
+        1,
+    ](input4D, output)
 
     ref = input4D
     ref[:, :, :, 8:] = 0
     ref[1:, :, :, :] = 0
-    ref = ref.reshape(
-        SIZE,
-    )
+    ref = ref.reshape(SIZE, )
     torch.testing.assert_close(output, ref)
 
 
@@ -364,12 +347,7 @@ def gather_block_st_mask(
     stride_z = W
     stride_w = 1
 
-    offs = (
-        offs_4d_x * stride_x
-        + offs_4d_y * stride_y
-        + offs_4d_z * stride_z
-        + offs_4d_w * stride_w
-    )
+    offs = (offs_4d_x * stride_x + offs_4d_y * stride_y + offs_4d_z * stride_z + offs_4d_w * stride_w)
 
     a = tl.load(in0 + offs)
     tl.store(out0 + offs, a, mask=offs_4d_x < 1 and offs_4d_w < 8)
@@ -379,17 +357,17 @@ def test_gather_block_st_mask(device):
     SIZE = 1024
     input = torch.arange(2, SIZE + 2, device=device, dtype=torch.int32)
     input4D = input.reshape(2, 4, 8, 16)
-    output = torch.full((SIZE,), -1, device=device, dtype=torch.int32)
+    output = torch.full((SIZE, ), -1, device=device, dtype=torch.int32)
 
     if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
 
-    r = gather_block_st_mask[1,](input4D, output)
+    gather_block_st_mask[
+        1,
+    ](input4D, output)
 
     ref = input4D
     ref[:, :, :, 8:] = -1
     ref[1:, :, :, :] = -1
-    ref = ref.reshape(
-        SIZE,
-    )
+    ref = ref.reshape(SIZE, )
     torch.testing.assert_close(output, ref)

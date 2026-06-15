@@ -4,7 +4,6 @@ import triton
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import flag_gems
 
 if __name__ == "__main__":
     test_warm_up = 5
@@ -35,6 +34,4 @@ if __name__ == "__main__":
                     ref = op_func(x)
                 end = time.time()
 
-                print(
-                    f"dtype {test_dtype} shape {test_shape}, cost {1000 * (end - start) / test_iterations:.3f} ms"
-                )
+                print(f"dtype {test_dtype} shape {test_shape}, cost {1000 * (end - start) / test_iterations:.3f} ms")

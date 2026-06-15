@@ -5,7 +5,6 @@ from datetime import datetime
 
 import pytest
 
-
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 filename = f"test_detail_and_result_{timestamp}.json"
 
@@ -60,13 +59,8 @@ def pytest_configure(config):
             "tryfirst",
             "trylast",
         }
-        REGISTERED_MARKERS = {
-            marker.split(":")[0].strip() for marker in config.getini("markers")
-        }
-        cmd_args = [
-            arg.replace(".py", "").replace("=", "_").replace("/", "_")
-            for arg in config.invocation_params.args
-        ]
+        REGISTERED_MARKERS = {marker.split(":")[0].strip() for marker in config.getini("markers")}
+        cmd_args = [arg.replace(".py", "").replace("=", "_").replace("/", "_") for arg in config.invocation_params.args]
         logging.basicConfig(
             filename="result_{}.log".format("_".join(cmd_args)).replace("_-", "-"),
             filemode="w",
@@ -81,9 +75,7 @@ def pytest_runtest_teardown(item, nextitem):
     if hasattr(item, "callspec"):
         all_marks = list(item.iter_markers())
         op_marks = [
-            mark.name
-            for mark in all_marks
-            if mark.name not in BUILTIN_MARKS and mark.name not in REGISTERED_MARKERS
+            mark.name for mark in all_marks if mark.name not in BUILTIN_MARKS and mark.name not in REGISTERED_MARKERS
         ]
         if len(op_marks) > 0:
             params = str(item.callspec.params)

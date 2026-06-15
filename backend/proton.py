@@ -28,10 +28,9 @@ Environment Variables:
     PROTON_VERBOSE: Set to "1" for detailed per-thread output (console only)
 """
 
-import ctypes
 import os
 from contextlib import contextmanager
-from typing import Optional, Dict, Any
+from typing import Optional
 
 
 class CpuProtonProfiler:

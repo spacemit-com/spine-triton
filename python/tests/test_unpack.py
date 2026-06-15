@@ -6,7 +6,6 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 
-
 MICRO_M = 16
 MICRO_N = 32
 BLOCK_SIZE_M = 32
@@ -76,7 +75,7 @@ def run_unpack_case(n_value: int):
 
     y = torch.empty((BLOCK_SIZE_M, n_value), dtype=torch.float16, device=device)
 
-    unpack_kernel[(1,)](
+    unpack_kernel[(1, )](
         x,
         y,
         x.stride(0),

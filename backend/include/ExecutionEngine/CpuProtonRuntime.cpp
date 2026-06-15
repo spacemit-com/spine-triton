@@ -173,8 +173,9 @@ private:
     printf("\n=== CPU Proton Profiling Results (Aggregated) ===\n");
     printf("%-20s %10s %15s %15s %15s %15s %15s\n", "Scope", "Count",
            "Total(cyc)", "Min(cyc)", "Max(cyc)", "Avg(cyc)", "Avg(us)");
-    printf("----------------------------------------------------------------------"
-           "--------------------------------------\n");
+    printf(
+        "----------------------------------------------------------------------"
+        "--------------------------------------\n");
 
     for (const auto &kv : scope_durations) {
       const std::string &name = kv.first;
@@ -204,7 +205,8 @@ private:
              incomplete_count);
     }
 
-    printf("======================================================================="
+    printf("==================================================================="
+           "===="
            "=====================================\n");
 
     // Also print detailed per-thread view if requested via environment variable
@@ -213,7 +215,8 @@ private:
       printf("\n=== Detailed Per-Thread Records ===\n");
       printf("%-20s %15s %15s %15s %15s %10s\n", "Scope", "Start", "End",
              "Duration(cyc)", "Duration(us)", "Thread");
-      printf("----------------------------------------------------------------------"
+      printf("-----------------------------------------------------------------"
+             "-----"
              "--------------------------------------\n");
 
       for (const auto &rec : records_) {
@@ -223,15 +226,18 @@ private:
 
         if (rec.completed) {
           int64_t duration = rec.end_cycle - rec.start_cycle;
-          double duration_us = static_cast<double>(duration) / RDTIME_FREQ_HZ * 1e6;
+          double duration_us =
+              static_cast<double>(duration) / RDTIME_FREQ_HZ * 1e6;
           printf("%-20s %15ld %15ld %15ld %15.2f %10zu\n", rec.name.c_str(),
-                 rec.start_cycle, rec.end_cycle, duration, duration_us, tid_hash);
+                 rec.start_cycle, rec.end_cycle, duration, duration_us,
+                 tid_hash);
         } else {
           printf("%-20s %15ld %15s %15s %15s %10zu\n", rec.name.c_str(),
                  rec.start_cycle, "N/A", "incomplete", "N/A", tid_hash);
         }
       }
-      printf("======================================================================="
+      printf("================================================================="
+             "======"
              "=====================================\n\n");
     }
   }
@@ -363,15 +369,15 @@ private:
 
       int tid = thread_id_map[rec.thread_id];
       // Convert cycles to microseconds (24MHz timebase: 1 cycle = 1/24 us)
-      double start_us =
-          static_cast<double>(rec.start_cycle - min_start) / 24.0;
+      double start_us = static_cast<double>(rec.start_cycle - min_start) / 24.0;
       double duration_us =
           static_cast<double>(rec.end_cycle - rec.start_cycle) / 24.0;
 
       // Chrome Trace "X" (complete) event format
       json << "    {" << "\"name\": \"" << escapeJson(rec.name) << "\", "
-           << "\"cat\": \"kernel\", " << "\"ph\": \"X\", " << "\"ts\": "
-           << std::fixed << std::setprecision(3) << start_us << ", "
+           << "\"cat\": \"kernel\", " << "\"ph\": \"X\", "
+           << "\"ts\": " << std::fixed << std::setprecision(3) << start_us
+           << ", "
            << "\"dur\": " << std::fixed << std::setprecision(3) << duration_us
            << ", " << "\"pid\": 1, " << "\"tid\": " << tid << "}";
     }
@@ -415,9 +421,8 @@ extern "C" {
 //   name: scope name (null-terminated string)
 //   cycle: current cycle counter value from rdtime
 //   is_start: 1 for scope start, 0 for scope end
-__attribute__((visibility("default"))) void proton_record(const char *name,
-                                                          int64_t cycle,
-                                                          int32_t is_start) noexcept {
+__attribute__((visibility("default"))) void
+proton_record(const char *name, int64_t cycle, int32_t is_start) noexcept {
   CpuProtonProfiler::getInstance().record(name, cycle, is_start);
 }
 
@@ -470,12 +475,13 @@ static inline int64_t get_current_cycle() {
 // Parameters:
 //   kernel_name: name of the kernel function
 //   gridX, gridY, gridZ: grid dimensions
-__attribute__((visibility("default"))) void proton_enter_kernel(
-    const char *kernel_name, int gridX, int gridY, int gridZ) noexcept {
+__attribute__((visibility("default"))) void
+proton_enter_kernel(const char *kernel_name, int gridX, int gridY,
+                    int gridZ) noexcept {
   // Create a scope name that includes grid info
   char scope_name[256];
-  snprintf(scope_name, sizeof(scope_name), "%s[%d,%d,%d]",
-           kernel_name, gridX, gridY, gridZ);
+  snprintf(scope_name, sizeof(scope_name), "%s[%d,%d,%d]", kernel_name, gridX,
+           gridY, gridZ);
 
   int64_t cycle = get_current_cycle();
   CpuProtonProfiler::getInstance().record(scope_name, cycle, 1);
@@ -485,12 +491,13 @@ __attribute__((visibility("default"))) void proton_enter_kernel(
 // Parameters:
 //   kernel_name: name of the kernel function
 //   gridX, gridY, gridZ: grid dimensions (must match enter call)
-__attribute__((visibility("default"))) void proton_exit_kernel(
-    const char *kernel_name, int gridX, int gridY, int gridZ) noexcept {
+__attribute__((visibility("default"))) void
+proton_exit_kernel(const char *kernel_name, int gridX, int gridY,
+                   int gridZ) noexcept {
   // Create the same scope name as enter
   char scope_name[256];
-  snprintf(scope_name, sizeof(scope_name), "%s[%d,%d,%d]",
-           kernel_name, gridX, gridY, gridZ);
+  snprintf(scope_name, sizeof(scope_name), "%s[%d,%d,%d]", kernel_name, gridX,
+           gridY, gridZ);
 
   int64_t cycle = get_current_cycle();
   CpuProtonProfiler::getInstance().record(scope_name, cycle, 0);

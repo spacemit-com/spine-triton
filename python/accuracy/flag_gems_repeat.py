@@ -1,15 +1,16 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
 
 def unsqueeze_tuple(t, max_len):
     for _ in range(len(t), max_len):
-        t = t + (1,)
+        t = t + (1, )
     return t
+
 
 if __name__ == "__main__":
     shape = (2, 19, 7)

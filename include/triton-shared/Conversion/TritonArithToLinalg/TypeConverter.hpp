@@ -10,6 +10,8 @@
 
 #include <optional>
 
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -17,20 +19,17 @@
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
+#include "mlir/Transforms/DialectConversion.h"
+#include "triton/Conversion/MLIRTypes.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/ADT/TypeSwitch.h"
-#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "triton/Conversion/MLIRTypes.h"
-#include "mlir/Transforms/DialectConversion.h"
 
 namespace mlir {
 namespace triton {
 
-inline std::optional<Type> convertTritonPointerType(
-    triton::PointerType type) {
+inline std::optional<Type> convertTritonPointerType(triton::PointerType type) {
   auto ctx = type.getContext();
   auto pointeeType = type.getPointeeType();
   if (isa<RankedTensorType>(pointeeType)) {
@@ -66,7 +65,8 @@ TritonLinalgTypeConverter::TritonLinalgTypeConverter() {
 
   // Identity conversions for types that don't need conversion
   addConversion([](Type type) -> std::optional<Type> {
-    // Allow RankedTensorType, scalar types, and other standard types to pass through
+    // Allow RankedTensorType, scalar types, and other standard types to pass
+    // through
     if (isa<RankedTensorType, IntegerType, FloatType, IndexType>(type))
       return type;
     return std::nullopt;
@@ -79,7 +79,6 @@ TritonLinalgTypeConverter::TritonLinalgTypeConverter() {
   };
   addSourceMaterialization(addUnrealizedCast);
   addTargetMaterialization(addUnrealizedCast);
-
 }
 } // namespace triton
 } // namespace mlir

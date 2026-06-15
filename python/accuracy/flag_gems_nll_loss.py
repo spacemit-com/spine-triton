@@ -1,7 +1,7 @@
-import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
@@ -22,13 +22,9 @@ if __name__ == "__main__":
     else:
         weight = None
 
-    ref_out = torch.nn.functional.nll_loss(
-        inp, target, weight, reduction=reduction, ignore_index=ignore_index
-    )
+    ref_out = torch.nn.functional.nll_loss(inp, target, weight, reduction=reduction, ignore_index=ignore_index)
     with flag_gems.use_gems():
-        res_out = torch.nn.functional.nll_loss(
-            inp, target, weight, reduction=reduction, ignore_index=ignore_index
-        )
+        res_out = torch.nn.functional.nll_loss(inp, target, weight, reduction=reduction, ignore_index=ignore_index)
     reduce_dim = 1 if reduction == "none" else target.numel()
 
     torch.testing.assert_close(ref_out, res_out, atol=1e-2, rtol=0)

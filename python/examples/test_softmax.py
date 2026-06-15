@@ -57,6 +57,7 @@ def softmax(x):
     )
     return y
 
+
 def test_softmax(device):
     torch.manual_seed(0)
     x = torch.randn(1823, 781, device=device)
@@ -70,9 +71,9 @@ def bench_softmax(size, provider):
     torch.manual_seed(0)
     x = torch.randn(size, size, device='cpu')
     if provider == 'torch':
-       torch.softmax(x, axis=1)
+        torch.softmax(x, axis=1)
     if provider == 'triton':
-       softmax(x)
+        softmax(x)
 
 
 if __name__ == "__main__":

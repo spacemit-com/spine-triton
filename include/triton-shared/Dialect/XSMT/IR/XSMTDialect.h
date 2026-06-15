@@ -9,7 +9,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "spine_triton/include/triton-shared/Dialect/XSMT/IR/XSMTDialect.h.inc"
-#include "spine_triton/include/triton-shared/Dialect/XSMT/IR/XSMTTypes.h"
 #include "spine_triton/include/triton-shared/Dialect/XSMT/IR/XSMTOps.h"
+#include "spine_triton/include/triton-shared/Dialect/XSMT/IR/XSMTTypes.h"
 
 #endif // TRITON_DIALECT_XSMT_IR_DIALECT_H_

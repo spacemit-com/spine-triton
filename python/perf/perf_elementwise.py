@@ -7,7 +7,6 @@ from triton.backends.spine_triton.driver import CPUDriver
 triton.runtime.driver.set_active(CPUDriver())
 from triton.language.extra.cpu import libdevice as tl_extra_shim
 
-
 # ============================================================================
 # Elementwise Math Function Kernels
 # ============================================================================
@@ -32,24 +31,24 @@ def exp_kernel(
 
         in_block_ptr = tl.make_block_ptr(
             base=in_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
         out_block_ptr = tl.make_block_ptr(
             base=out_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
 
-        x = tl.load(in_block_ptr, boundary_check=(0,))
+        x = tl.load(in_block_ptr, boundary_check=(0, ))
         y = tl_extra_shim.exp(x)
-        tl.store(out_block_ptr, y, boundary_check=(0,))
+        tl.store(out_block_ptr, y, boundary_check=(0, ))
 
 
 @triton.jit
@@ -71,24 +70,24 @@ def cos_kernel(
 
         in_block_ptr = tl.make_block_ptr(
             base=in_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
         out_block_ptr = tl.make_block_ptr(
             base=out_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
 
-        x = tl.load(in_block_ptr, boundary_check=(0,))
+        x = tl.load(in_block_ptr, boundary_check=(0, ))
         y = tl_extra_shim.cos(x)
-        tl.store(out_block_ptr, y, boundary_check=(0,))
+        tl.store(out_block_ptr, y, boundary_check=(0, ))
 
 
 @triton.jit
@@ -110,24 +109,24 @@ def sin_kernel(
 
         in_block_ptr = tl.make_block_ptr(
             base=in_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
         out_block_ptr = tl.make_block_ptr(
             base=out_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
 
-        x = tl.load(in_block_ptr, boundary_check=(0,))
+        x = tl.load(in_block_ptr, boundary_check=(0, ))
         y = tl_extra_shim.sin(x)
-        tl.store(out_block_ptr, y, boundary_check=(0,))
+        tl.store(out_block_ptr, y, boundary_check=(0, ))
 
 
 @triton.jit
@@ -149,24 +148,24 @@ def tanh_kernel(
 
         in_block_ptr = tl.make_block_ptr(
             base=in_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
         out_block_ptr = tl.make_block_ptr(
             base=out_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
 
-        x = tl.load(in_block_ptr, boundary_check=(0,))
+        x = tl.load(in_block_ptr, boundary_check=(0, ))
         y = tl_extra_shim.tanh(x)
-        tl.store(out_block_ptr, y, boundary_check=(0,))
+        tl.store(out_block_ptr, y, boundary_check=(0, ))
 
 
 @triton.jit
@@ -188,24 +187,24 @@ def erf_kernel(
 
         in_block_ptr = tl.make_block_ptr(
             base=in_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
         out_block_ptr = tl.make_block_ptr(
             base=out_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
 
-        x = tl.load(in_block_ptr, boundary_check=(0,))
+        x = tl.load(in_block_ptr, boundary_check=(0, ))
         y = tl_extra_shim.erf(x)
-        tl.store(out_block_ptr, y, boundary_check=(0,))
+        tl.store(out_block_ptr, y, boundary_check=(0, ))
 
 
 # ============================================================================
@@ -232,24 +231,24 @@ def silu_kernel(
 
         in_block_ptr = tl.make_block_ptr(
             base=in_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
         out_block_ptr = tl.make_block_ptr(
             base=out_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
 
-        x = tl.load(in_block_ptr, boundary_check=(0,))
+        x = tl.load(in_block_ptr, boundary_check=(0, ))
         y = tl_extra_shim.silu(x)
-        tl.store(out_block_ptr, y, boundary_check=(0,))
+        tl.store(out_block_ptr, y, boundary_check=(0, ))
 
 
 @triton.jit
@@ -271,27 +270,27 @@ def relu_kernel(
 
         in_block_ptr = tl.make_block_ptr(
             base=in_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
         out_block_ptr = tl.make_block_ptr(
             base=out_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
 
-        x = tl.load(in_block_ptr, boundary_check=(0,))
+        x = tl.load(in_block_ptr, boundary_check=(0, ))
 
         # ReLU = max(0, x)
         y = tl.where(x > 0, x, 0)
 
-        tl.store(out_block_ptr, y, boundary_check=(0,))
+        tl.store(out_block_ptr, y, boundary_check=(0, ))
 
 
 @triton.jit
@@ -313,24 +312,24 @@ def gelu_none_kernel(
 
         in_block_ptr = tl.make_block_ptr(
             base=in_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
         out_block_ptr = tl.make_block_ptr(
             base=out_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
 
-        x = tl.load(in_block_ptr, boundary_check=(0,))
+        x = tl.load(in_block_ptr, boundary_check=(0, ))
         y = tl_extra_shim.gelu_none(x)
-        tl.store(out_block_ptr, y, boundary_check=(0,))
+        tl.store(out_block_ptr, y, boundary_check=(0, ))
 
 
 @triton.jit
@@ -352,31 +351,30 @@ def gelu_tanh_kernel(
 
         in_block_ptr = tl.make_block_ptr(
             base=in_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
         out_block_ptr = tl.make_block_ptr(
             base=out_ptr,
-            shape=(n_elements,),
-            strides=(1,),
-            offsets=(block_start,),
-            block_shape=(BLOCK_SIZE,),
-            order=(0,),
+            shape=(n_elements, ),
+            strides=(1, ),
+            offsets=(block_start, ),
+            block_shape=(BLOCK_SIZE, ),
+            order=(0, ),
         )
 
-        x = tl.load(in_block_ptr, boundary_check=(0,))
+        x = tl.load(in_block_ptr, boundary_check=(0, ))
         y = tl_extra_shim.gelu_tanh(x)
 
-        tl.store(out_block_ptr, y, boundary_check=(0,))
+        tl.store(out_block_ptr, y, boundary_check=(0, ))
 
 
 # ============================================================================
 # Performance Benchmark Functions
 # ============================================================================
-
 
 ELEMENTWISE_TUNING_CONFIGS = [
     triton.Config({"BLOCK_SIZE": 64, "num_ctas": 8}, num_warps=1),
@@ -404,7 +402,7 @@ def _best_of_repeats(run_once, num_warmup=10, num_iterations=100, num_repeats=3)
 
 def _launch_elementwise_kernel(kernel, x, output, n_elements, config):
     meta = config.kwargs
-    kernel[(meta["num_ctas"],)](
+    kernel[(meta["num_ctas"], )](
         x,
         output,
         n_elements,
@@ -483,7 +481,7 @@ def validate_kernel(kernel, torch_func, x, num_ctas=16, atol=1e-4, rtol=1e-4):
     n_elements = x.numel()
     BLOCK_SIZE = 32
 
-    kernel[(num_ctas,)](x, output_triton, n_elements, BLOCK_SIZE=BLOCK_SIZE, num_ctas=num_ctas)
+    kernel[(num_ctas, )](x, output_triton, n_elements, BLOCK_SIZE=BLOCK_SIZE, num_ctas=num_ctas)
     output_torch = torch_func(x)
 
     is_close = torch.allclose(output_triton, output_torch, atol=atol, rtol=rtol)
