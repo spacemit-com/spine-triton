@@ -465,7 +465,12 @@ class RPCLauncher(object):
             if ":" in host:
                 host, port_str = host.rsplit(":", 1)
                 port = int(port_str)
-            cls._client = SpineTritonRPCClient(host, port)
+            # Under QEMU a single kernel execute can take many seconds (large
+            # matmuls run ~10s); the default socket timeout must comfortably
+            # exceed that or every heavy op spuriously "times out". Configurable
+            # via SPINE_TRITON_RPC_TIMEOUT (seconds).
+            timeout = int(os.environ.get("SPINE_TRITON_RPC_TIMEOUT", "600"))
+            cls._client = SpineTritonRPCClient(host, port, timeout=timeout)
             cls._client.connect()
         return cls._client
 
@@ -506,6 +511,7 @@ class RPCLauncher(object):
 
         # Prepare arguments: transfer tensor data to remote device
         # Filter out constexpr and value-specialized constant args
+        from .rpc_client import ARG_FLAG_OUTPUT
         rpc_args = []  # list of (type_tag, value)
         remote_addrs = []
         remote_tensor_map = {}
@@ -526,12 +532,19 @@ class RPCLauncher(object):
                 # not rearrange data with .contiguous().
                 storage = tensor.untyped_storage()
                 storage_bytes = bytes(storage)
-                storage_offset_bytes = tensor.storage_offset() * tensor.element_size()
+                # Pass the exact arg data_ptr (may be an interior offset for
+                # StridedBuffer slices or negative-stride flip inputs). The RPC
+                # server uses range-based lookup and builds per-arg descriptors
+                # with desc.data = buf_base + byte_offset, so the kernel always
+                # sees the correct element pointer while the full allocation is
+                # uploaded / read back.
                 addr = self.client.alloc_memory(len(storage_bytes))
                 self.client.write_memory(addr, storage_bytes)
-                rpc_args.append(('ptr', addr + storage_offset_bytes))
+                arg_ptr = addr + (arg.data_ptr() - storage.data_ptr())
+                # Mark as output so the server writes the buffer back.
+                rpc_args.append(('ptr', arg_ptr, ARG_FLAG_OUTPUT))
                 remote_addrs.append((addr, arg, len(storage_bytes)))
-                remote_tensor_map[arg.data_ptr()] = addr + storage_offset_bytes
+                remote_tensor_map[arg.data_ptr()] = arg_ptr
             elif sig_type.startswith("*"):
                 # Pointer type from signature
                 try:
@@ -561,8 +574,6 @@ class RPCLauncher(object):
             data = self.client.read_memory(addr, size)
             real_tensor = tensor.unwrap() if hasattr(tensor, 'unwrap') else tensor
             real_tensor_cpu = real_tensor.cpu()
-            # Write raw bytes directly to the underlying storage to handle
-            # tensors with overlapping memory (e.g. from broadcast_to)
             storage = real_tensor_cpu.untyped_storage()
             ctypes.memmove(storage.data_ptr(), data, len(data))
             self.client.free_memory(addr)
