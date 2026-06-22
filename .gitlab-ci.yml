@@ -173,6 +173,7 @@ test-spine-triton-integration:
   variables:
     CROSS_TOOLCHAIN_PATH: $DEFAULT_RISCV_ROOT_PATH
     QEMU_PATH: /home/share/nfs_share/ci-node-compiler-env/jdsk-qemu-static-0.0.9_s2/qemu-riscv64-static
+    QEMU_SYSROOT: /home/share/nfs_share/ci-node-compiler-env/spacemit-toolchain-linux-glibc-x86_64-v1.2.4/sysroot
     RPC_PORT: "9999"
   script:
     - |
@@ -220,8 +221,8 @@ test-spine-triton-integration:
       done
 
       # 启动 QEMU RPC server
-      /home/share/nfs_share/ci-node-compiler-env/jdsk-qemu-static-0.0.9_s2/qemu-riscv64-static \
-        -L /home/share/nfs_share/ci-node-compiler-env/spacemit-toolchain-linux-glibc-x86_64-v1.2.4/sysroot \
+      "$QEMU_PATH" \
+        -L "$QEMU_SYSROOT" \
         -cpu max,xsmtame=true,ame_tlen=1024,ame_trlen=32,vlen=1024 \
         "$RPC_DIR/spine-rpc-server" "$RPC_PORT" > rpc_server.log 2>&1 &
       echo $! > .rpc_server.pid
@@ -244,7 +245,7 @@ test-spine-triton-integration:
 
       # spine-FlagGems 算子测试
       rm -rf "$CI_PROJECT_DIR/flaggems"
-      git clone --depth=1 -b spacemit-ops-v2.2 https://github.com/spacemit-com/spine-FlagGems.git "$CI_PROJECT_DIR/flaggems"
+      git clone --depth=1 -b spacemit-ops-v2.2 https://gitlab.dc.com:8443/ai/AICompiler/spine-flaggems.git "$CI_PROJECT_DIR/flaggems"
       export PYTHONPATH=$CI_PROJECT_DIR/flaggems/src:$PYTHONPATH
       mkdir -p "$CI_PROJECT_DIR/flaggems/logs"
       cd "$CI_PROJECT_DIR/flaggems"
