@@ -5,6 +5,7 @@ include "mlir/IR/OpBase.td"
 include "mlir/IR/CommonTypeConstraints.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
+include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "triton/Dialect/Triton/IR/TritonTypes.td"
 include "triton-shared/Dialect/TLE/IR/TLEDialect.td"
 
@@ -71,6 +72,22 @@ def TLE_InsertTileOp : TLE_Op<"insert_tile", [Pure,
   }];
 
   let hasVerifier = 1;
+}
+
+// ============================================================================
+// DSLRegionOp: wraps a spine_raw raw-kernel body as a TTIR-level op.
+//   Operands: inputs (ptr/scalar Triton IR values, e.g. pid*stride_A)
+//   Region:   body contains raw fn ops (linalg/vector dialect)
+//   Attribute: fn_name — raw fn symbol for debugging / lowering
+// ============================================================================
+def TLE_DSLRegionOp : TLE_Op<"dsl_region",
+    [MemoryEffects<[MemWrite<DefaultResource>]>]> {
+  let summary = "Raw kernel region — spine_raw.call() target";
+  let arguments = (ins Variadic<AnyType>:$inputs,
+                       StrAttr:$fn_name,
+                       StrAttr:$raw_linalg);
+  let results  = (outs);
+  let hasVerifier = 0;
 }
 
 #endif

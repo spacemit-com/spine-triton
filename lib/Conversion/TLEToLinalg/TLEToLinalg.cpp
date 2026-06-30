@@ -14,9 +14,14 @@
 #include "triton-shared/Dialect/TLE/IR/TLEOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/Parser/Parser.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #define DEBUG_TYPE "tle-to-linalg"
@@ -179,10 +184,117 @@ struct InsertTileOpPattern : public OpRewritePattern<mlir::tle::InsertTileOp> {
 } // namespace
 
 // ============================================================================
-// Pattern registration
+// DSLRegionOpPattern: tle.dsl_region → spine_ext.raw_region
+//
+// Parses the raw_linalg attr text into a single-block region, clones the
+// raw fn body into it (replacing func.return with spine_ext.return), and
+// creates a generic (unregistered) "spine_ext.raw_region" op that spine-opt
+// knows how to process via SpineRawRegionInlinePass.
 // ============================================================================
+struct DSLRegionOpPattern : public OpRewritePattern<tle::DSLRegionOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(tle::DSLRegionOp op,
+                                PatternRewriter &rewriter) const override {
+    // 1. Parse the raw linalg text. The payload may contain custom dialect ops
+    // Allow the parser to accept unregistered ops in generic form. We rely on
+    // the command-line --allow-unregistered-dialect (set in compiler.py, which
+    // enables it at context-creation time — safe in multi-threaded passes).
+    // Calling allowUnregisteredDialects(true) inside a pass triggers an assert
+    // (CLAUDE.md rule 40a), so we MUST NOT do that here.
+    std::string rawLinalg = op.getRawLinalg().str();
+    ParserConfig config(op.getContext(), /*verifyAfterParse=*/false);
+    OwningOpRef<ModuleOp> rawMod =
+        parseSourceString<ModuleOp>(rawLinalg, config);
+    if (!rawMod)
+      return op.emitError("tle.dsl_region: failed to parse raw_linalg text");
+
+    // Find the first non-empty func.func in the parsed module
+    func::FuncOp rawFunc;
+    rawMod->walk([&](func::FuncOp f) {
+      if (!f.empty()) { rawFunc = f; return WalkResult::interrupt(); }
+      return WalkResult::advance();
+    });
+    if (!rawFunc)
+      return op.emitError("tle.dsl_region: no func.func found in raw_linalg");
+
+    // 2. Build spine_ext.raw_region as a generic (unregistered) op.
+    //    The ptr->memref pipeline wraps tle.dsl_region's !tt.ptr operands in a
+    //    cast chain (ptr.to_ptr <- memref.reinterpret_cast <- %arg : memref<*>),
+    //    because dsl_region is not part of those passes' conversion target.
+    //    Trace each operand back through that chain to the value whose type
+    //    matches the raw fn's block-arg type (the original memref<*>), so the
+    //    raw_region operand types line up with the region block args.
+    auto argTypes = rawFunc.getArgumentTypes();
+    OperationState state(op.getLoc(), "spine_ext.raw_region");
+    SmallVector<Value> operands;
+    unsigned idx = 0;
+    for (Value in : op.getInputs()) {
+      Type want = idx < argTypes.size() ? argTypes[idx] : Type();
+      // Walk def chain through the cast ops the ptr pipeline inserts.
+      for (int hop = 0; hop < 8 && in.getType() != want; ++hop) {
+        Operation *def = in.getDefiningOp();
+        if (!def)
+          break;
+        if (auto c = dyn_cast<UnrealizedConversionCastOp>(def)) {
+          if (c.getInputs().size() != 1)
+            break;
+          in = c.getInputs().front();
+        } else if (def->getName().getStringRef() == "ptr.to_ptr" &&
+                   def->getNumOperands() == 1) {
+          in = def->getOperand(0);
+        } else if (auto rc = dyn_cast<memref::ReinterpretCastOp>(def)) {
+          in = rc.getSource();
+        } else if (auto mc = dyn_cast<memref::CastOp>(def)) {
+          in = mc.getSource();
+        } else {
+          break;
+        }
+      }
+      operands.push_back(in);
+      ++idx;
+    }
+    state.addOperands(operands);
+    state.addAttribute("fn_name", op.getFnNameAttr());
+
+    // 3. Build region with an empty block first; create the op so the region
+    //    is attached to a container BEFORE cloning into it (cloning calls
+    //    Region::getContext(), which asserts on a detached region).
+    Region *body = state.addRegion();
+    Block *block = new Block();
+    body->push_back(block);
+    for (Type paramTy : rawFunc.getArgumentTypes())
+      block->addArgument(paramTy, op.getLoc());
+
+    Operation *newOp = rewriter.create(state);
+
+    // 4. Clone raw fn body into the now-attached region block, replacing
+    //    func.return → spine_ext.return.
+    Block *attached = &newOp->getRegion(0).front();
+    IRMapping mapping;
+    for (auto [fArg, bArg] :
+         llvm::zip(rawFunc.getArguments(), attached->getArguments()))
+      mapping.map(fArg, bArg);
+
+    OpBuilder bodyBuilder(attached, attached->end());
+    for (Operation &inner : rawFunc.getBody().front()) {
+      if (isa<func::ReturnOp>(inner)) {
+        OperationState retState(inner.getLoc(), "spine_ext.return");
+        bodyBuilder.create(retState);
+      } else {
+        bodyBuilder.clone(inner, mapping);
+      }
+    }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+
 void mlir::triton::populateTLEToLinalgConversionPatterns(
     RewritePatternSet &patterns) {
   patterns.add<ExtractTileOpPattern>(patterns.getContext());
   patterns.add<InsertTileOpPattern>(patterns.getContext());
+  patterns.add<DSLRegionOpPattern>(patterns.getContext());
 }

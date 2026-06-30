@@ -9,6 +9,7 @@
 #include "triton-shared/Dialect/TLE/IR/TLEDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -33,7 +34,7 @@ class TLEToLinalgPass : public triton::impl::TLEToLinalgBase<TLEToLinalgPass> {
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<arith::ArithDialect, tensor::TensorDialect,
-                    mlir::tle::TLEDialect>();
+                    func::FuncDialect, mlir::tle::TLEDialect>();
   }
 
   void runOnOperation() override {

@@ -703,6 +703,46 @@ LogicalResult PtrAnalysis::visitOperandAdd(arith::AddIOp addOp, PtrState &state,
   return success();
 }
 
+// SubI(a, b): negate b's state then delegate to addState.
+// This handles the common pattern in im2col:  ih = oh*stride - pad + kh*dil
+// where pad is a scalar constant that was previously an unsupported arith.subi.
+LogicalResult PtrAnalysis::visitOperandSub(arith::SubIOp subOp, PtrState &state,
+                                            const Location loc,
+                                            OpBuilder &builder) {
+  PtrState lhsState;
+  if (visitOperand(subOp.getLhs(), lhsState, loc, builder).failed())
+    return failure();
+
+  PtrState rhsState;
+  if (visitOperand(subOp.getRhs(), rhsState, loc, builder).failed())
+    return failure();
+
+  // Negate the RHS state so we can reuse addState: SubI(a,b) == AddI(a,-b).
+  PtrState negRhs;
+  if (rhsState.scalar) {
+    auto zeroVal = arith::ConstantIndexOp::create(builder, loc, 0).getResult();
+    negRhs.scalar =
+        arith::SubIOp::create(builder, loc, zeroVal, rhsState.scalar)
+            .getResult();
+  }
+  for (size_t i = 0; i < rhsState.offsets.size(); i++) {
+    auto zeroOFR = OpFoldResult(builder.getIndexAttr(0));
+    negRhs.offsets.push_back(
+        subOFRs(zeroOFR, rhsState.offsets[i], loc, builder));
+    negRhs.strides.push_back(
+        subOFRs(zeroOFR, rhsState.strides[i], loc, builder));
+    negRhs.sizes.push_back(rhsState.sizes[i]);
+    negRhs.shape.push_back(rhsState.shape.size() > i ? rhsState.shape[i]
+                                                      : zeroOFR);
+  }
+
+  if (failed(state.addState(lhsState, negRhs, isAnalysisingUnstructured,
+                            subOp, builder)))
+    return failure();
+  state.origiOffsets = state.offsets;
+  return success();
+}
+
 LogicalResult PtrAnalysis::visitOperandMul(arith::MulIOp mulOp, PtrState &state,
                                            const Location loc,
                                            OpBuilder &builder) {
@@ -1370,6 +1410,8 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
 
   if (auto op = operand.getDefiningOp<arith::AddIOp>()) {
     return visitOperandAdd(op, state, loc, builder);
+  } else if (auto op = operand.getDefiningOp<arith::SubIOp>()) {
+    return visitOperandSub(op, state, loc, builder);
   } else if (auto op = operand.getDefiningOp<arith::MulIOp>()) {
     return visitOperandMul(op, state, loc, builder);
   } else if (auto op = operand.getDefiningOp<triton::MakeRangeOp>()) {

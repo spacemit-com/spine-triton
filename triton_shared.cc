@@ -294,7 +294,19 @@ void init_triton_tle_ir(py::module &&m) {
             return op.getResult();
           },
           py::arg("input"), py::arg("tile"), py::arg("index"),
-          "Create insert_tile operation");
+          "Create insert_tile operation")
+      .def(
+          "create_tle_dsl_region",
+          [](TritonOpBuilder &self, const std::string &fn_name,
+             const std::string &raw_linalg,
+             std::vector<Value> &inputs) {
+            auto fnAttr = self.getBuilder().getStringAttr(fn_name);
+            auto linalgAttr = self.getBuilder().getStringAttr(raw_linalg);
+            SmallVector<Value> operands(inputs.begin(), inputs.end());
+            self.create<tle::DSLRegionOp>(operands, fnAttr, linalgAttr);
+          },
+          py::arg("fn_name"), py::arg("raw_linalg"), py::arg("inputs"),
+          "Create tle.dsl_region — spine_raw.call() TTIR op");
 }
 
 void init_triton_spine_triton(py::module &&m) {

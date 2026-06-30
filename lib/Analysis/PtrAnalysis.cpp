@@ -364,6 +364,45 @@ void PtrAnalysis::visitOperandAdd(
   state.addState(lhsState, rhsState, loc, rewriter);
 }
 
+// SubI(a, b) is treated as AddI(a, -b): visit both operands, then subtract
+// offsets/scalars using subOFRs so PtrAnalysis can rewrite pointers whose
+// address expressions contain subtraction (e.g. ih = oh*s - pad + kh*d).
+void PtrAnalysis::visitOperandSub(
+    arith::SubIOp subOp, PtrState &state, const Location loc,
+    ConversionPatternRewriter &rewriter,
+    const llvm::SmallDenseMap<Value, PtrState> &knownPtrs) {
+  PtrState lhsState;
+  visitOperand(subOp.getLhs(), lhsState, loc, rewriter, knownPtrs);
+
+  PtrState rhsState;
+  visitOperand(subOp.getRhs(), rhsState, loc, rewriter, knownPtrs);
+
+  assert(lhsState.getRank() == rhsState.getRank());
+  assert(!(lhsState.source && rhsState.source));
+  state.source = lhsState.source ? lhsState.source : rhsState.source;
+
+  if (lhsState.scalar && rhsState.scalar) {
+    state.scalar = arith::SubIOp::create(rewriter, loc,
+                                         lhsState.scalar, rhsState.scalar)
+                       .getResult();
+  } else if (lhsState.getRank() == 0) {
+    // One side is a scalar constant zero; just take the non-zero scalar.
+    state.scalar = lhsState.scalar ? lhsState.scalar : rhsState.scalar;
+  }
+
+  for (uint64_t i = 0; i < lhsState.sizes.size(); i++) {
+    state.offsets.push_back(
+        subOFRs(lhsState.offsets[i], rhsState.offsets[i], loc, rewriter));
+    state.strides.push_back(
+        subOFRs(lhsState.strides[i], rhsState.strides[i], loc, rewriter));
+    state.sizes.push_back(lhsState.sizes[i]);
+    assert(!lhsState.hasModulo() || !rhsState.hasModulo());
+    state.modulos.push_back(lhsState.modulos[i].has_value()
+                                ? lhsState.modulos[i]
+                                : rhsState.modulos[i]);
+  }
+}
+
 void PtrAnalysis::visitOperandMul(
     arith::MulIOp mulOp, PtrState &state, const Location loc,
     ConversionPatternRewriter &rewriter,
@@ -679,6 +718,8 @@ void PtrAnalysis::visitOperand(
 
   if (auto op = operand.getDefiningOp<arith::AddIOp>()) {
     visitOperandAdd(op, state, loc, rewriter, knownPtrs);
+  } else if (auto op = operand.getDefiningOp<arith::SubIOp>()) {
+    visitOperandSub(op, state, loc, rewriter, knownPtrs);
   } else if (auto op = operand.getDefiningOp<arith::MulIOp>()) {
     visitOperandMul(op, state, loc, rewriter, knownPtrs);
   } else if (auto op = operand.getDefiningOp<triton::MakeRangeOp>()) {
