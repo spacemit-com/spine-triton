@@ -69,6 +69,14 @@ def _vec_elem(mlir_type: str) -> str:
     raise ValueError(f"Cannot extract elem type from {mlir_type!r}")
 
 
+def _memref_elem(mlir_type: str) -> str:
+    """Element dtype of a plain ranked memref, e.g. memref<1x?x4x64xf16> -> f16."""
+    m = re.findall(r'x(bf16|f16|f32|f64|i8|i16|i32|i64)', mlir_type)
+    if m:
+        return m[-1]
+    raise ValueError(f"Cannot extract elem type from {mlir_type!r}")
+
+
 _SPINE_RAW_BUILTIN_NAMES = {"splat", "load_vec", "store_vec", "fma", "extf",
                             "reduce_add", "matmul", "load_tile", "pad_vec",
                             "extract_elem", "batch_macc", "view_2d", "load_2d",
@@ -1253,13 +1261,13 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
 
         if not ptr_type.startswith("memref<*x"):
             # Ranked memref (e.g. local packed_B): index every dim directly,
-            # transfer_read pulls the innermost VL-length slice.
+            # transfer_read pulls the innermost VL-length slice. in_bounds has
+            # one entry per *vector* dim (rank 1 here), not per index element.
             idx_ssas = [self._gen_expr(e)[0] for e in idx_elts]
-            in_bounds = ", ".join("true" for _ in idx_elts)
             result = self._alloc_ssa(hint or "vld")
             self._emit(
                 f"{result} = vector.transfer_read {ptr_ssa}[{', '.join(idx_ssas)}], {pad}"
-                f" {{in_bounds = [{in_bounds}]}} : {ptr_type}, {vec_type}"
+                f" {{in_bounds = [true]}} : {ptr_type}, {vec_type}"
             )
             return result, vec_type
 
@@ -1327,15 +1335,112 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         store_ssa, store_type = self._ranked_cast(ptr_ssa, ptr_type)
         self._emit(f"memref.store {val_ssa}, {store_ssa}[{idx_ssa}] : {store_type}")
 
+    def _try_const_int(self, node) -> int | None:
+        """Fold a shape/index AST node to a compile-time int if possible.
+
+        Handles int literals, constexpr ints (nvl from vconfig), and +/-/*//
+        of those. Returns None when any leaf is a runtime value (e.g. K)."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, int):
+            return node.value
+        if isinstance(node, ast.Name) and node.id in self._constexpr_ints:
+            return self._constexpr_ints[node.id]
+        if isinstance(node, ast.BinOp):
+            l = self._try_const_int(node.left)
+            r = self._try_const_int(node.right)
+            if l is None or r is None:
+                return None
+            if isinstance(node.op, ast.Add):
+                return l + r
+            if isinstance(node.op, ast.Sub):
+                return l - r
+            if isinstance(node.op, ast.Mult):
+                return l * r
+            if isinstance(node.op, ast.FloorDiv):
+                return l // r
+        return None
+
     def _gen_alloc(self, node: ast.Call, hint: str) -> tuple[str, str]:
         # alloc(shape_tuple, dtype) → memref.alloc (写法3 packed_B scratch).
-        # Static int dims stay literal; expression dims become '?' with a
-        # dynamic size operand.
-        raise NotImplementedError(
-            "spine_raw.alloc is implemented in the 写法3 stage")
+        # Static int dims stay literal; expression dims (e.g. K // nvl with K a
+        # runtime arg) become '?' with a dynamic size operand.
+        kwargs = {kw.arg: kw.value for kw in node.keywords}
+        shape_node = node.args[0]
+        assert isinstance(shape_node, ast.Tuple), "alloc shape must be a tuple"
+        dt_node = node.args[1] if len(node.args) > 1 else kwargs.get("dtype")
+        dtype = _resolve_dtype(dt_node, "f16")
+
+        dims: list[str] = []
+        dyn_ssas: list[str] = []
+        for e in shape_node.elts:
+            cval = self._try_const_int(e)
+            if cval is not None:
+                dims.append(str(cval))
+            else:
+                ssa, _ = self._gen_expr(e)
+                dims.append("?")
+                dyn_ssas.append(ssa)
+        mtype = f"memref<{'x'.join(dims)}x{dtype}>"
+        result = self._alloc_ssa(hint or "packed")
+        operands = ", ".join(dyn_ssas)
+        self._emit(
+            f"{result} = memref.alloc({operands}) {{alignment = 64 : i64}} : {mtype}")
+        return result, mtype
 
     def _gen_vpack(self, node: ast.Call):
-        # vpack(src, src_idx, dst, dst_shape) → pack a B row-block into packed_B.
-        raise NotImplementedError(
-            "spine_raw.vpack is implemented in the 写法3 stage")
+        # vpack(src, (row0, col0), dst, dst_shape, stride):
+        #   pack src's ROWS-row block starting at row0 into dst laid out as
+        #   (1, K//nvl, ROWS, nvl), so dst[0, kb, r, :] = src[row0+r, kb*nvl:+nvl].
+        #   src is an external row-major pointer with row stride = `stride`
+        #   (== K here); col0 is assumed 0 (full rows). dst is a ranked memref
+        #   from tle.alloc. The kb loop runs over the runtime column extent.
+        src_node, src_idx, dst_node, dst_shape, stride_node = node.args[:5]
+        assert isinstance(src_idx, ast.Tuple) and len(src_idx.elts) == 2, \
+            "vpack src index must be a (row, col) tuple"
+        assert isinstance(dst_shape, ast.Tuple) and len(dst_shape.elts) == 4, \
+            "vpack dst_shape must be 4-D (1, K//nvl, ROWS, nvl)"
+
+        vl = self._require_vl()
+        rows = self._try_const_int(dst_shape.elts[2])
+        assert rows is not None, \
+            "vpack ROWS (dst_shape[2]) must be a compile-time constant"
+
+        dst_ssa, dst_type = self._gen_expr(dst_node)
+        dtype = _memref_elem(dst_type)
+        vec_type = f"vector<{vl}x{dtype}>"
+
+        src_ssa, src_type = self._gen_expr(src_node)
+        ranked_ssa, ranked_type = self._ranked_cast(src_ssa, src_type)
+        row0_ssa, _ = self._gen_expr(src_idx.elts[0])
+        stride_ssa, _ = self._gen_expr(stride_node)
+
+        pad = self._const_float(0.0, dtype)
+        c0 = self._const_int(0)
+        cvl = self._const_int(vl)
+
+        loop_ssa = self._alloc_ssa("pk")
+        self._emit(f"scf.for {loop_ssa} = {c0} to {stride_ssa} step {cvl} {{")
+        self._indent += 2
+        kb_ssa = self._alloc_ssa("kb")
+        self._emit(f"{kb_ssa} = arith.divui {loop_ssa}, {cvl} : index")
+        for r in range(rows):
+            if r == 0:
+                nir = row0_ssa
+            else:
+                cr = self._const_int(r)
+                nir = self._alloc_ssa("nir")
+                self._emit(f"{nir} = arith.addi {row0_ssa}, {cr} : index")
+            roff = self._alloc_ssa("roff")
+            self._emit(f"{roff} = arith.muli {nir}, {stride_ssa} : index")
+            off = self._alloc_ssa("off")
+            self._emit(f"{off} = arith.addi {roff}, {loop_ssa} : index")
+            vec = self._alloc_ssa("pkv")
+            self._emit(
+                f"{vec} = vector.transfer_read {ranked_ssa}[{off}], {pad}"
+                f" {{in_bounds = [true]}} : {ranked_type}, {vec_type}")
+            cr_idx = self._const_int(r)
+            self._emit(
+                f"vector.transfer_write {vec}, {dst_ssa}[{c0}, {kb_ssa}, {cr_idx}, {c0}]"
+                f" {{in_bounds = [true]}} : {vec_type}, {dst_type}")
+        self._indent -= 2
+        self._emit("}")
 
