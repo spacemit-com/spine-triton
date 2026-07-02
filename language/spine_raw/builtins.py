@@ -26,8 +26,12 @@ class _SpineRawBuiltin:
 
 
 class _SpineRawRange:
-    """Marker for spine_raw.range(n) — translated to scf.for upper bound."""
-    def __call__(self, n):
+    """Marker for spine_raw.range(...) — translated to scf.for bounds.
+
+    Accepts range(stop) or range(start, stop, step) like the Python builtin;
+    only ever evaluated by SpineMLIRCodeGenerator (raises if called directly).
+    """
+    def __call__(self, *args):
         raise NotImplementedError(
             "spine_raw.range() must only be used in a @spine_raw function body"
         )
@@ -61,4 +65,35 @@ proton_mark = _SpineRawBuiltin("proton_mark")  # proton_mark(name, is_start) →
 splat_2d = _SpineRawBuiltin("splat_2d")  # splat_2d(val, rows, cols, dtype) → vector<rows x cols>
 store_2d = _SpineRawBuiltin("store_2d")  # store_2d(ptr, rows, cols, vec) → 2D transfer_write
 store_2d_at = _SpineRawBuiltin("store_2d_at")  # store_2d_at(ptr, elem_off, rows, cols, vec)
-range    = _SpineRawRange()              # range(n) → scf.for upper bound
+range    = _SpineRawRange()              # range(n) / range(start, stop, step) → scf.for bounds
+
+# ---------------------------------------------------------------------------
+# svector-level markers (feishu 3.3 mv 示例). Fixed-VL eDSL that maps document
+# names to already-verified vector/arith/memref primitives.
+#   vconfig  : record active VL/SEW, return fixed VL constant (constexpr int)
+#   vzero    : vector.broadcast 0.0 -> vector<VL x dtype>
+#   vload    : transfer_read a VL-length vector (1D idx, or 2D idx + row stride)
+#   vmacc    : widening multiply-accumulate  acc += extf(x) * extf(y)
+#   vreduce_sum : vector.reduction <add> -> scalar
+#   vstore   : store a scalar to memref[idx]
+#   alloc    : memref.alloc N-D scratch (写法3 packed_B)
+#   vpack    : pack a B row-block into the packed_B scratch layout (写法3)
+# ---------------------------------------------------------------------------
+vconfig     = _SpineRawBuiltin("vconfig")      # vconfig(avl, sew_bytes) → fixed VL
+vzero       = _SpineRawBuiltin("vzero")        # vzero(dtype) → vector<VL x dtype> zeros
+vload       = _SpineRawBuiltin("vload")        # vload(ptr, idx_tuple[, stride]) → vector<VL x dtype>
+vmacc       = _SpineRawBuiltin("vmacc")        # vmacc(acc, x, y) → widening fma accumulate
+vreduce_sum = _SpineRawBuiltin("vreduce_sum")  # vreduce_sum(vec) → scalar
+vstore      = _SpineRawBuiltin("vstore")       # vstore(ptr, idx_tuple, scalar) → memref.store
+alloc       = _SpineRawBuiltin("alloc")        # alloc(shape_tuple, dtype) → memref.alloc
+vpack       = _SpineRawBuiltin("vpack")        # vpack(src, src_idx, dst, dst_shape) → pack rows
+
+# ---------------------------------------------------------------------------
+# Document-facing sugar: dtype names and the `mem` / `index` / `raw_kernel`
+# helpers so a kernel can be written close to the feishu 3.3 surface syntax.
+# dtype constants are plain MLIR element-type strings.
+# ---------------------------------------------------------------------------
+f16 = "f16"
+f32 = "f32"
+bf16 = "bf16"
+

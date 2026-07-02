@@ -74,7 +74,18 @@ _SPINE_RAW_BUILTIN_NAMES = {"splat", "load_vec", "store_vec", "fma", "extf",
                             "extract_elem", "batch_macc", "view_2d", "load_2d",
                             "load_2d_at", "load_2d_t", "pack_2d_t",
                             "alloc_tcm_2d", "pack_2d_t_into", "free_tcm",
-                            "splat_2d", "store_2d", "store_2d_at", "range", "proton_mark"}
+                            "splat_2d", "store_2d", "store_2d_at", "range", "proton_mark",
+                            "vconfig", "vzero", "vload", "vmacc", "vreduce_sum",
+                            "vstore", "alloc", "vpack"}
+
+
+def _vl_from_sew(sew_bytes: int) -> int:
+    """Fixed VL (element count) for a K3 scalable register at the given SEW.
+
+    K3 vlen = 1024 bits = 128 bytes, so VL = 128 / sew_bytes:
+      sew=2 (f16) -> 64, sew=1 (i8) -> 128, sew=4 (f32) -> 32.
+    """
+    return 128 // sew_bytes
 
 
 def _is_spine_raw_attr(node, attr: str, aliases: set | None = None) -> bool:
@@ -87,6 +98,22 @@ def _is_spine_raw_attr(node, attr: str, aliases: set | None = None) -> bool:
         return node.value.id in aliases
     # fallback: accept any name when aliases not provided
     return True
+
+
+_DTYPE_NAMES = {"f16", "f32", "bf16", "f64", "i8", "i16", "i32"}
+
+
+def _resolve_dtype(node, default: str = "f16") -> str:
+    """Resolve a dtype arg written as a string literal ("f16") or a bare name
+    (f16 / f32 / bf16, the module-level dtype constants) to its MLIR string."""
+    if node is None:
+        return default
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name) and node.id in _DTYPE_NAMES:
+        return node.id
+    # last resort: literal_eval (raises for anything unexpected)
+    return ast.literal_eval(node)
 
 
 
@@ -117,6 +144,11 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         self._const_floats: dict[tuple, str] = {}
         self._all_iter_arg_names: set[str] = set()
         self._loop_iter_args: set[str] = set()
+        # svector eDSL: compile-time VL tracking (feishu 3.3). vconfig-assigned
+        # names are constexpr ints, never SSA/iter_args; _active_vl is the VL
+        # used by vzero/vload/vmacc (fixed-length, no dynamic vsetvl this round).
+        self._constexpr_ints: dict[str, int] = {}
+        self._active_vl: int | None = None
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -269,6 +301,14 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         assert len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
         target = node.targets[0].id
 
+        # vconfig(avl, sew) → compile-time VL constant, tracked separately from
+        # SSA env so it never becomes an scf.for iter_arg. Records the active VL
+        # used by subsequent vzero/vload/vmacc calls.
+        if isinstance(node.value, ast.Call) and \
+                _is_spine_raw_attr(node.value.func, "vconfig", self._aliases):
+            self._gen_vconfig_assign(target, node.value)
+            return
+
         in_loop = target in self._loop_iter_args
         is_future_iter = target in self._all_iter_arg_names
 
@@ -287,12 +327,18 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         loop_var = node.target.id
 
         assert _is_spine_raw_attr(node.iter.func, "range", self._aliases), \
-            "for loop iter must be spine_raw.range(N)"
-        assert len(node.iter.args) == 1, "spine_raw.range takes one argument"
-        ub_ssa, _ = self._gen_expr(node.iter.args[0])
-
-        c0 = self._const_int(0)
-        c1 = self._const_int(1)
+            "for loop iter must be spine_raw.range(...)"
+        rargs = node.iter.args
+        assert len(rargs) in (1, 3), \
+            "spine_raw.range takes range(stop) or range(start, stop, step)"
+        if len(rargs) == 1:
+            lb_ssa = self._const_int(0)
+            ub_ssa, _ = self._gen_expr(rargs[0])
+            step_ssa = self._const_int(1)
+        else:
+            lb_ssa, _ = self._gen_expr(rargs[0])
+            ub_ssa, _ = self._gen_expr(rargs[1])
+            step_ssa, _ = self._gen_expr(rargs[2])
 
         outer_vars = set(self._env.keys())
         reassigned = _find_reassigned(node.body, outer_vars)
@@ -314,11 +360,11 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             ia_part = ", ".join(f"%{v}_in = {init_ssa}" for v, init_ssa, _ in ia_data)
             types_part = ", ".join(typ for _, _, typ in ia_data)
             for_line = (
-                f"{res_part} = scf.for {loop_ssa} = {c0} to {ub_ssa} step {c1}"
+                f"{res_part} = scf.for {loop_ssa} = {lb_ssa} to {ub_ssa} step {step_ssa}"
                 f" iter_args({ia_part}) -> ({types_part}) {{"
             )
         else:
-            for_line = f"scf.for {loop_ssa} = {c0} to {ub_ssa} step {c1} {{"
+            for_line = f"scf.for {loop_ssa} = {lb_ssa} to {ub_ssa} step {step_ssa} {{"
 
         self._emit(for_line)
 
@@ -369,6 +415,10 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             self._gen_free_tcm(node)
         elif _is_spine_raw_attr(node.func, "proton_mark", self._aliases):
             self._gen_proton_mark(node)
+        elif _is_spine_raw_attr(node.func, "vstore", self._aliases):
+            self._gen_vstore(node)
+        elif _is_spine_raw_attr(node.func, "vpack", self._aliases):
+            self._gen_vpack(node)
         else:
             raise NotImplementedError(
                 f"Unsupported call statement: {ast.dump(node.func)}"
@@ -380,6 +430,9 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
 
     def _gen_expr(self, node, hint: str = "") -> tuple[str, str]:
         if isinstance(node, ast.Name):
+            # constexpr int (e.g. nvl from vconfig) materializes as an index const
+            if node.id in self._constexpr_ints:
+                return self._const_int(self._constexpr_ints[node.id]), "index"
             return self._get(node.id)
         if isinstance(node, ast.Constant):
             return self._gen_literal(node)
@@ -404,7 +457,8 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         result = self._alloc_ssa(hint or "t")
 
         if ltype == "index" and rtype == "index":
-            opname = {ast.Add: "addi", ast.Mult: "muli", ast.Sub: "subi"}.get(op)
+            opname = {ast.Add: "addi", ast.Mult: "muli", ast.Sub: "subi",
+                      ast.FloorDiv: "divui"}.get(op)
             if opname is None:
                 raise NotImplementedError(f"BinOp {op.__name__} not supported for index")
             self._emit(f"{result} = arith.{opname} {lssa}, {rssa} : index")
@@ -456,6 +510,16 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             return self._gen_alloc_tcm_2d(node, hint)
         if _is_spine_raw_attr(node.func, "splat_2d", self._aliases):
             return self._gen_splat_2d(node, hint)
+        if _is_spine_raw_attr(node.func, "vzero", self._aliases):
+            return self._gen_vzero(node, hint)
+        if _is_spine_raw_attr(node.func, "vload", self._aliases):
+            return self._gen_vload(node, hint)
+        if _is_spine_raw_attr(node.func, "vmacc", self._aliases):
+            return self._gen_vmacc(node, hint)
+        if _is_spine_raw_attr(node.func, "vreduce_sum", self._aliases):
+            return self._gen_vreduce_sum(node, hint)
+        if _is_spine_raw_attr(node.func, "alloc", self._aliases):
+            return self._gen_alloc(node, hint)
         raise NotImplementedError(f"Unsupported call: {ast.dump(node.func)}")
 
     # ------------------------------------------------------------------
@@ -1140,3 +1204,138 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             f"memref.store {val_ssa}, {store_ptr_ssa}[{idx_ssa}]"
             f" : {store_ptr_type}"
         )
+
+    # ------------------------------------------------------------------
+    # svector-level ops (feishu 3.3 mv 示例). Fixed VL, no dynamic vsetvl.
+    # ------------------------------------------------------------------
+    def _gen_vconfig_assign(self, target: str, node: ast.Call):
+        # vconfig(avl, sew_bytes) → fixed compile-time VL. avl (dynamic tail
+        # length) is ignored this round: we run full VL tiles only.
+        sew = ast.literal_eval(node.args[1]) if len(node.args) > 1 else 2
+        vl = _vl_from_sew(int(sew))
+        self._constexpr_ints[target] = vl
+        self._active_vl = vl
+
+    def _require_vl(self) -> int:
+        if self._active_vl is None:
+            raise ValueError(
+                "spine_raw svector op used before tle.vconfig(...) set the VL")
+        return self._active_vl
+
+    def _gen_vzero(self, node: ast.Call, hint: str) -> tuple[str, str]:
+        # vzero(dtype) → vector<VL x dtype> of zeros
+        dtype = _resolve_dtype(node.args[0] if node.args else None, "f32")
+        vl = self._require_vl()
+        vec_type = f"vector<{vl}x{dtype}>"
+        zero = self._const_float(0.0, dtype)
+        result = self._alloc_ssa(hint or "vzero")
+        self._emit(f"{result} = vector.broadcast {zero} : {dtype} to {vec_type}")
+        return result, vec_type
+
+    def _gen_vload(self, node: ast.Call, hint: str) -> tuple[str, str]:
+        # vload(ptr, idx_tuple[, stride], dtype=?) → vector<VL x dtype>
+        #   1D external idx (ki,)      : transfer_read ptr[ki]
+        #   2D external idx (ni, ki)   : flat offset = ni*stride + ki (row-major
+        #                                B is N×K, stride = K passed explicitly)
+        #   ND ranked idx (packed_B)   : transfer_read reads the innermost dim
+        kwargs = {kw.arg: kw.value for kw in node.keywords}
+        ptr_node = node.args[0]
+        idx_node = node.args[1]
+        assert isinstance(idx_node, ast.Tuple), "vload index must be a tuple"
+        idx_elts = idx_node.elts
+        stride_node = node.args[2] if len(node.args) > 2 else kwargs.get("stride")
+        dtype = _resolve_dtype(kwargs.get("dtype"), "f16")
+        vl = self._require_vl()
+        vec_type = f"vector<{vl}x{dtype}>"
+        pad = self._const_float(0.0, dtype)
+
+        ptr_ssa, ptr_type = self._gen_expr(ptr_node)
+
+        if not ptr_type.startswith("memref<*x"):
+            # Ranked memref (e.g. local packed_B): index every dim directly,
+            # transfer_read pulls the innermost VL-length slice.
+            idx_ssas = [self._gen_expr(e)[0] for e in idx_elts]
+            in_bounds = ", ".join("true" for _ in idx_elts)
+            result = self._alloc_ssa(hint or "vld")
+            self._emit(
+                f"{result} = vector.transfer_read {ptr_ssa}[{', '.join(idx_ssas)}], {pad}"
+                f" {{in_bounds = [{in_bounds}]}} : {ptr_type}, {vec_type}"
+            )
+            return result, vec_type
+
+        # External unranked pointer: cast to ranked 1D, compute a flat offset.
+        ranked_ssa, ranked_type = self._ranked_cast(ptr_ssa, ptr_type)
+        if len(idx_elts) == 1:
+            off_ssa, _ = self._gen_expr(idx_elts[0])
+        elif len(idx_elts) == 2:
+            assert stride_node is not None, \
+                "vload of a 2D index into an external pointer needs a row stride"
+            r_ssa, _ = self._gen_expr(idx_elts[0])
+            s_ssa, _ = self._gen_expr(stride_node)
+            c_ssa, _ = self._gen_expr(idx_elts[1])
+            mul = self._alloc_ssa("roff")
+            self._emit(f"{mul} = arith.muli {r_ssa}, {s_ssa} : index")
+            off_ssa = self._alloc_ssa("off")
+            self._emit(f"{off_ssa} = arith.addi {mul}, {c_ssa} : index")
+        else:
+            raise NotImplementedError(
+                f"vload with {len(idx_elts)}-D index into external pointer unsupported")
+        result = self._alloc_ssa(hint or "vld")
+        self._emit(
+            f"{result} = vector.transfer_read {ranked_ssa}[{off_ssa}], {pad}"
+            f" {{in_bounds = [true]}} : {ranked_type}, {vec_type}"
+        )
+        return result, vec_type
+
+    def _gen_vmacc(self, node: ast.Call, hint: str) -> tuple[str, str]:
+        # vmacc(acc, x, y) → acc + extf(x) * extf(y)  (widening f16 → f32 fma)
+        acc_ssa, acc_type = self._gen_expr(node.args[0])
+        x_ssa, x_type = self._gen_expr(node.args[1])
+        y_ssa, y_type = self._gen_expr(node.args[2])
+        acc_elem = _vec_elem(acc_type)
+        n = _vec_n(acc_type)
+        wide_type = f"vector<{n}x{acc_elem}>"
+        # Widen operands to the accumulator element type if needed.
+        if x_type != wide_type:
+            xw = self._alloc_ssa("xw")
+            self._emit(f"{xw} = arith.extf {x_ssa} : {x_type} to {wide_type}")
+            x_ssa = xw
+        if y_type != wide_type:
+            yw = self._alloc_ssa("yw")
+            self._emit(f"{yw} = arith.extf {y_ssa} : {y_type} to {wide_type}")
+            y_ssa = yw
+        result = self._alloc_ssa(hint or "vmacc")
+        self._emit(f"{result} = math.fma {x_ssa}, {y_ssa}, {acc_ssa} : {acc_type}")
+        return result, acc_type
+
+    def _gen_vreduce_sum(self, node: ast.Call, hint: str) -> tuple[str, str]:
+        # vreduce_sum(vec) → scalar horizontal add
+        v_ssa, v_type = self._gen_expr(node.args[0])
+        elem = _vec_elem(v_type)
+        result = self._alloc_ssa(hint or "vrsum")
+        self._emit(f"{result} = vector.reduction <add>, {v_ssa} : {v_type} into {elem}")
+        return result, elem
+
+    def _gen_vstore(self, node: ast.Call):
+        # vstore(ptr, idx_tuple, scalar) → memref.store  (1D scalar output)
+        ptr_ssa, ptr_type = self._gen_expr(node.args[0])
+        idx_node = node.args[1]
+        assert isinstance(idx_node, ast.Tuple), "vstore index must be a tuple"
+        assert len(idx_node.elts) == 1, "vstore currently supports a 1D scalar index"
+        idx_ssa, _ = self._gen_expr(idx_node.elts[0])
+        val_ssa, _ = self._gen_expr(node.args[2])
+        store_ssa, store_type = self._ranked_cast(ptr_ssa, ptr_type)
+        self._emit(f"memref.store {val_ssa}, {store_ssa}[{idx_ssa}] : {store_type}")
+
+    def _gen_alloc(self, node: ast.Call, hint: str) -> tuple[str, str]:
+        # alloc(shape_tuple, dtype) → memref.alloc (写法3 packed_B scratch).
+        # Static int dims stay literal; expression dims become '?' with a
+        # dynamic size operand.
+        raise NotImplementedError(
+            "spine_raw.alloc is implemented in the 写法3 stage")
+
+    def _gen_vpack(self, node: ast.Call):
+        # vpack(src, src_idx, dst, dst_shape) → pack a B row-block into packed_B.
+        raise NotImplementedError(
+            "spine_raw.vpack is implemented in the 写法3 stage")
+

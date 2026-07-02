@@ -10,7 +10,7 @@ Public API:
                   lowers it to spine_ext.raw_region)
 """
 
-from .types import In, InOut
+from .types import In, InOut, mem, index
 from .runtime import spine_raw, SpineLinalgJITFunction
 from .call_registry import call
 from .builtins import splat, load_vec, store_vec, store_scalar, fma, extf, reduce_add, matmul
@@ -18,13 +18,22 @@ from .builtins import load_tile, pad_vec, extract_elem
 from .builtins import batch_macc, view_2d, load_2d, splat_2d, store_2d
 from .builtins import load_2d_at, store_2d_at, load_2d_t, pack_2d_t
 from .builtins import alloc_tcm_2d, pack_2d_t_into, free_tcm, proton_mark
+from .builtins import vconfig, vzero, vload, vmacc, vreduce_sum, vstore, alloc, vpack
+from .builtins import f16, f32, bf16
 from .builtins import range as range  # noqa: A001 (shadows builtin intentionally)
+
+# raw_kernel: bare decorator alias for @spine_raw(name="linalg") to match the
+# feishu 3.3 surface (`@tle.raw_kernel`).
+raw_kernel = spine_raw(name="linalg")
 
 __all__ = [
     "spine_raw",
+    "raw_kernel",
     "SpineLinalgJITFunction",
     "In",
     "InOut",
+    "mem",
+    "index",
     "call",
     "splat",
     "load_vec",
@@ -50,5 +59,16 @@ __all__ = [
     "splat_2d",
     "store_2d",
     "store_2d_at",
+    "vconfig",
+    "vzero",
+    "vload",
+    "vmacc",
+    "vreduce_sum",
+    "vstore",
+    "alloc",
+    "vpack",
+    "f16",
+    "f32",
+    "bf16",
     "range",
 ]
