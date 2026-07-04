@@ -20,7 +20,6 @@ external pointer needs the matrix row stride, so B loads pass it explicitly as
 """
 import torch
 import triton
-import triton.language as tl
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
@@ -101,38 +100,38 @@ def _mv_sv_host_style3(B, A, C, K, N):
 
 
 # ---------------------------------------------------------------------------
-# 写法4 — 文档 3.3 矩阵单元写法 (tle.vmadot)
+# 写法4 — 文档 3.3 第三段的矩阵单元写法 (tle.vmadot)
 #
-# kernel 用文档的 tle.vmadot 矩阵单元算子 surface(acc 在前, 直接产出宽结果,
-# 不需 vreduce_sum)。spine-triton 编译器把 vmadot lower 到已支持的
-# vector_ext.batch_macc(vfwmacc, 走 spe_pack)——不是未定稿的 vector_ext.matmul,
-# 这正是「编译器支持时可以用 batch_macc」的含义(_gen_vmadot 见 codegen.py)。
+# 结构对齐文档: 签名 (B, A, C, K, N)、循环外 tle.alloc 建 packed 缓冲、
+# 内层 `for ni in range(0,N,·)` + `for ki in range(0,K,·)`、tle.vpack 打包 B、
+# tle.vload 取块、tle.vmadot(acc, vb, va) 矩阵单元累加(acc 在前, 直接产宽
+# 结果, 不需 vreduce_sum)、tle.vstore 写回。
 #
-# batch_macc 契约要求 lhs=2D strided memref、rhs/acc=2D vector, 故 vmadot 的
-# lhs 取 A(向量)的 [1,32] memref 视图、rhs 取 B 转置 pack 进 TCM buf 的
-# [32,64] 向量、acc 为 [1,64] 宽累加器。语义 C[N]=B[N,K]@A[K]:output 行按
-# NB=64 分块、收缩维 K 按 32 分块。约束 N%64==0 且 K%32==0。单 TCM buffer 规避
-# 并发超订(记忆 k3_tcm_mv_blocker)。
+# spine-triton 编译器把 tle.vmadot lower 到已支持的 vector_ext.batch_macc
+# (vfwmacc, 走 spe_pack)——不是未定稿的 vector_ext.matmul,这正是「编译器
+# 支持时可以用 batch_macc」的含义(_gen_vmadot 见 codegen.py)。
+#
+# 与文档字面的必要差异(来自 batch_macc 契约, 不可约): batch_macc 要求
+# n%64==0, 故 output 行块 NB=64(文档写 8)、单 acc(文档 4 个 8 宽 acc);
+# 且 lhs 必须是 2D strided memref, 故 A(向量)作 [1,32] memref 视图、B 转置
+# pack 成 [32,64] 向量作 rhs。约束 N%64==0 且 K%32==0。
 # ---------------------------------------------------------------------------
 @tle.raw_kernel
-def mv_block_style4(
-    A: tle.mem(f16), B: tle.mem(f16), col: tle.index, K: tle.index, nk: tle.index, C: tle.mem(f32, out=True)):
-    buf0 = tle.alloc_tcm_2d(32, 64, "f16")
-    acc0 = tle.splat_2d(0.0, 1, 64, "f32")  # 1×64 宽累加器 (batch_macc 契约: acc 为 2D vector)
-    for kb in tle.range(nk):
-        koff = kb * 32
-        lhs = tle.view_2d(A, 1, 32, "f16", koff)  # A 向量 → lhs[1,32] memref 视图
-        tle.pack_2d_t_into(buf0, B, col, 32, 64, K, "f16", koff)  # B[col:+64,koff:+32]^T → buf
-        r0 = tle.load_2d(buf0, 32, 64, "f16")  # rhs[32,64] vector
-        acc0 = tle.vmadot(acc0, lhs, r0)  # 矩阵单元 → vector_ext.batch_macc
-    tle.store_2d_at(C, col, 1, 64, acc0)
+def mv_block_style4(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True), K: tle.index, N: tle.index):
+    packed_B = tle.alloc_tcm_2d(32, 64, "f16")
+    for ni in tle.range(0, N, 64):
+        acc0 = tle.splat_2d(0.0, 1, 64, "f32")
+        for ki in tle.range(0, K, 32):
+            va = tle.view_2d(A, 1, 32, "f16", ki)
+            tle.pack_2d_t_into(packed_B, B, ni, 32, 64, K, "f16", ki)
+            vb0 = tle.load_2d(packed_B, 32, 64, "f16")
+            acc0 = tle.vmadot(acc0, va, vb0)
+        tle.store_2d_at(C, ni, 1, 64, acc0)
 
 
-@triton.jit(do_not_specialize=["K", "NK"])
-def _mv_sv_host_style4(B, A, C, K, N, NB: tl.constexpr):
-    pid = tl.program_id(0)
-    # B: matrix[N,K], A: vector[K]. batch_macc kernel takes (vec, matrix, col, K, nk, out).
-    _sr_call(mv_block_style4, outputs=[], inputs=[A, B, pid * NB, K, K // 32, C])
+@triton.jit(do_not_specialize=["K", "N"])
+def _mv_sv_host_style4(B, A, C, K, N):
+    _sr_call(mv_block_style4, outputs=[], inputs=[B, A, C, K, N])
 
 
 def _run(host, N, K):
@@ -160,20 +159,18 @@ def test_raw_mv_svector_style3(N, K):
 
 
 def _run_style4(N, K):
-    # batch_macc (vfwmacc) path: output rows tiled by NB=64, K-contraction by 32.
-    _NB = 64
+    # 写法4 用 (1,) grid + 与 style2/3 同签名, N-loop 在 kernel 内。
     B = torch.randn(N, K, dtype=torch.float16)  # matrix
     A = torch.randn(K, dtype=torch.float16)  # vector
     C = torch.empty(N, dtype=torch.float32)
-    grid = (N // _NB, )
-    _mv_sv_host_style4[grid](B.contiguous(), A.contiguous(), C, K, N, NB=_NB)
+    _mv_sv_host_style4[(1, )](B.contiguous(), A.contiguous(), C, K, N)
     ref = torch.mv(B.float(), A.float())
     max_diff = (C - ref).abs().max().item()
     assert torch.allclose(C, ref, rtol=1e-2, atol=1e-2), \
         f"N={N} K={K} max_diff={max_diff:.4e}"
 
 
-# 写法4 (vector_ext.batch_macc / vfwmacc): N%64==0 且 K%32==0 (满 tile)。
+# 写法4 (tle.vmadot → vector_ext.batch_macc): N%64==0 且 K%32==0 (满 tile)。
 _SHAPES_MADOT = [(64, 32), (64, 64), (128, 32), (256, 64), (128, 256)]
 
 
