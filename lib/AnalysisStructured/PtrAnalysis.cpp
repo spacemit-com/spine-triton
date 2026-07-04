@@ -707,8 +707,8 @@ LogicalResult PtrAnalysis::visitOperandAdd(arith::AddIOp addOp, PtrState &state,
 // This handles the common pattern in im2col:  ih = oh*stride - pad + kh*dil
 // where pad is a scalar constant that was previously an unsupported arith.subi.
 LogicalResult PtrAnalysis::visitOperandSub(arith::SubIOp subOp, PtrState &state,
-                                            const Location loc,
-                                            OpBuilder &builder) {
+                                           const Location loc,
+                                           OpBuilder &builder) {
   PtrState lhsState;
   if (visitOperand(subOp.getLhs(), lhsState, loc, builder).failed())
     return failure();
@@ -733,11 +733,11 @@ LogicalResult PtrAnalysis::visitOperandSub(arith::SubIOp subOp, PtrState &state,
         subOFRs(zeroOFR, rhsState.strides[i], loc, builder));
     negRhs.sizes.push_back(rhsState.sizes[i]);
     negRhs.shape.push_back(rhsState.shape.size() > i ? rhsState.shape[i]
-                                                      : zeroOFR);
+                                                     : zeroOFR);
   }
 
-  if (failed(state.addState(lhsState, negRhs, isAnalysisingUnstructured,
-                            subOp, builder)))
+  if (failed(state.addState(lhsState, negRhs, isAnalysisingUnstructured, subOp,
+                            builder)))
     return failure();
   state.origiOffsets = state.offsets;
   return success();

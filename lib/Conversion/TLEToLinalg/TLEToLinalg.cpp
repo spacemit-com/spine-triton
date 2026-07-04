@@ -212,7 +212,10 @@ struct DSLRegionOpPattern : public OpRewritePattern<tle::DSLRegionOp> {
     // Find the first non-empty func.func in the parsed module
     func::FuncOp rawFunc;
     rawMod->walk([&](func::FuncOp f) {
-      if (!f.empty()) { rawFunc = f; return WalkResult::interrupt(); }
+      if (!f.empty()) {
+        rawFunc = f;
+        return WalkResult::interrupt();
+      }
       return WalkResult::advance();
     });
     if (!rawFunc)
@@ -220,11 +223,11 @@ struct DSLRegionOpPattern : public OpRewritePattern<tle::DSLRegionOp> {
 
     // 2. Build spine_ext.raw_region as a generic (unregistered) op.
     //    The ptr->memref pipeline wraps tle.dsl_region's !tt.ptr operands in a
-    //    cast chain (ptr.to_ptr <- memref.reinterpret_cast <- %arg : memref<*>),
-    //    because dsl_region is not part of those passes' conversion target.
-    //    Trace each operand back through that chain to the value whose type
-    //    matches the raw fn's block-arg type (the original memref<*>), so the
-    //    raw_region operand types line up with the region block args.
+    //    cast chain (ptr.to_ptr <- memref.reinterpret_cast <- %arg :
+    //    memref<*>), because dsl_region is not part of those passes' conversion
+    //    target. Trace each operand back through that chain to the value whose
+    //    type matches the raw fn's block-arg type (the original memref<*>), so
+    //    the raw_region operand types line up with the region block args.
     auto argTypes = rawFunc.getArgumentTypes();
     OperationState state(op.getLoc(), "spine_ext.raw_region");
     SmallVector<Value> operands;
@@ -290,7 +293,6 @@ struct DSLRegionOpPattern : public OpRewritePattern<tle::DSLRegionOp> {
     return success();
   }
 };
-
 
 void mlir::triton::populateTLEToLinalgConversionPatterns(
     RewritePatternSet &patterns) {

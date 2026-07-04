@@ -298,8 +298,7 @@ void init_triton_tle_ir(py::module &&m) {
       .def(
           "create_tle_dsl_region",
           [](TritonOpBuilder &self, const std::string &fn_name,
-             const std::string &raw_linalg,
-             std::vector<Value> &inputs) {
+             const std::string &raw_linalg, std::vector<Value> &inputs) {
             auto fnAttr = self.getBuilder().getStringAttr(fn_name);
             auto linalgAttr = self.getBuilder().getStringAttr(raw_linalg);
             SmallVector<Value> operands(inputs.begin(), inputs.end());
