@@ -22,6 +22,4 @@ ignore = ["E501", "E701", "E731", "E741"]
 # In["memref<*xf16, #ptr.generic_space>"] / In["index"]. ruff parses these as
 # forward-ref annotations and flags F722 (syntax) / F821 (undefined name);
 # they are intentional DSL surface, not real errors.
-"python/tests/test_raw_mv.py" = ["F722", "F821"]
 "python/tests/test_raw_mv_svector.py" = ["F722", "F821"]
-"python/tests/test_mv_proton_scopes.py" = ["F722", "F821"]

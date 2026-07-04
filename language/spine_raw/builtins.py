@@ -38,7 +38,7 @@ class _SpineRawRange:
         return "spine_raw.range"
 
 
-# Public built-in objects (batch_macc / vfwmacc mv path — see test_raw_mv.py)
+# Public built-in objects (batch_macc / vfwmacc mv path)
 batch_macc = _SpineRawBuiltin("batch_macc")  # batch_macc(lhs_memref, rhs_vec, acc_vec) → vector_ext.batch_macc
 view_2d = _SpineRawBuiltin("view_2d")  # view_2d(ptr, rows, cols, dtype) → 2D strided memref view
 load_2d = _SpineRawBuiltin("load_2d")  # load_2d(ptr, rows, cols, dtype) → vector<rows x cols>
