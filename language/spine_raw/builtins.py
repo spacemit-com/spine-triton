@@ -62,17 +62,15 @@ range = _SpineRawRange()  # range(n) / range(start, stop, step) → scf.for boun
 #   vstore   : store a scalar to memref[idx]
 #   alloc    : memref.alloc N-D scratch (写法3 packed_B)
 #   vpack    : pack a B row-block into the packed_B scratch layout (写法3)
-#   vmadot   : matrix-unit dot (写法4) -> vector_ext.matmul, 直接产出宽结果
 # ---------------------------------------------------------------------------
 vconfig = _SpineRawBuiltin("vconfig")  # vconfig(avl, sew_bytes) → fixed VL
 vzero = _SpineRawBuiltin("vzero")  # vzero(dtype) → vector<VL x dtype> zeros
 vload = _SpineRawBuiltin("vload")  # vload(ptr, idx_tuple[, stride]) → vector<VL x dtype>
 vmacc = _SpineRawBuiltin("vmacc")  # vmacc(acc, x, y) → widening fma accumulate
 vreduce_sum = _SpineRawBuiltin("vreduce_sum")  # vreduce_sum(vec) → scalar
-vstore = _SpineRawBuiltin("vstore")  # vstore(ptr, idx_tuple, scalar | vec) → memref.store / transfer_write
+vstore = _SpineRawBuiltin("vstore")  # vstore(ptr, idx_tuple, scalar) → memref.store
 alloc = _SpineRawBuiltin("alloc")  # alloc(shape_tuple, dtype) → memref.alloc
 vpack = _SpineRawBuiltin("vpack")  # vpack(src, src_idx, dst, dst_shape) → pack rows
-vmadot = _SpineRawBuiltin("vmadot")  # vmadot(acc, x, y) → "vector_ext.matmul" (矩阵单元, 写法4)
 
 # ---------------------------------------------------------------------------
 # Document-facing sugar: dtype names and the `mem` / `index` / `raw_kernel`
