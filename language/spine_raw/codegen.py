@@ -49,12 +49,6 @@ def _find_reassigned(body: list, outer_vars: set) -> set:
     return found
 
 
-def _eval_list_literal(node) -> list:
-    if isinstance(node, ast.List):
-        return [ast.literal_eval(e) for e in node.elts]
-    return [ast.literal_eval(node)]
-
-
 def _vec_n(mlir_type: str) -> int:
     m = re.match(r'vector<(\d+)x', mlir_type)
     if m:
@@ -77,12 +71,9 @@ def _memref_elem(mlir_type: str) -> str:
     raise ValueError(f"Cannot extract elem type from {mlir_type!r}")
 
 
-_SPINE_RAW_BUILTIN_NAMES = {"splat", "load_vec", "store_vec", "fma", "extf",
-                            "reduce_add", "matmul", "load_tile", "pad_vec",
-                            "extract_elem", "batch_macc", "view_2d", "load_2d",
-                            "load_2d_at", "load_2d_t", "pack_2d_t",
-                            "alloc_tcm_2d", "pack_2d_t_into", "free_tcm",
-                            "splat_2d", "store_2d", "store_2d_at", "range", "proton_mark",
+_SPINE_RAW_BUILTIN_NAMES = {"batch_macc", "view_2d", "load_2d",
+                            "alloc_tcm_2d", "pack_2d_t_into",
+                            "splat_2d", "store_2d_at", "range", "proton_mark",
                             "vconfig", "vzero", "vload", "vmacc", "vreduce_sum",
                             "vstore", "alloc", "vpack"}
 
@@ -409,18 +400,10 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             self._bind(v, result_ssas[v], typ)
 
     def _gen_call_stmt(self, node: ast.Call):
-        if _is_spine_raw_attr(node.func, "store_vec", self._aliases):
-            self._gen_store_vec(node)
-        elif _is_spine_raw_attr(node.func, "store_scalar", self._aliases):
-            self._gen_store_scalar(node)
-        elif _is_spine_raw_attr(node.func, "store_2d", self._aliases):
-            self._gen_store_2d(node)
-        elif _is_spine_raw_attr(node.func, "store_2d_at", self._aliases):
+        if _is_spine_raw_attr(node.func, "store_2d_at", self._aliases):
             self._gen_store_2d_at(node)
         elif _is_spine_raw_attr(node.func, "pack_2d_t_into", self._aliases):
             self._gen_pack_2d_t_into(node)
-        elif _is_spine_raw_attr(node.func, "free_tcm", self._aliases):
-            self._gen_free_tcm(node)
         elif _is_spine_raw_attr(node.func, "proton_mark", self._aliases):
             self._gen_proton_mark(node)
         elif _is_spine_raw_attr(node.func, "vstore", self._aliases):
@@ -484,36 +467,12 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         )
 
     def _gen_call_expr(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        if _is_spine_raw_attr(node.func, "splat", self._aliases):
-            return self._gen_splat(node, hint)
-        if _is_spine_raw_attr(node.func, "load_vec", self._aliases):
-            return self._gen_load_vec(node, hint)
-        if _is_spine_raw_attr(node.func, "extf", self._aliases):
-            return self._gen_extf(node, hint)
-        if _is_spine_raw_attr(node.func, "fma", self._aliases):
-            return self._gen_fma(node, hint)
-        if _is_spine_raw_attr(node.func, "reduce_add", self._aliases):
-            return self._gen_reduce_add(node, hint)
-        if _is_spine_raw_attr(node.func, "matmul", self._aliases):
-            return self._gen_matmul(node, hint)
-        if _is_spine_raw_attr(node.func, "load_tile", self._aliases):
-            return self._gen_load_tile(node, hint)
-        if _is_spine_raw_attr(node.func, "pad_vec", self._aliases):
-            return self._gen_pad_vec(node, hint)
-        if _is_spine_raw_attr(node.func, "extract_elem", self._aliases):
-            return self._gen_extract_elem(node, hint)
         if _is_spine_raw_attr(node.func, "batch_macc", self._aliases):
             return self._gen_batch_macc(node, hint)
         if _is_spine_raw_attr(node.func, "view_2d", self._aliases):
             return self._gen_view_2d(node, hint)
         if _is_spine_raw_attr(node.func, "load_2d", self._aliases):
             return self._gen_load_2d(node, hint)
-        if _is_spine_raw_attr(node.func, "load_2d_at", self._aliases):
-            return self._gen_load_2d_at(node, hint)
-        if _is_spine_raw_attr(node.func, "load_2d_t", self._aliases):
-            return self._gen_load_2d_t(node, hint)
-        if _is_spine_raw_attr(node.func, "pack_2d_t", self._aliases):
-            return self._gen_pack_2d_t(node, hint)
         if _is_spine_raw_attr(node.func, "alloc_tcm_2d", self._aliases):
             return self._gen_alloc_tcm_2d(node, hint)
         if _is_spine_raw_attr(node.func, "splat_2d", self._aliases):
@@ -534,118 +493,6 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
     # spine_raw builtin implementations
     # ------------------------------------------------------------------
 
-    def _gen_splat(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        kwargs = {kw.arg: kw.value for kw in node.keywords}
-        val_node = node.args[0] if node.args else kwargs["val"]
-        shape_node = kwargs["shape"]
-        shape = _eval_list_literal(shape_node)
-        assert len(shape) == 1, "spine_raw.splat only supports 1D shape"
-        N = shape[0]
-
-        val_ssa, _ = self._gen_expr(val_node)
-        vec_type = f"vector<{N}xf32>"
-        result = self._alloc_ssa(hint or "splat")
-        # Use vector.broadcast instead of vector.splat for compatibility
-        self._emit(f"{result} = vector.broadcast {val_ssa} : f32 to {vec_type}")
-        return result, vec_type
-
-    def _gen_load_vec(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        args = node.args
-        kwargs = {kw.arg: kw.value for kw in node.keywords}
-        ptr_node = args[0]
-        idx_node = args[1]
-        N = ast.literal_eval(args[2]) if len(args) > 2 else ast.literal_eval(kwargs["N"])
-        dtype_node = kwargs.get("dtype") or (args[3] if len(args) > 3 else None)
-        dtype = ast.literal_eval(dtype_node) if dtype_node else "f32"
-        # in_bounds=False allows out-of-bounds reads (returns pad value); default True
-        in_bounds_node = kwargs.get("in_bounds")
-        in_bounds = ast.literal_eval(in_bounds_node) if in_bounds_node else True
-        in_bounds_str = "true" if in_bounds else "false"
-
-        ptr_ssa, ptr_type = self._gen_expr(ptr_node)
-        idx_ssa, _ = self._gen_expr(idx_node)
-
-        # vector.load requires ranked memref; if ptr_type is unranked (memref<*x...>),
-        # cast to memref<?x...> first
-        load_ptr_ssa = ptr_ssa
-        load_ptr_type = ptr_type
-        if ptr_type.startswith("memref<*x"):
-            # Extract element type and address space from memref<*xTYPE, #space>
-            # e.g., "memref<*xf32, #ptr.generic_space>" -> "memref<?xf32, #ptr.generic_space>"
-            ranked_type = ptr_type.replace("memref<*x", "memref<?x", 1)
-            cast_ssa = self._alloc_ssa("ranked")
-            self._emit(f"{cast_ssa} = memref.cast {ptr_ssa} : {ptr_type} to {ranked_type}")
-            load_ptr_ssa = cast_ssa
-            load_ptr_type = ranked_type
-
-        vec_type = f"vector<{N}x{dtype}>"
-        result = self._alloc_ssa(hint or "vec")
-        pad_ssa = self._const_float(0.0, dtype)
-        self._emit(
-            f"{result} = vector.transfer_read {load_ptr_ssa}[{idx_ssa}], {pad_ssa}"
-            f" {{in_bounds = [{in_bounds_str}]}} : {load_ptr_type}, {vec_type}"
-        )
-        return result, vec_type
-
-    def _gen_extf(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        v_node = node.args[0]
-        dst_dtype = ast.literal_eval(node.args[1]) if len(node.args) > 1 else "f32"
-        v_ssa, v_type = self._gen_expr(v_node)
-        N = _vec_n(v_type)
-        dst_type = f"vector<{N}x{dst_dtype}>"
-        result = self._alloc_ssa(hint or "extf")
-        self._emit(f"{result} = arith.extf {v_ssa} : {v_type} to {dst_type}")
-        return result, dst_type
-
-    def _gen_fma(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        a_ssa, a_type = self._gen_expr(node.args[0])
-        b_ssa, _      = self._gen_expr(node.args[1])
-        c_ssa, c_type = self._gen_expr(node.args[2])
-        assert a_type == c_type, f"fma: a and acc types must match: {a_type} vs {c_type}"
-        result = self._alloc_ssa(hint or "fma")
-        self._emit(f"{result} = math.fma {a_ssa}, {b_ssa}, {c_ssa} : {a_type}")
-        return result, a_type
-
-    def _gen_reduce_add(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        v_ssa, v_type = self._gen_expr(node.args[0])
-        # vector<NxT> -> T via horizontal add reduction
-        elem = v_type[v_type.index("x") + 1 : v_type.rindex(">")] if "x" in v_type else "f32"
-        result = self._alloc_ssa(hint or "rsum")
-        self._emit(f"{result} = vector.reduction <add>, {v_ssa} : {v_type} into {elem}")
-        return result, elem
-
-    def _gen_matmul(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        # matmul(lhs, rhs, acc, m, n, k) -> vector_ext.matmul
-        #   out[m,n] = acc[m,n] + sum_k lhs[m,k] * rhs[n,k]
-        #   lhs : vector<(m*k)x f16>  (row-major m x k)
-        #   rhs : vector<(n*k)x f16>  (row-major n x k)
-        #   acc/out : vector<(m*n)x f32>
-        kwargs = {kw.arg: kw.value for kw in node.keywords}
-
-        def _pick(i, name):
-            if i < len(node.args):
-                return node.args[i]
-            return kwargs[name]
-
-        lhs_ssa, lhs_type = self._gen_expr(_pick(0, "lhs"))
-        rhs_ssa, _        = self._gen_expr(_pick(1, "rhs"))
-        acc_ssa, acc_type = self._gen_expr(_pick(2, "acc"))
-        m = ast.literal_eval(_pick(3, "m"))
-        n = ast.literal_eval(_pick(4, "n"))
-        k = ast.literal_eval(_pick(5, "k"))
-
-        rhs_type = f"vector<{n * k}x{_vec_elem(lhs_type)}>"
-        result = self._alloc_ssa(hint or "mm")
-        # Use generic op form so the text parses even when vector_ext dialect
-        # is not registered in the consuming tool (spine-triton-opt). The
-        # ConvertToScalableVector pass in spine-mlir-k3 will then lower it.
-        self._emit(
-            f'{result} = "vector_ext.matmul"({lhs_ssa}, {rhs_ssa}, {acc_ssa})'
-            f' <{{m = {m} : i64, n = {n} : i64, k = {k} : i64}}>'
-            f' : ({lhs_type}, {rhs_type}, {acc_type}) -> {acc_type}'
-        )
-        return result, acc_type
-
     def _ranked_cast(self, ptr_ssa: str, ptr_type: str) -> tuple[str, str]:
         """Cast memref<*xT> to memref<?xT>; return (ssa, type)."""
         if ptr_type.startswith("memref<*x"):
@@ -654,102 +501,6 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             self._emit(f"{cast_ssa} = memref.cast {ptr_ssa} : {ptr_type} to {ranked_type}")
             return cast_ssa, ranked_type
         return ptr_ssa, ptr_type
-
-    def _gen_load_tile(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        # load_tile(ptr, row_base, col_base, row_stride, M, K, dtype)
-        #   Loads an M×K tile from row-major memory using a 2D transfer_read
-        #   then shape_casts to vector<M*K x dtype>.
-        #   Avoids sub-vscale vector sizes by reading the whole tile at once.
-        kwargs = {kw.arg: kw.value for kw in node.keywords}
-
-        def _pick(i, name):
-            return node.args[i] if i < len(node.args) else kwargs[name]
-
-        ptr_node = _pick(0, "ptr")
-        row_base_node = _pick(1, "row_base")
-        col_base_node = _pick(2, "col_base")
-        row_stride = ast.literal_eval(_pick(3, "row_stride"))
-        M = ast.literal_eval(_pick(4, "M"))
-        K = ast.literal_eval(_pick(5, "K"))
-        dt_node = node.args[6] if len(node.args) > 6 else kwargs.get("dtype")
-        dtype = ast.literal_eval(dt_node) if dt_node else "f16"
-
-        ptr_ssa, ptr_type = self._gen_expr(ptr_node)
-        rb_ssa, _ = self._gen_expr(row_base_node)
-        cb_ssa, _ = self._gen_expr(col_base_node)
-
-        # Reinterpret 1D memref as 2D with explicit strides
-        ranked1d_type = ptr_type.replace("memref<*x", "memref<?x", 1)
-        ranked2d_type = f"memref<?x{row_stride}x{dtype}, strided<[{row_stride}, 1], offset: ?>>"
-        addr_space = ""
-        if "#ptr.generic_space" in ptr_type:
-            ranked2d_type = f"memref<?x{row_stride}x{dtype}, strided<[{row_stride}, 1], offset: ?>, #ptr.generic_space>"
-
-        c0 = self._const_int(0)
-        ranked1d = self._alloc_ssa("ranked")
-        self._emit(f"{ranked1d} = memref.cast {ptr_ssa} : {ptr_type} to {ranked1d_type}")
-        view2d = self._alloc_ssa("view2d")
-        size1d = self._alloc_ssa("sz1d")
-        self._emit(f"{size1d} = memref.dim {ranked1d}, {c0} : {ranked1d_type}")
-        self._emit(
-            f"{view2d} = memref.reinterpret_cast {ranked1d} to "
-            f"offset: [0], sizes: [{size1d}, {row_stride}], "
-            f"strides: [{row_stride}, 1]"
-            f" : {ranked1d_type} to {ranked2d_type}"
-        )
-
-        tile2d_type = f"vector<{M}x{K}x{dtype}>"
-        flat_type = f"vector<{M * K}x{dtype}>"
-        pad_ssa = self._const_float(0.0, dtype)
-        result2d = self._alloc_ssa(hint or "tile2d")
-        self._emit(
-            f"{result2d} = vector.transfer_read {view2d}[{rb_ssa}, {cb_ssa}], {pad_ssa}"
-            f" {{in_bounds = [true, true]}} : {ranked2d_type}, {tile2d_type}"
-        )
-        result = self._alloc_ssa(hint or "tile")
-        self._emit(f"{result} = vector.shape_cast {result2d} : {tile2d_type} to {flat_type}")
-        return result, flat_type
-
-    def _gen_pad_vec(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        # pad_vec(vec, total): place vec<Nx dtype> at offset 0 of vector<total x dtype>,
-        # remaining elements zero. Used to build matmul rhs (B in row 0).
-        vec_ssa, vec_type = self._gen_expr(node.args[0])
-        total = ast.literal_eval(node.args[1])
-        dtype = _vec_elem(vec_type)
-        full_type = f"vector<{total}x{dtype}>"
-        zero_f = self._const_float(0.0, dtype)
-        base = self._alloc_ssa(hint or "pad")
-        self._emit(f"{base} = vector.broadcast {zero_f} : {dtype} to {full_type}")
-        result = self._alloc_ssa(hint or "pad")
-        self._emit(
-            f"{result} = vector.insert_strided_slice {vec_ssa}, {base}"
-            f" {{offsets = [0], strides = [1]}} : {vec_type} into {full_type}"
-        )
-        return result, full_type
-
-    def _gen_extract_elem(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        # extract_elem(vec, idx): extract a single scalar element.
-        #   idx may be a Python int literal (static) or an index SSA value
-        #   (dynamic). Static -> vector.extract; dynamic -> vector.extractelement.
-        vec_ssa, vec_type = self._gen_expr(node.args[0])
-        dtype = _vec_elem(vec_type)
-        result = self._alloc_ssa(hint or "elem")
-        idx_node = node.args[1]
-        if isinstance(idx_node, ast.Constant) and isinstance(idx_node.value, int):
-            self._emit(
-                f"{result} = vector.extract {vec_ssa}[{idx_node.value}]"
-                f" : {dtype} from {vec_type}"
-            )
-        else:
-            idx_ssa, idx_type = self._gen_expr(idx_node)
-            if idx_type != "index":
-                raise NotImplementedError(
-                    f"extract_elem dynamic index must be index, got {idx_type}")
-            self._emit(
-                f"{result} = vector.extractelement {vec_ssa}[{idx_ssa} : index]"
-                f" : {vec_type}"
-            )
-        return result, dtype
 
     # ------------------------------------------------------------------
     # 2D helpers for batch_macc (vfwmacc) path
@@ -820,174 +571,6 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         self._emit(
             f"{result} = vector.transfer_read {view}[{c0}, {c0}], {pad}"
             f" {{in_bounds = [true, true]}} : {mtype}, {vtype}"
-        )
-        return result, vtype
-
-    def _gen_load_2d_at(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        # load_2d_at(ptr, elem_off, rows, cols, dtype) -> vector<rows x cols>
-        #   reinterpret a rows×cols block starting at dynamic element offset.
-        ptr_ssa, ptr_type = self._gen_expr(node.args[0])
-        off_ssa, _ = self._gen_expr(node.args[1])
-        rows = ast.literal_eval(node.args[2])
-        cols = ast.literal_eval(node.args[3])
-        dtype = ast.literal_eval(node.args[4]) if len(node.args) > 4 else "f16"
-        space = self._space_of(ptr_type)
-        ranked = ptr_type.replace("memref<*x", "memref<?x", 1) if ptr_type.startswith("memref<*x") else ptr_type
-        if ptr_type.startswith("memref<*x"):
-            rcast = self._alloc_ssa("ranked")
-            self._emit(f"{rcast} = memref.cast {ptr_ssa} : {ptr_type} to {ranked}")
-            ptr_ssa = rcast
-        # block element offset = elem_off * rows  (block size = rows*cols, elem_off = pid*cols)
-        rows_c = self._const_int(rows)
-        boff = self._alloc_ssa("boff")
-        self._emit(f"{boff} = arith.muli {off_ssa}, {rows_c} : index")
-        sp = f", {space}" if space else ""
-        mtype = f"memref<{rows}x{cols}x{dtype}, strided<[{cols}, 1], offset: ?>{sp}>"
-        view = self._alloc_ssa("view2d")
-        self._emit(
-            f"{view} = memref.reinterpret_cast {ptr_ssa} to "
-            f"offset: [{boff}], sizes: [{rows}, {cols}], strides: [{cols}, 1]"
-            f" : {ranked} to {mtype}"
-        )
-        c0 = self._const_int(0)
-        pad = self._const_float(0.0, dtype)
-        vtype = f"vector<{rows}x{cols}x{dtype}>"
-        result = self._alloc_ssa(hint or "ld2d")
-        self._emit(
-            f"{result} = vector.transfer_read {view}[{c0}, {c0}], {pad}"
-            f" {{in_bounds = [true, true]}} : {mtype}, {vtype}"
-        )
-        return result, vtype
-
-    def _gen_load_2d_t(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        # load_2d_t(ptr, row_base, K, NB, M, dtype, col_off=0) -> vector<K x NB>
-        #   Transposed read from row-major A[N,M]: result[k,c] = A[row_base+c, col_off+k].
-        #   View: offset=row_base*M + col_off, sizes=[K,NB], strides=[1, M]
-        #   M (column stride) may be a Python int literal (static stride) OR an
-        #   index SSA expression (dynamic stride: strided<[1, ?]>). Dynamic M lets
-        #   the same kernel handle any M via a K-block loop (block_M = K = 32).
-        kwargs = {kw.arg: kw.value for kw in node.keywords}
-        ptr_ssa, ptr_type = self._gen_expr(node.args[0])
-        rb_ssa, _ = self._gen_expr(node.args[1])
-        K = ast.literal_eval(node.args[2])
-        NB = ast.literal_eval(node.args[3])
-        m_node = node.args[4]
-        dtype = ast.literal_eval(node.args[5]) if len(node.args) > 5 else "f16"
-        col_off_node = node.args[6] if len(node.args) > 6 else kwargs.get("col_off")
-        space = self._space_of(ptr_type)
-        ranked = ptr_type.replace("memref<*x", "memref<?x", 1) if ptr_type.startswith("memref<*x") else ptr_type
-        if ptr_type.startswith("memref<*x"):
-            rcast = self._alloc_ssa("ranked")
-            self._emit(f"{rcast} = memref.cast {ptr_ssa} : {ptr_type} to {ranked}")
-            ptr_ssa = rcast
-        # M: static int literal -> constant stride; else dynamic SSA -> ? stride
-        m_static = (isinstance(m_node, ast.Constant) and isinstance(m_node.value, int))
-        if m_static:
-            M = m_node.value
-            m_ssa = self._const_int(M)
-            col_stride = str(M)
-        else:
-            m_ssa, _ = self._gen_expr(m_node)
-            col_stride = "?"
-        boff = self._alloc_ssa("boff")
-        self._emit(f"{boff} = arith.muli {rb_ssa}, {m_ssa} : index")
-        if col_off_node is not None:
-            co_ssa, _ = self._gen_expr(col_off_node)
-            boff2 = self._alloc_ssa("boff")
-            self._emit(f"{boff2} = arith.addi {boff}, {co_ssa} : index")
-            boff = boff2
-        sp = f", {space}" if space else ""
-        mtype = f"memref<{K}x{NB}x{dtype}, strided<[1, {col_stride}], offset: ?>{sp}>"
-        # reinterpret_cast strides operand: dynamic stride passes the SSA value
-        stride_op = str(M) if m_static else m_ssa
-        view = self._alloc_ssa("viewT")
-        self._emit(
-            f"{view} = memref.reinterpret_cast {ptr_ssa} to "
-            f"offset: [{boff}], sizes: [{K}, {NB}], strides: [1, {stride_op}]"
-            f" : {ranked} to {mtype}"
-        )
-        c0 = self._const_int(0)
-        pad = self._const_float(0.0, dtype)
-        vtype = f"vector<{K}x{NB}x{dtype}>"
-        result = self._alloc_ssa(hint or "ldT")
-        self._emit(
-            f"{result} = vector.transfer_read {view}[{c0}, {c0}], {pad}"
-            f" {{in_bounds = [true, true]}} : {mtype}, {vtype}"
-        )
-        return result, vtype
-
-    def _gen_pack_2d_t(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        # pack_2d_t(ptr, row_base, K, NB, M, dtype, col_off=0) -> vector<K x NB>
-        #   Like load_2d_t but reads A in ROW-MAJOR order (unit inner stride) then
-        #   transposes via a stack-allocated buffer — no extra DDR bandwidth.
-        #
-        #   load_2d_t strides=[1, M]: inner dim NB has stride M (vlse, strided gather).
-        #   pack_2d_t strides=[M, 1]: inner dim K  has stride 1 (vle, contiguous).
-        #   Transpose via linalg.generic → local buf → unit-stride read for batch_macc.
-        kwargs = {kw.arg: kw.value for kw in node.keywords}
-        ptr_ssa, ptr_type = self._gen_expr(node.args[0])
-        rb_ssa, _ = self._gen_expr(node.args[1])
-        K = ast.literal_eval(node.args[2])
-        NB = ast.literal_eval(node.args[3])
-        m_node = node.args[4]
-        dtype = ast.literal_eval(node.args[5]) if len(node.args) > 5 else "f16"
-        col_off_node = node.args[6] if len(node.args) > 6 else kwargs.get("col_off")
-        space = self._space_of(ptr_type)
-        ranked = ptr_type.replace("memref<*x", "memref<?x", 1) if ptr_type.startswith("memref<*x") else ptr_type
-        if ptr_type.startswith("memref<*x"):
-            rcast = self._alloc_ssa("ranked")
-            self._emit(f"{rcast} = memref.cast {ptr_ssa} : {ptr_type} to {ranked}")
-            ptr_ssa = rcast
-        m_static = isinstance(m_node, ast.Constant) and isinstance(m_node.value, int)
-        if m_static:
-            M = m_node.value
-            m_ssa = self._const_int(M)
-            row_stride = str(M)
-        else:
-            m_ssa, _ = self._gen_expr(m_node)
-            row_stride = "?"
-        # offset = row_base*M + col_off
-        boff = self._alloc_ssa("boff")
-        self._emit(f"{boff} = arith.muli {rb_ssa}, {m_ssa} : index")
-        if col_off_node is not None:
-            co_ssa, _ = self._gen_expr(col_off_node)
-            boff2 = self._alloc_ssa("boff")
-            self._emit(f"{boff2} = arith.addi {boff}, {co_ssa} : index")
-            boff = boff2
-        sp = f", {space}" if space else ""
-        # Row-major view: NB rows × K cols, strides=[M, 1] (inner dim contiguous)
-        row_type = f"memref<{NB}x{K}x{dtype}, strided<[{row_stride}, 1], offset: ?>{sp}>"
-        stride_op = str(M) if m_static else m_ssa
-        A_view = self._alloc_ssa("Aview")
-        self._emit(
-            f"{A_view} = memref.reinterpret_cast {ptr_ssa} to "
-            f"offset: [{boff}], sizes: [{NB}, {K}], strides: [{stride_op}, 1]"
-            f" : {ranked} to {row_type}"
-        )
-        # Local contiguous buffer K×NB on the stack
-        buf_type = f"memref<{K}x{NB}x{dtype}>"
-        buf = self._alloc_ssa("buf")
-        self._emit(f"{buf} = memref.alloca() {{alignment = 64 : i64}} : {buf_type}")
-        # linalg.generic: buf[k,n] = A_view[n,k]  (transpose)
-        d0_map = f"affine_map<(d0, d1) -> (d1, d0)>"  # input:  A_view[n=d1, k=d0]
-        d1_map = f"affine_map<(d0, d1) -> (d0, d1)>"  # output: buf   [k=d0, n=d1]
-        self._emit(
-            f'linalg.generic {{'
-            f'indexing_maps = [{d0_map}, {d1_map}], '
-            f'iterator_types = ["parallel", "parallel"]'
-            f'}} ins({A_view} : {row_type}) outs({buf} : {buf_type}) {{'
-        )
-        self._emit(f'^bb0(%a: {dtype}, %_: {dtype}):')
-        self._emit(f'  linalg.yield %a : {dtype}')
-        self._emit(f'}}')
-        # Unit-stride read from contiguous buf
-        c0 = self._const_int(0)
-        pad = self._const_float(0.0, dtype)
-        vtype = f"vector<{K}x{NB}x{dtype}>"
-        result = self._alloc_ssa(hint or "pkT")
-        self._emit(
-            f"{result} = vector.transfer_read {buf}[{c0}, {c0}], {pad}"
-            f" {{in_bounds = [true, true]}} : {buf_type}, {vtype}"
         )
         return result, vtype
 
@@ -1072,11 +655,6 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         self._emit(f'proton.record {action} "{name}"')
 
 
-    def _gen_free_tcm(self, node: ast.Call):
-        # free_tcm(buf): memref.dealloc → spine_thread_free (TCM)
-        buf_ssa, buf_type = self._gen_expr(node.args[0])
-        self._emit(f"memref.dealloc {buf_ssa} : {buf_type}")
-
     def _gen_store_2d_at(self, node: ast.Call):
         # store_2d_at(ptr, elem_off, rows, cols, vec): write rows×cols block at offset
         ptr_ssa, ptr_type = self._gen_expr(node.args[0])
@@ -1139,79 +717,6 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             f' : ({lhs_type}, {rhs_type}, {acc_type}) -> {acc_type}'
         )
         return result, acc_type
-
-    def _gen_store_2d(self, node: ast.Call):
-        # store_2d(ptr, rows, cols, vec)
-        ptr_ssa, ptr_type = self._gen_expr(node.args[0])
-        rows = ast.literal_eval(node.args[1])
-        cols = ast.literal_eval(node.args[2])
-        vec_ssa, vec_type = self._gen_expr(node.args[3])
-        # element dtype from vector<rows x cols x dtype>
-        m = re.match(r'vector<\d+x\d+x(.+)>', vec_type)
-        edtype = m.group(1) if m else "f32"
-        space = self._space_of(ptr_type)
-        ranked = ptr_type.replace("memref<*x", "memref<?x", 1) if ptr_type.startswith("memref<*x") else ptr_type
-        if ptr_type.startswith("memref<*x"):
-            rcast = self._alloc_ssa("ranked")
-            self._emit(f"{rcast} = memref.cast {ptr_ssa} : {ptr_type} to {ranked}")
-            ptr_ssa = rcast
-        mtype = self._strided_2d_type(rows, cols, edtype, space)
-        view = self._alloc_ssa("view2d")
-        self._emit(
-            f"{view} = memref.reinterpret_cast {ptr_ssa} to "
-            f"offset: [0], sizes: [{rows}, {cols}], strides: [{cols}, 1]"
-            f" : {ranked} to {mtype}"
-        )
-        c0 = self._const_int(0)
-        self._emit(
-            f"vector.transfer_write {vec_ssa}, {view}[{c0}, {c0}]"
-            f" {{in_bounds = [true, true]}} : {vec_type}, {mtype}"
-        )
-
-    def _gen_store_vec(self, node: ast.Call):
-        args = node.args
-        ptr_ssa, ptr_type = self._gen_expr(args[0])
-        idx_ssa, _        = self._gen_expr(args[1])
-        vec_ssa, vec_type = self._gen_expr(args[2])
-
-        # vector.store requires ranked memref; cast if unranked
-        store_ptr_ssa = ptr_ssa
-        store_ptr_type = ptr_type
-        if ptr_type.startswith("memref<*x") or ptr_type == "memref<32xf32>":
-            # For output memref<32xf32>, keep as-is (already ranked)
-            # For memref<*x...>, cast to ranked
-            if ptr_type.startswith("memref<*x"):
-                ranked_type = ptr_type.replace("memref<*x", "memref<?x", 1)
-                cast_ssa = self._alloc_ssa("ranked")
-                self._emit(f"{cast_ssa} = memref.cast {ptr_ssa} : {ptr_type} to {ranked_type}")
-                store_ptr_ssa = cast_ssa
-                store_ptr_type = ranked_type
-
-        self._emit(
-            f"vector.transfer_write {vec_ssa}, {store_ptr_ssa}[{idx_ssa}]"
-            f" {{in_bounds = [true]}} : {vec_type}, {store_ptr_type}"
-        )
-
-    def _gen_store_scalar(self, node: ast.Call):
-        args = node.args
-        ptr_ssa, ptr_type = self._gen_expr(args[0])
-        idx_ssa, _        = self._gen_expr(args[1])
-        val_ssa, val_type = self._gen_expr(args[2])
-
-        # memref.store requires ranked memref; cast if unranked
-        store_ptr_ssa = ptr_ssa
-        store_ptr_type = ptr_type
-        if ptr_type.startswith("memref<*x"):
-            ranked_type = ptr_type.replace("memref<*x", "memref<?x", 1)
-            cast_ssa = self._alloc_ssa("ranked")
-            self._emit(f"{cast_ssa} = memref.cast {ptr_ssa} : {ptr_type} to {ranked_type}")
-            store_ptr_ssa = cast_ssa
-            store_ptr_type = ranked_type
-
-        self._emit(
-            f"memref.store {val_ssa}, {store_ptr_ssa}[{idx_ssa}]"
-            f" : {store_ptr_type}"
-        )
 
     # ------------------------------------------------------------------
     # svector-level ops (feishu 3.3 mv 示例). Fixed VL, no dynamic vsetvl.
