@@ -42,6 +42,8 @@ class _SpineRawRange:
 batch_macc = _SpineRawBuiltin("batch_macc")  # batch_macc(lhs_memref, rhs_vec, acc_vec) → vector_ext.batch_macc
 view_2d = _SpineRawBuiltin("view_2d")  # view_2d(ptr, rows, cols, dtype) → 2D strided memref view
 load_2d = _SpineRawBuiltin("load_2d")  # load_2d(ptr, rows, cols, dtype) → vector<rows x cols>
+load_2d_t = _SpineRawBuiltin(
+    "load_2d_t")  # load_2d_t(ptr, row_base, K, NB, M, dtype) → 转置 strided 读 vector<KxNB>(vlse, 零搬运)
 alloc_tcm_2d = _SpineRawBuiltin(
     "alloc_tcm_2d")  # alloc_tcm_2d(K, NB, dtype) → memref<K×NB> via memref.alloc (→ spine_thread_malloc/TCM)
 pack_2d_t_into = _SpineRawBuiltin(

@@ -68,8 +68,8 @@ def _memref_elem(mlir_type: str) -> str:
 
 
 _SPINE_RAW_BUILTIN_NAMES = {
-    "batch_macc", "view_2d", "load_2d", "alloc_tcm_2d", "pack_2d_t_into", "splat_2d", "store_2d_at", "range",
-    "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "vpack", "vmadot"
+    "batch_macc", "view_2d", "load_2d", "load_2d_t", "alloc_tcm_2d", "pack_2d_t_into", "splat_2d", "store_2d_at",
+    "range", "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "vpack", "vmadot"
 }
 
 
@@ -458,6 +458,8 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             return self._gen_view_2d(node, hint)
         if _is_spine_raw_attr(node.func, "load_2d", self._aliases):
             return self._gen_load_2d(node, hint)
+        if _is_spine_raw_attr(node.func, "load_2d_t", self._aliases):
+            return self._gen_load_2d_t(node, hint)
         if _is_spine_raw_attr(node.func, "alloc_tcm_2d", self._aliases):
             return self._gen_alloc_tcm_2d(node, hint)
         if _is_spine_raw_attr(node.func, "splat_2d", self._aliases):
@@ -551,6 +553,56 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         pad = self._const_float(0.0, dtype)
         vtype = f"vector<{rows}x{cols}x{dtype}>"
         result = self._alloc_ssa(hint or "ld2d")
+        self._emit(f"{result} = vector.transfer_read {view}[{c0}, {c0}], {pad}"
+                   f" {{in_bounds = [true, true]}} : {mtype}, {vtype}")
+        return result, vtype
+
+    def _gen_load_2d_t(self, node: ast.Call, hint: str) -> tuple[str, str]:
+        # load_2d_t(ptr, row_base, K, NB, M, dtype, col_off=0) -> vector<K x NB>
+        #   转置 strided 读(零搬运): result[k,c] = ptr[row_base+c, col_off+k],
+        #   视图 offset = row_base*M + col_off, sizes=[K,NB], strides=[1, M]
+        #   —— 内层 NB 维步长 M(非连续)→ RVV vlse strided gather, 不经 staging
+        #   buffer, 满足「只多算不多搬运」。M 可静态字面量或动态 SSA(strided<[1,?]>)。
+        kwargs = {kw.arg: kw.value for kw in node.keywords}
+        ptr_ssa, ptr_type = self._gen_expr(node.args[0])
+        rb_ssa, _ = self._gen_expr(node.args[1])
+        K = ast.literal_eval(node.args[2])
+        NB = ast.literal_eval(node.args[3])
+        m_node = node.args[4]
+        dtype = ast.literal_eval(node.args[5]) if len(node.args) > 5 else "f16"
+        col_off_node = node.args[6] if len(node.args) > 6 else kwargs.get("col_off")
+        space = self._space_of(ptr_type)
+        ranked = ptr_type.replace("memref<*x", "memref<?x", 1) if ptr_type.startswith("memref<*x") else ptr_type
+        if ptr_type.startswith("memref<*x"):
+            rcast = self._alloc_ssa("ranked")
+            self._emit(f"{rcast} = memref.cast {ptr_ssa} : {ptr_type} to {ranked}")
+            ptr_ssa = rcast
+        m_static = (isinstance(m_node, ast.Constant) and isinstance(m_node.value, int))
+        if m_static:
+            M = m_node.value
+            m_ssa = self._const_int(M)
+            col_stride = str(M)
+        else:
+            m_ssa, _ = self._gen_expr(m_node)
+            col_stride = "?"
+        boff = self._alloc_ssa("boff")
+        self._emit(f"{boff} = arith.muli {rb_ssa}, {m_ssa} : index")
+        if col_off_node is not None:
+            co_ssa, _ = self._gen_expr(col_off_node)
+            boff2 = self._alloc_ssa("boff")
+            self._emit(f"{boff2} = arith.addi {boff}, {co_ssa} : index")
+            boff = boff2
+        sp = f", {space}" if space else ""
+        mtype = f"memref<{K}x{NB}x{dtype}, strided<[1, {col_stride}], offset: ?>{sp}>"
+        stride_op = str(M) if m_static else m_ssa
+        view = self._alloc_ssa("viewT")
+        self._emit(f"{view} = memref.reinterpret_cast {ptr_ssa} to "
+                   f"offset: [{boff}], sizes: [{K}, {NB}], strides: [1, {stride_op}]"
+                   f" : {ranked} to {mtype}")
+        c0 = self._const_int(0)
+        pad = self._const_float(0.0, dtype)
+        vtype = f"vector<{K}x{NB}x{dtype}>"
+        result = self._alloc_ssa(hint or "ldT")
         self._emit(f"{result} = vector.transfer_read {view}[{c0}, {c0}], {pad}"
                    f" {{in_bounds = [true, true]}} : {mtype}, {vtype}")
         return result, vtype
