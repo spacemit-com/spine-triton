@@ -68,8 +68,8 @@ def _memref_elem(mlir_type: str) -> str:
 
 
 _SPINE_RAW_BUILTIN_NAMES = {
-    "batch_macc", "view_2d", "load_2d", "load_2d_t", "alloc_tcm_2d", "pack_2d_t_into", "splat_2d", "store_2d_at",
-    "range", "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "vpack", "vmadot"
+    "batch_macc", "view_2d", "load_2d", "alloc_tcm_2d", "pack_2d_t_into", "splat_2d", "store_2d_at", "range",
+    "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "vpack", "vmadot"
 }
 
 
@@ -458,8 +458,6 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             return self._gen_view_2d(node, hint)
         if _is_spine_raw_attr(node.func, "load_2d", self._aliases):
             return self._gen_load_2d(node, hint)
-        if _is_spine_raw_attr(node.func, "load_2d_t", self._aliases):
-            return self._gen_load_2d_t(node, hint)
         if _is_spine_raw_attr(node.func, "alloc_tcm_2d", self._aliases):
             return self._gen_alloc_tcm_2d(node, hint)
         if _is_spine_raw_attr(node.func, "splat_2d", self._aliases):
@@ -553,56 +551,6 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         pad = self._const_float(0.0, dtype)
         vtype = f"vector<{rows}x{cols}x{dtype}>"
         result = self._alloc_ssa(hint or "ld2d")
-        self._emit(f"{result} = vector.transfer_read {view}[{c0}, {c0}], {pad}"
-                   f" {{in_bounds = [true, true]}} : {mtype}, {vtype}")
-        return result, vtype
-
-    def _gen_load_2d_t(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        # load_2d_t(ptr, row_base, K, NB, M, dtype, col_off=0) -> vector<K x NB>
-        #   转置 strided 读(零搬运): result[k,c] = ptr[row_base+c, col_off+k],
-        #   视图 offset = row_base*M + col_off, sizes=[K,NB], strides=[1, M]
-        #   —— 内层 NB 维步长 M(非连续)→ RVV vlse strided gather, 不经 staging
-        #   buffer, 满足「只多算不多搬运」。M 可静态字面量或动态 SSA(strided<[1,?]>)。
-        kwargs = {kw.arg: kw.value for kw in node.keywords}
-        ptr_ssa, ptr_type = self._gen_expr(node.args[0])
-        rb_ssa, _ = self._gen_expr(node.args[1])
-        K = ast.literal_eval(node.args[2])
-        NB = ast.literal_eval(node.args[3])
-        m_node = node.args[4]
-        dtype = ast.literal_eval(node.args[5]) if len(node.args) > 5 else "f16"
-        col_off_node = node.args[6] if len(node.args) > 6 else kwargs.get("col_off")
-        space = self._space_of(ptr_type)
-        ranked = ptr_type.replace("memref<*x", "memref<?x", 1) if ptr_type.startswith("memref<*x") else ptr_type
-        if ptr_type.startswith("memref<*x"):
-            rcast = self._alloc_ssa("ranked")
-            self._emit(f"{rcast} = memref.cast {ptr_ssa} : {ptr_type} to {ranked}")
-            ptr_ssa = rcast
-        m_static = (isinstance(m_node, ast.Constant) and isinstance(m_node.value, int))
-        if m_static:
-            M = m_node.value
-            m_ssa = self._const_int(M)
-            col_stride = str(M)
-        else:
-            m_ssa, _ = self._gen_expr(m_node)
-            col_stride = "?"
-        boff = self._alloc_ssa("boff")
-        self._emit(f"{boff} = arith.muli {rb_ssa}, {m_ssa} : index")
-        if col_off_node is not None:
-            co_ssa, _ = self._gen_expr(col_off_node)
-            boff2 = self._alloc_ssa("boff")
-            self._emit(f"{boff2} = arith.addi {boff}, {co_ssa} : index")
-            boff = boff2
-        sp = f", {space}" if space else ""
-        mtype = f"memref<{K}x{NB}x{dtype}, strided<[1, {col_stride}], offset: ?>{sp}>"
-        stride_op = str(M) if m_static else m_ssa
-        view = self._alloc_ssa("viewT")
-        self._emit(f"{view} = memref.reinterpret_cast {ptr_ssa} to "
-                   f"offset: [{boff}], sizes: [{K}, {NB}], strides: [1, {stride_op}]"
-                   f" : {ranked} to {mtype}")
-        c0 = self._const_int(0)
-        pad = self._const_float(0.0, dtype)
-        vtype = f"vector<{K}x{NB}x{dtype}>"
-        result = self._alloc_ssa(hint or "ldT")
         self._emit(f"{result} = vector.transfer_read {view}[{c0}, {c0}], {pad}"
                    f" {{in_bounds = [true, true]}} : {mtype}, {vtype}")
         return result, vtype
@@ -846,30 +794,39 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         return result, elem
 
     def _gen_vmadot(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        # vmadot(acc, lhs, rhs) — 文档 3.3 第三段的矩阵单元算子 surface。
-        #   spine-triton 编译器把它 lower 到已支持的 vector_ext.batch_macc
-        #   (vfwmacc 矩阵单元, 走 spe_pack), 而非未定稿的 vector_ext.matmul。
-        #   batch_macc 契约: lhs=2D strided memref<mxk>, rhs=2D vector<kxn>,
-        #   acc/out=2D vector<mxn>;直接产出宽结果 (不需 vreduce_sum)。
+        # vmadot(acc, x, y) → "vector_ext.matmul"(x, y, acc) <{m,n,k}> (写法4, 矩阵单元).
+        #   矩阵引擎直接产出宽结果 (不需 vreduce_sum);K3 spine-opt (branch
+        #   for-kxy-ame-0.5b) 注册了 vector_ext::MatmulOp + ConvertOpToLLVMPattern,
+        #   lower 到 llvm.riscv.smt.vmadot (需 xsmtvdotii mattr, 已在 compiler.py 配)。
         #   用 generic form 让未注册 vector_ext 的 spine-triton-opt 也能 parse。
+        #   operand 均为整寄存器宽 (f16=64, f32=64);tile 规格 m=n=k=8 (SMT 单元固定)。
         acc_ssa, acc_type = self._gen_expr(node.args[0])
-        lhs_ssa, lhs_type = self._gen_expr(node.args[1])
-        rhs_ssa, rhs_type = self._gen_expr(node.args[2])
+        x_ssa, x_type = self._gen_expr(node.args[1])
+        y_ssa, y_type = self._gen_expr(node.args[2])
+        m = n = k = 8
         result = self._alloc_ssa(hint or "vmadot")
-        self._emit(f'{result} = "vector_ext.batch_macc"({lhs_ssa}, {rhs_ssa}, {acc_ssa})'
-                   f' : ({lhs_type}, {rhs_type}, {acc_type}) -> {acc_type}')
+        self._emit(f'{result} = "vector_ext.matmul"({x_ssa}, {y_ssa}, {acc_ssa})'
+                   f' <{{m = {m} : i64, n = {n} : i64, k = {k} : i64}}>'
+                   f' : ({x_type}, {y_type}, {acc_type}) -> {acc_type}')
         return result, acc_type
 
     def _gen_vstore(self, node: ast.Call):
-        # vstore(ptr, idx_tuple, scalar) → memref.store  (1D scalar output)
+        # vstore(ptr, idx_tuple, scalar | vec):
+        #   scalar → memref.store (写法2/3, reduce 后的标量);
+        #   vector → vector.transfer_write (写法4, 矩阵单元直接产出的宽结果)。
         ptr_ssa, ptr_type = self._gen_expr(node.args[0])
         idx_node = node.args[1]
         assert isinstance(idx_node, ast.Tuple), "vstore index must be a tuple"
-        assert len(idx_node.elts) == 1, "vstore currently supports a 1D scalar index"
+        assert len(idx_node.elts) == 1, "vstore currently supports a 1D index"
         idx_ssa, _ = self._gen_expr(idx_node.elts[0])
-        val_ssa, _ = self._gen_expr(node.args[2])
+        val_ssa, val_type = self._gen_expr(node.args[2])
         store_ssa, store_type = self._ranked_cast(ptr_ssa, ptr_type)
-        self._emit(f"memref.store {val_ssa}, {store_ssa}[{idx_ssa}] : {store_type}")
+        if val_type.startswith("vector<"):
+            # 宽结果向量写回 (写法4 vmadot): 只写 acc 的前 m(=8) 宽有效元素。
+            self._emit(f"vector.transfer_write {val_ssa}, {store_ssa}[{idx_ssa}]"
+                       f" {{in_bounds = [true]}} : {val_type}, {store_type}")
+        else:
+            self._emit(f"memref.store {val_ssa}, {store_ssa}[{idx_ssa}] : {store_type}")
 
     def _try_const_int(self, node) -> int | None:
         """Fold a shape/index AST node to a compile-time int if possible.

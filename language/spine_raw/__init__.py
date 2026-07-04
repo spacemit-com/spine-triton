@@ -13,7 +13,7 @@ Public API:
 from .types import In, InOut, mem, index
 from .runtime import spine_raw, SpineLinalgJITFunction
 from .call_registry import call
-from .builtins import batch_macc, view_2d, load_2d, load_2d_t, splat_2d, store_2d_at
+from .builtins import batch_macc, view_2d, load_2d, splat_2d, store_2d_at
 from .builtins import alloc_tcm_2d, pack_2d_t_into, proton_mark
 from .builtins import vconfig, vzero, vload, vmacc, vreduce_sum, vstore, alloc, vpack, vmadot
 from .builtins import f16, f32, bf16
@@ -35,7 +35,6 @@ __all__ = [
     "batch_macc",
     "view_2d",
     "load_2d",
-    "load_2d_t",
     "alloc_tcm_2d",
     "pack_2d_t_into",
     "proton_mark",
