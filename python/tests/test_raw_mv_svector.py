@@ -5,10 +5,11 @@ C = B @ A   with  B: [N, K] f16 row-major,  A: [K] f16,  C: [N] f32.
 style2 (纯 svector): vconfig/vzero/vload/vmacc/vreduce_sum/vstore, no packing.
 style3 (svector + pack): the same, but B's 4-row block is pre-packed into a
         contiguous scratch buffer via tle.alloc + tle.vpack before the K loop.
-style4 (矩阵单元 vfwmacc): vector_ext.batch_macc — spine-mlir 已验证的矩阵单元
-        路径 (走 spe_pack → vfwmacc),直接产出 1×64 宽结果, 不需 vreduce_sum。
-        N%64==0 且 K%32==0。(文档第三段的 vmadot/vector_ext.matmul 8×8 GEMM
-        tile 语义 spine-mlir 尚未定稿,故改用等价且已跑通的 batch_macc。)
+style4 (矩阵单元 tle.vmadot): kernel 用文档 3.3 第三段的 tle.vmadot 矩阵单元
+        算子 surface(acc 在前, 直接产出 1×64 宽结果, 不需 vreduce_sum)。
+        spine-triton 编译器把 vmadot lower 到已支持的 vector_ext.batch_macc
+        (vfwmacc, 走 spe_pack)——而非未定稿的 vector_ext.matmul。N%64==0 且
+        K%32==0。
 
 Fixed VL (f16 -> 64) this round: no dynamic vsetvl tail handling, so the tests
 constrain K % 64 == 0 and N % 4 == 0 (full tiles only).
@@ -100,29 +101,30 @@ def _mv_sv_host_style3(B, A, C, K, N):
 
 
 # ---------------------------------------------------------------------------
-# 写法4 — 矩阵单元路径 (vector_ext.batch_macc / vfwmacc)
+# 写法4 — 文档 3.3 矩阵单元写法 (tle.vmadot)
 #
-# 文档 3.3 第三段的 vmadot(vector_ext.matmul, 8×8×8 GEMM tile)在 spine-mlir
-# 尚未定稿 mv→GEMM 的 lane 映射(见上一轮 xfail)。本轮改用 spine-mlir 已验证
-# 的 vector_ext.batch_macc(vfwmacc 矩阵单元, 走 spe_pack)——同为矩阵单元、
-# 直接产出宽结果(1×64 acc, 不需 vreduce_sum),且数值已在 test_raw_mv.py 跑通。
+# kernel 用文档的 tle.vmadot 矩阵单元算子 surface(acc 在前, 直接产出宽结果,
+# 不需 vreduce_sum)。spine-triton 编译器把 vmadot lower 到已支持的
+# vector_ext.batch_macc(vfwmacc, 走 spe_pack)——不是未定稿的 vector_ext.matmul,
+# 这正是「编译器支持时可以用 batch_macc」的含义(_gen_vmadot 见 codegen.py)。
 #
-# 语义: C[N] = B[N,K] @ A[K]。output 行按 64 分块(batch_macc 的 n=64),
-# 收缩维 K 按 32 分块(block_K=32, nk=K//32);A(向量)作 lhs[1,32] 广播,
-# B(矩阵)的 [ni:ni+64, koff:koff+32] 转置 pack 进 TCM buf 作 rhs[32,64]。
-# 约束: N%64==0 且 K%32==0(满 tile)。单 TCM buffer 规避并发超订(记忆)。
+# batch_macc 契约要求 lhs=2D strided memref、rhs/acc=2D vector, 故 vmadot 的
+# lhs 取 A(向量)的 [1,32] memref 视图、rhs 取 B 转置 pack 进 TCM buf 的
+# [32,64] 向量、acc 为 [1,64] 宽累加器。语义 C[N]=B[N,K]@A[K]:output 行按
+# NB=64 分块、收缩维 K 按 32 分块。约束 N%64==0 且 K%32==0。单 TCM buffer 规避
+# 并发超订(记忆 k3_tcm_mv_blocker)。
 # ---------------------------------------------------------------------------
 @tle.raw_kernel
 def mv_block_style4(
     A: tle.mem(f16), B: tle.mem(f16), col: tle.index, K: tle.index, nk: tle.index, C: tle.mem(f32, out=True)):
     buf0 = tle.alloc_tcm_2d(32, 64, "f16")
-    acc0 = tle.splat_2d(0.0, 1, 64, "f32")
+    acc0 = tle.splat_2d(0.0, 1, 64, "f32")  # 1×64 宽累加器 (batch_macc 契约: acc 为 2D vector)
     for kb in tle.range(nk):
         koff = kb * 32
-        lhs = tle.view_2d(A, 1, 32, "f16", koff)
-        tle.pack_2d_t_into(buf0, B, col, 32, 64, K, "f16", koff)
-        r0 = tle.load_2d(buf0, 32, 64, "f16")
-        acc0 = tle.batch_macc(lhs, r0, acc0)
+        lhs = tle.view_2d(A, 1, 32, "f16", koff)  # A 向量 → lhs[1,32] memref 视图
+        tle.pack_2d_t_into(buf0, B, col, 32, 64, K, "f16", koff)  # B[col:+64,koff:+32]^T → buf
+        r0 = tle.load_2d(buf0, 32, 64, "f16")  # rhs[32,64] vector
+        acc0 = tle.vmadot(acc0, lhs, r0)  # 矩阵单元 → vector_ext.batch_macc
     tle.store_2d_at(C, col, 1, 64, acc0)
 
 

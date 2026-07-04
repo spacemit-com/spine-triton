@@ -69,7 +69,7 @@ def _memref_elem(mlir_type: str) -> str:
 
 _SPINE_RAW_BUILTIN_NAMES = {
     "batch_macc", "view_2d", "load_2d", "alloc_tcm_2d", "pack_2d_t_into", "splat_2d", "store_2d_at", "range",
-    "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "vpack"
+    "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "vpack", "vmadot"
 }
 
 
@@ -470,6 +470,8 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             return self._gen_vmacc(node, hint)
         if _is_spine_raw_attr(node.func, "vreduce_sum", self._aliases):
             return self._gen_vreduce_sum(node, hint)
+        if _is_spine_raw_attr(node.func, "vmadot", self._aliases):
+            return self._gen_vmadot(node, hint)
         if _is_spine_raw_attr(node.func, "alloc", self._aliases):
             return self._gen_alloc(node, hint)
         raise NotImplementedError(f"Unsupported call: {ast.dump(node.func)}")
@@ -790,6 +792,21 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         result = self._alloc_ssa(hint or "vrsum")
         self._emit(f"{result} = vector.reduction <add>, {v_ssa} : {v_type} into {elem}")
         return result, elem
+
+    def _gen_vmadot(self, node: ast.Call, hint: str) -> tuple[str, str]:
+        # vmadot(acc, lhs, rhs) — 文档 3.3 第三段的矩阵单元算子 surface。
+        #   spine-triton 编译器把它 lower 到已支持的 vector_ext.batch_macc
+        #   (vfwmacc 矩阵单元, 走 spe_pack), 而非未定稿的 vector_ext.matmul。
+        #   batch_macc 契约: lhs=2D strided memref<mxk>, rhs=2D vector<kxn>,
+        #   acc/out=2D vector<mxn>;直接产出宽结果 (不需 vreduce_sum)。
+        #   用 generic form 让未注册 vector_ext 的 spine-triton-opt 也能 parse。
+        acc_ssa, acc_type = self._gen_expr(node.args[0])
+        lhs_ssa, lhs_type = self._gen_expr(node.args[1])
+        rhs_ssa, rhs_type = self._gen_expr(node.args[2])
+        result = self._alloc_ssa(hint or "vmadot")
+        self._emit(f'{result} = "vector_ext.batch_macc"({lhs_ssa}, {rhs_ssa}, {acc_ssa})'
+                   f' : ({lhs_type}, {rhs_type}, {acc_type}) -> {acc_type}')
+        return result, acc_type
 
     def _gen_vstore(self, node: ast.Call):
         # vstore(ptr, idx_tuple, scalar) → memref.store  (1D scalar output)

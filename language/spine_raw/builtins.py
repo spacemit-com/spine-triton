@@ -62,6 +62,7 @@ range = _SpineRawRange()  # range(n) / range(start, stop, step) → scf.for boun
 #   vstore   : store a scalar to memref[idx]
 #   alloc    : memref.alloc N-D scratch (写法3 packed_B)
 #   vpack    : pack a B row-block into the packed_B scratch layout (写法3)
+#   vmadot   : matrix-unit dot (写法4, 文档 vmadot surface) → vector_ext.batch_macc
 # ---------------------------------------------------------------------------
 vconfig = _SpineRawBuiltin("vconfig")  # vconfig(avl, sew_bytes) → fixed VL
 vzero = _SpineRawBuiltin("vzero")  # vzero(dtype) → vector<VL x dtype> zeros
@@ -70,6 +71,7 @@ vmacc = _SpineRawBuiltin("vmacc")  # vmacc(acc, x, y) → widening fma accumulat
 vreduce_sum = _SpineRawBuiltin("vreduce_sum")  # vreduce_sum(vec) → scalar
 vstore = _SpineRawBuiltin("vstore")  # vstore(ptr, idx_tuple, scalar) → memref.store
 alloc = _SpineRawBuiltin("alloc")  # alloc(shape_tuple, dtype) → memref.alloc
+vmadot = _SpineRawBuiltin("vmadot")  # vmadot(acc, lhs, rhs) → vector_ext.batch_macc (写法4 矩阵单元)
 vpack = _SpineRawBuiltin("vpack")  # vpack(src, src_idx, dst, dst_shape) → pack rows
 
 # ---------------------------------------------------------------------------
