@@ -152,8 +152,8 @@ def _llir_to_so(llir: str, metadata):
         llopt_flags = []
         if target_arch == "riscv64":
             llopt_flags.extend([
-                "--march=riscv64", "-passes=loop-vectorize", "--pass-remarks-missed",
-                "-force-vector-width=32", "-force-vector-interleave=2"
+                "--march=riscv64", "-passes=loop-vectorize", "--pass-remarks-missed", "-force-vector-width=32",
+                "-force-vector-interleave=2"
             ])
 
         subprocess.check_call([llopt_path, src_path, *llopt_flags, "-o", src_opt_path])
@@ -167,10 +167,7 @@ def _llir_to_so(llir: str, metadata):
             elif ai_cpu_arch in {"spacemit-a100", "spacemit-x100", "spacemit-x60", "spacemit-a60"}:
                 mattr_list.append("xsmtvdotii")
 
-            llc_flags.extend([
-                "--march=riscv64",
-                "--mattr=" + ",".join(mattr_list)
-            ])
+            llc_flags.extend(["--march=riscv64", "--mattr=" + ",".join(mattr_list)])
 
         # Generate assembly for dump if SPINE_TRITON_DUMP_PATH exists, but still generate object file for the final output
         if (dum_dir := os.environ.get("SPINE_TRITON_DUMP_PATH", "")) != "" and os.path.exists(dum_dir):

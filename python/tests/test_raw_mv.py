@@ -11,12 +11,12 @@ import triton.language.extra.spine_raw as sr_mod
 
 @spine_raw(name="linalg")
 def mv_macc_block(
-    B:   In["memref<*xf16, #ptr.generic_space>"],
-    A:   In["memref<*xf16, #ptr.generic_space>"],
+    B: In["memref<*xf16, #ptr.generic_space>"],
+    A: In["memref<*xf16, #ptr.generic_space>"],
     col: In["index"],
-    M:   In["index"],
-    nk:  In["index"],
-    C:   InOut["memref<*xf32, #ptr.generic_space>"],
+    M: In["index"],
+    nk: In["index"],
+    C: InOut["memref<*xf32, #ptr.generic_space>"],
 ):
     buf0 = sr_mod.alloc_tcm_2d(32, 64, "f16")
     buf1 = sr_mod.alloc_tcm_2d(32, 64, "f16")
@@ -29,8 +29,8 @@ def mv_macc_block(
     for kb in sr_mod.range(nk):
         koff = kb * 32
         lhs = sr_mod.view_2d(B, 1, 32, "f16", koff)
-        sr_mod.pack_2d_t_into(buf0, A, col,       32, 64, M, "f16", koff)
-        sr_mod.pack_2d_t_into(buf1, A, col + 64,  32, 64, M, "f16", koff)
+        sr_mod.pack_2d_t_into(buf0, A, col, 32, 64, M, "f16", koff)
+        sr_mod.pack_2d_t_into(buf1, A, col + 64, 32, 64, M, "f16", koff)
         sr_mod.pack_2d_t_into(buf2, A, col + 128, 32, 64, M, "f16", koff)
         sr_mod.pack_2d_t_into(buf3, A, col + 192, 32, 64, M, "f16", koff)
         r0 = sr_mod.load_2d(buf0, 32, 64, "f16")
@@ -41,8 +41,8 @@ def mv_macc_block(
         acc1 = sr_mod.batch_macc(lhs, r1, acc1)
         acc2 = sr_mod.batch_macc(lhs, r2, acc2)
         acc3 = sr_mod.batch_macc(lhs, r3, acc3)
-    sr_mod.store_2d_at(C, col,       1, 64, acc0)
-    sr_mod.store_2d_at(C, col + 64,  1, 64, acc1)
+    sr_mod.store_2d_at(C, col, 1, 64, acc0)
+    sr_mod.store_2d_at(C, col + 64, 1, 64, acc1)
     sr_mod.store_2d_at(C, col + 128, 1, 64, acc2)
     sr_mod.store_2d_at(C, col + 192, 1, 64, acc3)
 
@@ -71,7 +71,7 @@ def raw_mv(inp, vec):
     a = inp.contiguous()
     b = vec.contiguous()
     c = torch.empty(N, device=inp.device, dtype=torch.float32)
-    grid = (N // _NB,)
+    grid = (N // _NB, )
     _mv_macc_host[grid](b, a, c, M, M // _BLOCK_M, NB=_NB)
     return c.to(torch.float16)
 

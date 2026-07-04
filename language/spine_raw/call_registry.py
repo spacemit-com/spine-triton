@@ -14,5 +14,4 @@ def call(fn, outputs=None, inputs=None, _semantic=None):
     if inputs is None:
         inputs = []
     linalg_text = fn.make_linalg()
-    _semantic.builder.create_tle_dsl_region(
-        fn.__name__, linalg_text, [v.handle for v in inputs])
+    _semantic.builder.create_tle_dsl_region(fn.__name__, linalg_text, [v.handle for v in inputs])

@@ -15,10 +15,10 @@ from typing import Callable
 
 from .types import _TypedAnnotation
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _parse_signature(fn: Callable) -> list[tuple[str, _TypedAnnotation]]:
     sig = inspect.signature(fn)
@@ -26,14 +26,10 @@ def _parse_signature(fn: Callable) -> list[tuple[str, _TypedAnnotation]]:
     for pname, param in sig.parameters.items():
         ann = param.annotation
         if ann is inspect.Parameter.empty:
-            raise ValueError(
-                f"Parameter '{pname}' of @spine_raw function '{fn.__name__}' "
-                f"must have an In[...] or InOut[...] annotation."
-            )
+            raise ValueError(f"Parameter '{pname}' of @spine_raw function '{fn.__name__}' "
+                             f"must have an In[...] or InOut[...] annotation.")
         if not isinstance(ann, _TypedAnnotation):
-            raise ValueError(
-                f"Parameter '{pname}' annotation must be In[...] or InOut[...], got {ann!r}"
-            )
+            raise ValueError(f"Parameter '{pname}' annotation must be In[...] or InOut[...], got {ann!r}")
         result.append((pname, ann))
     return result
 
@@ -71,11 +67,10 @@ def _memref_elem(mlir_type: str) -> str:
     raise ValueError(f"Cannot extract elem type from {mlir_type!r}")
 
 
-_SPINE_RAW_BUILTIN_NAMES = {"batch_macc", "view_2d", "load_2d",
-                            "alloc_tcm_2d", "pack_2d_t_into",
-                            "splat_2d", "store_2d_at", "range", "proton_mark",
-                            "vconfig", "vzero", "vload", "vmacc", "vreduce_sum",
-                            "vstore", "alloc", "vpack"}
+_SPINE_RAW_BUILTIN_NAMES = {
+    "batch_macc", "view_2d", "load_2d", "alloc_tcm_2d", "pack_2d_t_into", "splat_2d", "store_2d_at", "range",
+    "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "vpack"
+}
 
 
 def _vl_from_sew(sew_bytes: int) -> int:
@@ -115,11 +110,10 @@ def _resolve_dtype(node, default: str = "f16") -> str:
     return ast.literal_eval(node)
 
 
-
-
 # ---------------------------------------------------------------------------
 # SpineMLIRCodeGenerator
 # ---------------------------------------------------------------------------
+
 
 class SpineMLIRCodeGenerator(ast.NodeVisitor):
     """Translate a @spine_raw Python function to a func.func MLIR string.
@@ -134,8 +128,8 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
 
     def __init__(self):
         self._env: dict[str, tuple[str, str]] = {}
-        self._preamble: list[str] = []     # constant defs, always at indent=2
-        self._lines: list[str] = []        # body ops
+        self._preamble: list[str] = []  # constant defs, always at indent=2
+        self._lines: list[str] = []  # body ops
         self._indent: int = 2
         self._counter: int = 0
         self._defined_ssas: set[str] = set()
@@ -358,10 +352,8 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             res_part = ", ".join(result_ssas[v] for v in iter_args)
             ia_part = ", ".join(f"%{v}_in = {init_ssa}" for v, init_ssa, _ in ia_data)
             types_part = ", ".join(typ for _, _, typ in ia_data)
-            for_line = (
-                f"{res_part} = scf.for {loop_ssa} = {lb_ssa} to {ub_ssa} step {step_ssa}"
-                f" iter_args({ia_part}) -> ({types_part}) {{"
-            )
+            for_line = (f"{res_part} = scf.for {loop_ssa} = {lb_ssa} to {ub_ssa} step {step_ssa}"
+                        f" iter_args({ia_part}) -> ({types_part}) {{")
         else:
             for_line = f"scf.for {loop_ssa} = {lb_ssa} to {ub_ssa} step {step_ssa} {{"
 
@@ -386,9 +378,7 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         if ia_data:
             yield_ssas = [self._get(v)[0] for v in iter_args]
             yield_types = [self._get(v)[1] for v in iter_args]
-            self._emit(
-                f"scf.yield {', '.join(yield_ssas)} : {', '.join(yield_types)}"
-            )
+            self._emit(f"scf.yield {', '.join(yield_ssas)} : {', '.join(yield_types)}")
 
         self._indent -= 2
         self._emit("}")
@@ -411,9 +401,7 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         elif _is_spine_raw_attr(node.func, "vpack", self._aliases):
             self._gen_vpack(node)
         else:
-            raise NotImplementedError(
-                f"Unsupported call statement: {ast.dump(node.func)}"
-            )
+            raise NotImplementedError(f"Unsupported call statement: {ast.dump(node.func)}")
 
     # ------------------------------------------------------------------
     # Expression generation
@@ -448,8 +436,7 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         result = self._alloc_ssa(hint or "t")
 
         if ltype == "index" and rtype == "index":
-            opname = {ast.Add: "addi", ast.Mult: "muli", ast.Sub: "subi",
-                      ast.FloorDiv: "divui"}.get(op)
+            opname = {ast.Add: "addi", ast.Mult: "muli", ast.Sub: "subi", ast.FloorDiv: "divui"}.get(op)
             if opname is None:
                 raise NotImplementedError(f"BinOp {op.__name__} not supported for index")
             self._emit(f"{result} = arith.{opname} {lssa}, {rssa} : index")
@@ -462,9 +449,7 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             self._emit(f"{result} = arith.{opname} {lssa}, {rssa} : {ltype}")
             return result, ltype
 
-        raise NotImplementedError(
-            f"BinOp between {ltype!r} and {rtype!r} not supported"
-        )
+        raise NotImplementedError(f"BinOp between {ltype!r} and {rtype!r} not supported")
 
     def _gen_call_expr(self, node: ast.Call, hint: str) -> tuple[str, str]:
         if _is_spine_raw_attr(node.func, "batch_macc", self._aliases):
@@ -538,11 +523,9 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             out_type = self._strided_2d_type(rows, cols, dtype, space)
             off_part = "[0]"
         result = self._alloc_ssa(hint or "view2d")
-        self._emit(
-            f"{result} = memref.reinterpret_cast {ptr_ssa} to "
-            f"offset: {off_part}, sizes: [{rows}, {cols}], strides: [{cols}, 1]"
-            f" : {ranked} to {out_type}"
-        )
+        self._emit(f"{result} = memref.reinterpret_cast {ptr_ssa} to "
+                   f"offset: {off_part}, sizes: [{rows}, {cols}], strides: [{cols}, 1]"
+                   f" : {ranked} to {out_type}")
         return result, out_type
 
     def _gen_load_2d(self, node: ast.Call, hint: str) -> tuple[str, str]:
@@ -559,19 +542,15 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             ptr_ssa = rcast
         mtype = self._strided_2d_type(rows, cols, dtype, space)
         view = self._alloc_ssa("view2d")
-        self._emit(
-            f"{view} = memref.reinterpret_cast {ptr_ssa} to "
-            f"offset: [0], sizes: [{rows}, {cols}], strides: [{cols}, 1]"
-            f" : {ranked} to {mtype}"
-        )
+        self._emit(f"{view} = memref.reinterpret_cast {ptr_ssa} to "
+                   f"offset: [0], sizes: [{rows}, {cols}], strides: [{cols}, 1]"
+                   f" : {ranked} to {mtype}")
         c0 = self._const_int(0)
         pad = self._const_float(0.0, dtype)
         vtype = f"vector<{rows}x{cols}x{dtype}>"
         result = self._alloc_ssa(hint or "ld2d")
-        self._emit(
-            f"{result} = vector.transfer_read {view}[{c0}, {c0}], {pad}"
-            f" {{in_bounds = [true, true]}} : {mtype}, {vtype}"
-        )
+        self._emit(f"{result} = vector.transfer_read {view}[{c0}, {c0}], {pad}"
+                   f" {{in_bounds = [true, true]}} : {mtype}, {vtype}")
         return result, vtype
 
     def _gen_alloc_tcm_2d(self, node: ast.Call, hint: str) -> tuple[str, str]:
@@ -624,11 +603,9 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         row_type = f"memref<{NB}x{K}x{dtype}, strided<[{row_stride}, 1], offset: ?>{sp}>"
         stride_op = str(M) if m_static else m_ssa
         A_view = self._alloc_ssa("Aview")
-        self._emit(
-            f"{A_view} = memref.reinterpret_cast {ptr_ssa} to "
-            f"offset: [{boff}], sizes: [{NB}, {K}], strides: [{stride_op}, 1]"
-            f" : {ranked} to {row_type}"
-        )
+        self._emit(f"{A_view} = memref.reinterpret_cast {ptr_ssa} to "
+                   f"offset: [{boff}], sizes: [{NB}, {K}], strides: [{stride_op}, 1]"
+                   f" : {ranked} to {row_type}")
         buf_type_clean = f"memref<{K}x{NB}x{dtype}>"
         # spestruct.pack (K3 hardware-accelerated pack, lowers to spe_pack_* runtime fn).
         # Expand 2D buf[K×NB] to 4D [1×1×K×NB] required by spestruct.pack.
@@ -638,22 +615,19 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         buf_type_clean = f"memref<{K}x{NB}x{dtype}>"
         d0_map = "affine_map<(d0, d1) -> (d1, d0)>"
         d1_map = "affine_map<(d0, d1) -> (d0, d1)>"
-        self._emit(
-            f'linalg.generic {{'
-            f'indexing_maps = [{d0_map}, {d1_map}], '
-            f'iterator_types = ["parallel", "parallel"]'
-            f'}} ins({A_view} : {row_type}) outs({buf_ssa} : {buf_type_clean}) {{'
-        )
+        self._emit(f'linalg.generic {{'
+                   f'indexing_maps = [{d0_map}, {d1_map}], '
+                   f'iterator_types = ["parallel", "parallel"]'
+                   f'}} ins({A_view} : {row_type}) outs({buf_ssa} : {buf_type_clean}) {{')
         self._emit(f'^bb0(%a: {dtype}, %_: {dtype}):')
         self._emit(f'  linalg.yield %a : {dtype}')
-        self._emit(f'}}')
+        self._emit('}')
 
     def _gen_proton_mark(self, node: ast.Call):
         name = ast.literal_eval(node.args[0])
         is_start = len(node.args) >= 2 and ast.literal_eval(node.args[1])
         action = "start" if is_start else "end"
         self._emit(f'proton.record {action} "{name}"')
-
 
     def _gen_store_2d_at(self, node: ast.Call):
         # store_2d_at(ptr, elem_off, rows, cols, vec): write rows×cols block at offset
@@ -679,16 +653,12 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         sp = f", {space}" if space else ""
         mtype = f"memref<{rows}x{cols}x{edtype}, strided<[{cols}, 1], offset: ?>{sp}>"
         view = self._alloc_ssa("view2d")
-        self._emit(
-            f"{view} = memref.reinterpret_cast {ptr_ssa} to "
-            f"offset: [{boff}], sizes: [{rows}, {cols}], strides: [{cols}, 1]"
-            f" : {ranked} to {mtype}"
-        )
+        self._emit(f"{view} = memref.reinterpret_cast {ptr_ssa} to "
+                   f"offset: [{boff}], sizes: [{rows}, {cols}], strides: [{cols}, 1]"
+                   f" : {ranked} to {mtype}")
         c0 = self._const_int(0)
-        self._emit(
-            f"vector.transfer_write {vec_ssa}, {view}[{c0}, {c0}]"
-            f" {{in_bounds = [true, true]}} : {vec_type}, {mtype}"
-        )
+        self._emit(f"vector.transfer_write {vec_ssa}, {view}[{c0}, {c0}]"
+                   f" {{in_bounds = [true, true]}} : {vec_type}, {mtype}")
 
     def _gen_splat_2d(self, node: ast.Call, hint: str) -> tuple[str, str]:
         # splat_2d(val, rows, cols, dtype) -> vector<rows x cols x dtype>
@@ -712,10 +682,8 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         rhs_ssa, rhs_type = self._gen_expr(node.args[1])
         acc_ssa, acc_type = self._gen_expr(node.args[2])
         result = self._alloc_ssa(hint or "bmacc")
-        self._emit(
-            f'{result} = "vector_ext.batch_macc"({lhs_ssa}, {rhs_ssa}, {acc_ssa})'
-            f' : ({lhs_type}, {rhs_type}, {acc_type}) -> {acc_type}'
-        )
+        self._emit(f'{result} = "vector_ext.batch_macc"({lhs_ssa}, {rhs_ssa}, {acc_ssa})'
+                   f' : ({lhs_type}, {rhs_type}, {acc_type}) -> {acc_type}')
         return result, acc_type
 
     # ------------------------------------------------------------------
@@ -731,8 +699,7 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
 
     def _require_vl(self) -> int:
         if self._active_vl is None:
-            raise ValueError(
-                "spine_raw svector op used before tle.vconfig(...) set the VL")
+            raise ValueError("spine_raw svector op used before tle.vconfig(...) set the VL")
         return self._active_vl
 
     def _gen_vzero(self, node: ast.Call, hint: str) -> tuple[str, str]:
@@ -770,10 +737,8 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             # one entry per *vector* dim (rank 1 here), not per index element.
             idx_ssas = [self._gen_expr(e)[0] for e in idx_elts]
             result = self._alloc_ssa(hint or "vld")
-            self._emit(
-                f"{result} = vector.transfer_read {ptr_ssa}[{', '.join(idx_ssas)}], {pad}"
-                f" {{in_bounds = [true]}} : {ptr_type}, {vec_type}"
-            )
+            self._emit(f"{result} = vector.transfer_read {ptr_ssa}[{', '.join(idx_ssas)}], {pad}"
+                       f" {{in_bounds = [true]}} : {ptr_type}, {vec_type}")
             return result, vec_type
 
         # External unranked pointer: cast to ranked 1D, compute a flat offset.
@@ -791,13 +756,10 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             off_ssa = self._alloc_ssa("off")
             self._emit(f"{off_ssa} = arith.addi {mul}, {c_ssa} : index")
         else:
-            raise NotImplementedError(
-                f"vload with {len(idx_elts)}-D index into external pointer unsupported")
+            raise NotImplementedError(f"vload with {len(idx_elts)}-D index into external pointer unsupported")
         result = self._alloc_ssa(hint or "vld")
-        self._emit(
-            f"{result} = vector.transfer_read {ranked_ssa}[{off_ssa}], {pad}"
-            f" {{in_bounds = [true]}} : {ranked_type}, {vec_type}"
-        )
+        self._emit(f"{result} = vector.transfer_read {ranked_ssa}[{off_ssa}], {pad}"
+                   f" {{in_bounds = [true]}} : {ranked_type}, {vec_type}")
         return result, vec_type
 
     def _gen_vmacc(self, node: ast.Call, hint: str) -> tuple[str, str]:
@@ -887,8 +849,7 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         mtype = f"memref<{'x'.join(dims)}x{dtype}>"
         result = self._alloc_ssa(hint or "packed")
         operands = ", ".join(dyn_ssas)
-        self._emit(
-            f"{result} = memref.alloc({operands}) {{alignment = 64 : i64}} : {mtype}")
+        self._emit(f"{result} = memref.alloc({operands}) {{alignment = 64 : i64}} : {mtype}")
         return result, mtype
 
     def _gen_vpack(self, node: ast.Call):
@@ -939,13 +900,10 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             off = self._alloc_ssa("off")
             self._emit(f"{off} = arith.addi {roff}, {loop_ssa} : index")
             vec = self._alloc_ssa("pkv")
-            self._emit(
-                f"{vec} = vector.transfer_read {ranked_ssa}[{off}], {pad}"
-                f" {{in_bounds = [true]}} : {ranked_type}, {vec_type}")
+            self._emit(f"{vec} = vector.transfer_read {ranked_ssa}[{off}], {pad}"
+                       f" {{in_bounds = [true]}} : {ranked_type}, {vec_type}")
             cr_idx = self._const_int(r)
-            self._emit(
-                f"vector.transfer_write {vec}, {dst_ssa}[{c0}, {kb_ssa}, {cr_idx}, {c0}]"
-                f" {{in_bounds = [true]}} : {vec_type}, {dst_type}")
+            self._emit(f"vector.transfer_write {vec}, {dst_ssa}[{c0}, {kb_ssa}, {cr_idx}, {c0}]"
+                       f" {{in_bounds = [true]}} : {vec_type}, {dst_type}")
         self._indent -= 2
         self._emit("}")
-

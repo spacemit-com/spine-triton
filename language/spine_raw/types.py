@@ -14,6 +14,7 @@ T = TypeVar("T")
 
 class _TypedAnnotation:
     """Base for In/InOut; carries the MLIR type string."""
+
     def __init__(self, mlir_type: str, writable: bool):
         self.mlir_type = mlir_type
         self.writable = writable
@@ -34,6 +35,7 @@ class In(Generic[T]):
 class InOut(Generic[T]):
     """Read-write parameter. The raw function receives it and may mutate it in place.
     For SSA-clean MLIR the caller passes a memref that the function writes into."""
+
     def __class_getitem__(cls, mlir_type: str) -> _TypedAnnotation:
         return _TypedAnnotation(mlir_type, writable=True)
 
@@ -54,4 +56,3 @@ def mem(dtype: str, out: bool = False) -> _TypedAnnotation:
 
 # Scalar index parameter annotation, e.g.  K: tle.index
 index = _TypedAnnotation("index", writable=False)
-

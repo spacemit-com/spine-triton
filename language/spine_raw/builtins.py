@@ -12,14 +12,13 @@ from __future__ import annotations
 
 
 class _SpineRawBuiltin:
+
     def __init__(self, name: str):
         self._name = name
 
     def __call__(self, *args, **kwargs):
-        raise NotImplementedError(
-            f"spine_raw.{self._name}() must only be called inside a "
-            f"@spine_raw function body (used by SpineMLIRCodeGenerator)"
-        )
+        raise NotImplementedError(f"spine_raw.{self._name}() must only be called inside a "
+                                  f"@spine_raw function body (used by SpineMLIRCodeGenerator)")
 
     def __repr__(self):
         return f"spine_raw.{self._name}"
@@ -31,10 +30,9 @@ class _SpineRawRange:
     Accepts range(stop) or range(start, stop, step) like the Python builtin;
     only ever evaluated by SpineMLIRCodeGenerator (raises if called directly).
     """
+
     def __call__(self, *args):
-        raise NotImplementedError(
-            "spine_raw.range() must only be used in a @spine_raw function body"
-        )
+        raise NotImplementedError("spine_raw.range() must only be used in a @spine_raw function body")
 
     def __repr__(self):
         return "spine_raw.range"
@@ -42,14 +40,16 @@ class _SpineRawRange:
 
 # Public built-in objects (batch_macc / vfwmacc mv path — see test_raw_mv.py)
 batch_macc = _SpineRawBuiltin("batch_macc")  # batch_macc(lhs_memref, rhs_vec, acc_vec) → vector_ext.batch_macc
-view_2d  = _SpineRawBuiltin("view_2d")   # view_2d(ptr, rows, cols, dtype) → 2D strided memref view
-load_2d  = _SpineRawBuiltin("load_2d")   # load_2d(ptr, rows, cols, dtype) → vector<rows x cols>
-alloc_tcm_2d = _SpineRawBuiltin("alloc_tcm_2d")  # alloc_tcm_2d(K, NB, dtype) → memref<K×NB> via memref.alloc (→ spine_thread_malloc/TCM)
-pack_2d_t_into = _SpineRawBuiltin("pack_2d_t_into")  # pack_2d_t_into(buf, ptr, row_base, K, NB, M, dtype) → packs A^T into existing buf (no alloca)
+view_2d = _SpineRawBuiltin("view_2d")  # view_2d(ptr, rows, cols, dtype) → 2D strided memref view
+load_2d = _SpineRawBuiltin("load_2d")  # load_2d(ptr, rows, cols, dtype) → vector<rows x cols>
+alloc_tcm_2d = _SpineRawBuiltin(
+    "alloc_tcm_2d")  # alloc_tcm_2d(K, NB, dtype) → memref<K×NB> via memref.alloc (→ spine_thread_malloc/TCM)
+pack_2d_t_into = _SpineRawBuiltin(
+    "pack_2d_t_into")  # pack_2d_t_into(buf, ptr, row_base, K, NB, M, dtype) → packs A^T into existing buf (no alloca)
 proton_mark = _SpineRawBuiltin("proton_mark")  # proton_mark(name, is_start) → rdtime + func.call @proton_record
 splat_2d = _SpineRawBuiltin("splat_2d")  # splat_2d(val, rows, cols, dtype) → vector<rows x cols>
 store_2d_at = _SpineRawBuiltin("store_2d_at")  # store_2d_at(ptr, elem_off, rows, cols, vec)
-range    = _SpineRawRange()              # range(n) / range(start, stop, step) → scf.for bounds
+range = _SpineRawRange()  # range(n) / range(start, stop, step) → scf.for bounds
 
 # ---------------------------------------------------------------------------
 # svector-level markers (feishu 3.3 mv 示例). Fixed-VL eDSL that maps document
@@ -63,14 +63,14 @@ range    = _SpineRawRange()              # range(n) / range(start, stop, step) �
 #   alloc    : memref.alloc N-D scratch (写法3 packed_B)
 #   vpack    : pack a B row-block into the packed_B scratch layout (写法3)
 # ---------------------------------------------------------------------------
-vconfig     = _SpineRawBuiltin("vconfig")      # vconfig(avl, sew_bytes) → fixed VL
-vzero       = _SpineRawBuiltin("vzero")        # vzero(dtype) → vector<VL x dtype> zeros
-vload       = _SpineRawBuiltin("vload")        # vload(ptr, idx_tuple[, stride]) → vector<VL x dtype>
-vmacc       = _SpineRawBuiltin("vmacc")        # vmacc(acc, x, y) → widening fma accumulate
+vconfig = _SpineRawBuiltin("vconfig")  # vconfig(avl, sew_bytes) → fixed VL
+vzero = _SpineRawBuiltin("vzero")  # vzero(dtype) → vector<VL x dtype> zeros
+vload = _SpineRawBuiltin("vload")  # vload(ptr, idx_tuple[, stride]) → vector<VL x dtype>
+vmacc = _SpineRawBuiltin("vmacc")  # vmacc(acc, x, y) → widening fma accumulate
 vreduce_sum = _SpineRawBuiltin("vreduce_sum")  # vreduce_sum(vec) → scalar
-vstore      = _SpineRawBuiltin("vstore")       # vstore(ptr, idx_tuple, scalar) → memref.store
-alloc       = _SpineRawBuiltin("alloc")        # alloc(shape_tuple, dtype) → memref.alloc
-vpack       = _SpineRawBuiltin("vpack")        # vpack(src, src_idx, dst, dst_shape) → pack rows
+vstore = _SpineRawBuiltin("vstore")  # vstore(ptr, idx_tuple, scalar) → memref.store
+alloc = _SpineRawBuiltin("alloc")  # alloc(shape_tuple, dtype) → memref.alloc
+vpack = _SpineRawBuiltin("vpack")  # vpack(src, src_idx, dst, dst_shape) → pack rows
 
 # ---------------------------------------------------------------------------
 # Document-facing sugar: dtype names and the `mem` / `index` / `raw_kernel`
@@ -80,4 +80,3 @@ vpack       = _SpineRawBuiltin("vpack")        # vpack(src, src_idx, dst, dst_sh
 f16 = "f16"
 f32 = "f32"
 bf16 = "bf16"
-

@@ -8,7 +8,6 @@ caches the resulting MLIR string.
 """
 from __future__ import annotations
 
-import inspect
 from typing import Callable
 
 from .codegen import SpineMLIRCodeGenerator
@@ -65,9 +64,7 @@ def spine_raw(*, name: str = "linalg") -> Callable:
             ...
     """
     if name not in _REGISTRY:
-        raise ValueError(
-            f"spine_raw: unknown backend {name!r}. Available: {list(_REGISTRY)}"
-        )
+        raise ValueError(f"spine_raw: unknown backend {name!r}. Available: {list(_REGISTRY)}")
     cls = _REGISTRY[name]
 
     def decorator(fn: Callable) -> SpineLinalgJITFunction:
