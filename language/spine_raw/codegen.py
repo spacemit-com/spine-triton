@@ -69,7 +69,8 @@ def _memref_elem(mlir_type: str) -> str:
 
 _SPINE_RAW_BUILTIN_NAMES = {
     "batch_macc", "view_2d", "load_2d", "alloc_tcm_2d", "pack_2d_t_into", "splat_2d", "store_2d_at", "range",
-    "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "vpack", "vmadot"
+    "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "vpack", "vmadot",
+    "interleave"
 }
 
 
@@ -472,6 +473,8 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             return self._gen_vreduce_sum(node, hint)
         if _is_spine_raw_attr(node.func, "vmadot", self._aliases):
             return self._gen_vmadot(node, hint)
+        if _is_spine_raw_attr(node.func, "interleave", self._aliases):
+            return self._gen_interleave(node, hint)
         if _is_spine_raw_attr(node.func, "alloc", self._aliases):
             return self._gen_alloc(node, hint)
         raise NotImplementedError(f"Unsupported call: {ast.dump(node.func)}")
@@ -809,6 +812,22 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
                    f' <{{m = {m} : i64, n = {n} : i64, k = {k} : i64}}>'
                    f' : ({x_type}, {y_type}, {acc_type}) -> {acc_type}')
         return result, acc_type
+
+    def _gen_interleave(self, node: ast.Call, hint: str) -> tuple[str, str]:
+        # interleave(a, b, group_len) → "vector_ext.interleave"(a, b) <{groupLen}>
+        #   → lower 到 smt.vpack.vv(硬件 cube pack)。RVV-faithful:1:1 映射硬件
+        #   vpack.vv。a/b 同型 1D vector<VLxdtype>,out 为 vector<2VLxdtype>(交织)。
+        a_ssa, a_type = self._gen_expr(node.args[0])
+        b_ssa, b_type = self._gen_expr(node.args[1])
+        group_len = ast.literal_eval(node.args[2])
+        n = _vec_n(a_type)
+        elem = _vec_elem(a_type)
+        out_type = f"vector<{2 * n}x{elem}>"
+        result = self._alloc_ssa(hint or "ilv")
+        self._emit(f'{result} = "vector_ext.interleave"({a_ssa}, {b_ssa})'
+                   f' <{{groupLen = {group_len} : i64}}>'
+                   f' : ({a_type}, {b_type}) -> {out_type}')
+        return result, out_type
 
     def _gen_vstore(self, node: ast.Call):
         # vstore(ptr, idx_tuple, scalar | vec):

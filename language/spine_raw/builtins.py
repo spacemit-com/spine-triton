@@ -72,6 +72,8 @@ vreduce_sum = _SpineRawBuiltin("vreduce_sum")  # vreduce_sum(vec) → scalar
 vstore = _SpineRawBuiltin("vstore")  # vstore(ptr, idx_tuple, scalar | vec) → memref.store / transfer_write
 alloc = _SpineRawBuiltin("alloc")  # alloc(shape_tuple, dtype) → memref.alloc
 vpack = _SpineRawBuiltin("vpack")  # vpack(src, src_idx, dst, dst_shape) → pack rows
+interleave = _SpineRawBuiltin(
+    "interleave")  # interleave(a, b, group_len) → vector_ext.interleave → smt.vpack.vv (cube pack)
 vmadot = _SpineRawBuiltin("vmadot")  # vmadot(acc, x, y) → "vector_ext.matmul" (矩阵单元, 写法4)
 
 # ---------------------------------------------------------------------------
