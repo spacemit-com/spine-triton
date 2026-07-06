@@ -4,7 +4,7 @@ C = B @ A   with  B: [N, K] f16 row-major,  A: [K] f16,  C: [N] f32.
 
 style2 (纯 svector): vconfig/vzero/vload/vmacc/vreduce_sum/vstore, no packing.
 style3 (svector + pack): the same, but B's 4-row block is pre-packed into a
-        contiguous scratch buffer via tle.alloc + tle.vpack before the K loop.
+        contiguous scratch buffer via tle.alloc + tle.pack before the K loop.
 style4 (svector + vmadot 矩阵单元): matrix-engine dot (tle.vmadot →
         vector_ext.matmul, m=n=k=8 → llvm.riscv.smt.vmadot) produces the wide
         result directly, no vreduce_sum. N must be a multiple of 8.
@@ -63,7 +63,7 @@ def _mv_sv_host_style2(B, A, C, K, N):
 
 
 # ---------------------------------------------------------------------------
-# 写法3 — svector + tle.alloc/tle.vpack 预打包 B
+# 写法3 — svector + tle.alloc/tle.pack 预打包 B
 # ---------------------------------------------------------------------------
 @tle.raw_kernel
 def mv_block_style3(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True), K: tle.index, N: tle.index):
@@ -74,7 +74,7 @@ def mv_block_style3(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
         acc1 = tle.vzero(f32)
         acc2 = tle.vzero(f32)
         acc3 = tle.vzero(f32)
-        tle.vpack(B, (ni, 0), packed_B, (1, K // nvl, 4, nvl), K)
+        tle.pack(B, (ni, 0), packed_B, (1, K // nvl, 4, nvl), K)
         for ki in tle.range(0, K, nvl):
             nvl = tle.vconfig(K - ki, 2)
             vb0 = tle.vload(packed_B, (0, ki // nvl, 0, 0))

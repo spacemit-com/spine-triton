@@ -61,7 +61,8 @@ range = _SpineRawRange()  # range(n) / range(start, stop, step) → scf.for boun
 #   vreduce_sum : vector.reduction <add> -> scalar
 #   vstore   : store a scalar to memref[idx]
 #   alloc    : memref.alloc N-D scratch (写法3 packed_B)
-#   vpack    : pack a B row-block into the packed_B scratch layout (写法3)
+#   pack     : pack a B row-block into the packed_B scratch layout (写法3)
+#   vpack    : vpack(a, b, group_len) → vector_ext.interleave → smt.vpack.vv (硬件 cube pack)
 #   vmadot   : matrix-unit dot (写法4) -> vector_ext.matmul, 直接产出宽结果
 # ---------------------------------------------------------------------------
 vconfig = _SpineRawBuiltin("vconfig")  # vconfig(avl, sew_bytes) → fixed VL
@@ -71,9 +72,8 @@ vmacc = _SpineRawBuiltin("vmacc")  # vmacc(acc, x, y) → widening fma accumulat
 vreduce_sum = _SpineRawBuiltin("vreduce_sum")  # vreduce_sum(vec) → scalar
 vstore = _SpineRawBuiltin("vstore")  # vstore(ptr, idx_tuple, scalar | vec) → memref.store / transfer_write
 alloc = _SpineRawBuiltin("alloc")  # alloc(shape_tuple, dtype) → memref.alloc
-vpack = _SpineRawBuiltin("vpack")  # vpack(src, src_idx, dst, dst_shape) → pack rows
-interleave = _SpineRawBuiltin(
-    "interleave")  # interleave(a, b, group_len) → vector_ext.interleave → smt.vpack.vv (cube pack)
+pack = _SpineRawBuiltin("pack")  # pack(src, src_idx, dst, dst_shape) → pack rows (写法3)
+vpack = _SpineRawBuiltin("vpack")  # vpack(a, b, group_len) → vector_ext.interleave → smt.vpack.vv (硬件 cube pack)
 vmadot = _SpineRawBuiltin("vmadot")  # vmadot(acc, x, y) → "vector_ext.matmul" (矩阵单元, 写法4)
 
 # ---------------------------------------------------------------------------

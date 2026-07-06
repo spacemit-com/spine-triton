@@ -69,8 +69,7 @@ def _memref_elem(mlir_type: str) -> str:
 
 _SPINE_RAW_BUILTIN_NAMES = {
     "batch_macc", "view_2d", "load_2d", "alloc_tcm_2d", "pack_2d_t_into", "splat_2d", "store_2d_at", "range",
-    "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "vpack", "vmadot",
-    "interleave"
+    "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "pack", "vmadot", "vpack"
 }
 
 
@@ -399,8 +398,8 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             self._gen_proton_mark(node)
         elif _is_spine_raw_attr(node.func, "vstore", self._aliases):
             self._gen_vstore(node)
-        elif _is_spine_raw_attr(node.func, "vpack", self._aliases):
-            self._gen_vpack(node)
+        elif _is_spine_raw_attr(node.func, "pack", self._aliases):
+            self._gen_pack(node)
         else:
             raise NotImplementedError(f"Unsupported call statement: {ast.dump(node.func)}")
 
@@ -473,8 +472,8 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             return self._gen_vreduce_sum(node, hint)
         if _is_spine_raw_attr(node.func, "vmadot", self._aliases):
             return self._gen_vmadot(node, hint)
-        if _is_spine_raw_attr(node.func, "interleave", self._aliases):
-            return self._gen_interleave(node, hint)
+        if _is_spine_raw_attr(node.func, "vpack", self._aliases):
+            return self._gen_vpack(node, hint)
         if _is_spine_raw_attr(node.func, "alloc", self._aliases):
             return self._gen_alloc(node, hint)
         raise NotImplementedError(f"Unsupported call: {ast.dump(node.func)}")
@@ -813,8 +812,8 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
                    f' : ({x_type}, {y_type}, {acc_type}) -> {acc_type}')
         return result, acc_type
 
-    def _gen_interleave(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        # interleave(a, b, group_len) → "vector_ext.interleave"(a, b) <{groupLen}>
+    def _gen_vpack(self, node: ast.Call, hint: str) -> tuple[str, str]:
+        # vpack(a, b, group_len) → "vector_ext.interleave"(a, b) <{groupLen}>
         #   → lower 到 smt.vpack.vv(硬件 cube pack)。RVV-faithful:1:1 映射硬件
         #   vpack.vv。a/b 同型 1D vector<VLxdtype>,out 为 vector<2VLxdtype>(交织)。
         a_ssa, a_type = self._gen_expr(node.args[0])
@@ -897,8 +896,8 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         self._emit(f"{result} = memref.alloc({operands}) {{alignment = 64 : i64}} : {mtype}")
         return result, mtype
 
-    def _gen_vpack(self, node: ast.Call):
-        # vpack(src, (row0, col0), dst, dst_shape, stride):
+    def _gen_pack(self, node: ast.Call):
+        # pack(src, (row0, col0), dst, dst_shape, stride):
         #   pack src's ROWS-row block starting at row0 into dst laid out as
         #   (1, K//nvl, ROWS, nvl), so dst[0, kb, r, :] = src[row0+r, kb*nvl:+nvl].
         #   src is an external row-major pointer with row stride = `stride`
@@ -906,14 +905,14 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         #   from tle.alloc. The kb loop runs over the runtime column extent.
         src_node, src_idx, dst_node, dst_shape, stride_node = node.args[:5]
         assert isinstance(src_idx, ast.Tuple) and len(src_idx.elts) == 2, \
-            "vpack src index must be a (row, col) tuple"
+            "pack src index must be a (row, col) tuple"
         assert isinstance(dst_shape, ast.Tuple) and len(dst_shape.elts) == 4, \
-            "vpack dst_shape must be 4-D (1, K//nvl, ROWS, nvl)"
+            "pack dst_shape must be 4-D (1, K//nvl, ROWS, nvl)"
 
         vl = self._require_vl()
         rows = self._try_const_int(dst_shape.elts[2])
         assert rows is not None, \
-            "vpack ROWS (dst_shape[2]) must be a compile-time constant"
+            "pack ROWS (dst_shape[2]) must be a compile-time constant"
 
         dst_ssa, dst_type = self._gen_expr(dst_node)
         dtype = _memref_elem(dst_type)
