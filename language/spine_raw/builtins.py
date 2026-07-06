@@ -38,17 +38,8 @@ class _SpineRawRange:
         return "spine_raw.range"
 
 
-# Public built-in objects (batch_macc / vfwmacc mv path)
-batch_macc = _SpineRawBuiltin("batch_macc")  # batch_macc(lhs_memref, rhs_vec, acc_vec) → vector_ext.batch_macc
-view_2d = _SpineRawBuiltin("view_2d")  # view_2d(ptr, rows, cols, dtype) → 2D strided memref view
-load_2d = _SpineRawBuiltin("load_2d")  # load_2d(ptr, rows, cols, dtype) → vector<rows x cols>
-alloc_tcm_2d = _SpineRawBuiltin(
-    "alloc_tcm_2d")  # alloc_tcm_2d(K, NB, dtype) → memref<K×NB> via memref.alloc (→ spine_thread_malloc/TCM)
-pack_2d_t_into = _SpineRawBuiltin(
-    "pack_2d_t_into")  # pack_2d_t_into(buf, ptr, row_base, K, NB, M, dtype) → packs A^T into existing buf (no alloca)
+# Public built-in objects
 proton_mark = _SpineRawBuiltin("proton_mark")  # proton_mark(name, is_start) → rdtime + func.call @proton_record
-splat_2d = _SpineRawBuiltin("splat_2d")  # splat_2d(val, rows, cols, dtype) → vector<rows x cols>
-store_2d_at = _SpineRawBuiltin("store_2d_at")  # store_2d_at(ptr, elem_off, rows, cols, vec)
 range = _SpineRawRange()  # range(n) / range(start, stop, step) → scf.for bounds
 
 # ---------------------------------------------------------------------------
