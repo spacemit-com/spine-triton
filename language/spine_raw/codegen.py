@@ -68,7 +68,7 @@ def _memref_elem(mlir_type: str) -> str:
 
 
 _SPINE_RAW_BUILTIN_NAMES = {
-    "range", "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "pack", "vmadot",
+    "range", "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "pack", "vfwmadot",
     "vpack"
 }
 
@@ -456,8 +456,8 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             return self._gen_vmacc(node, hint)
         if _is_spine_raw_attr(node.func, "vreduce_sum", self._aliases):
             return self._gen_vreduce_sum(node, hint)
-        if _is_spine_raw_attr(node.func, "vmadot", self._aliases):
-            return self._gen_vmadot(node, hint)
+        if _is_spine_raw_attr(node.func, "vfwmadot", self._aliases):
+            return self._gen_vfwmadot(node, hint)
         if _is_spine_raw_attr(node.func, "vpack", self._aliases):
             return self._gen_vpack(node, hint)
         if _is_spine_raw_attr(node.func, "alloc", self._aliases):
@@ -589,18 +589,18 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         self._emit(f"{result} = vector.reduction <add>, {v_ssa} : {v_type} into {elem}")
         return result, elem
 
-    def _gen_vmadot(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        # vmadot(acc, x, y) → "vector_ext.matmul"(x, y, acc) <{m,n,k}> (写法4, 矩阵单元).
-        #   矩阵引擎直接产出宽结果 (不需 vreduce_sum);K3 spine-opt (branch
-        #   for-kxy-ame-0.5b) 注册了 vector_ext::MatmulOp + ConvertOpToLLVMPattern,
-        #   lower 到 llvm.riscv.smt.vmadot (需 xsmtvdotii mattr, 已在 compiler.py 配)。
+    def _gen_vfwmadot(self, node: ast.Call, hint: str) -> tuple[str, str]:
+        # vfwmadot(acc, x, y) → "vector_ext.matmul"(x, y, acc) <{m,n,k}> (写法4, 矩阵单元).
+        #   矩阵引擎直接产出宽结果 (不需 vreduce_sum);K3 spine-opt 注册了
+        #   vector_ext::MatmulOp + ConvertOpToLLVMPattern,lower 到
+        #   llvm.riscv.smt.vfwmadot (需 xsmtvdotii mattr, 已在 compiler.py 配)。
         #   用 generic form 让未注册 vector_ext 的 spine-triton-opt 也能 parse。
         #   operand 均为整寄存器宽 (f16=64, f32=64);tile 规格 m=n=k=8 (SMT 单元固定)。
         acc_ssa, acc_type = self._gen_expr(node.args[0])
         x_ssa, x_type = self._gen_expr(node.args[1])
         y_ssa, y_type = self._gen_expr(node.args[2])
         m = n = k = 8
-        result = self._alloc_ssa(hint or "vmadot")
+        result = self._alloc_ssa(hint or "vfwmadot")
         self._emit(f'{result} = "vector_ext.matmul"({x_ssa}, {y_ssa}, {acc_ssa})'
                    f' <{{m = {m} : i64, n = {n} : i64, k = {k} : i64}}>'
                    f' : ({x_type}, {y_type}, {acc_type}) -> {acc_type}')
@@ -634,7 +634,7 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         val_ssa, val_type = self._gen_expr(node.args[2])
         store_ssa, store_type = self._ranked_cast(ptr_ssa, ptr_type)
         if val_type.startswith("vector<"):
-            # 宽结果向量写回 (写法4 vmadot): 只写 acc 的前 m(=8) 宽有效元素。
+            # 宽结果向量写回 (写法4 vfwmadot): 只写 acc 的前 m(=8) 宽有效元素。
             self._emit(f"vector.transfer_write {val_ssa}, {store_ssa}[{idx_ssa}]"
                        f" {{in_bounds = [true]}} : {val_type}, {store_type}")
         else:

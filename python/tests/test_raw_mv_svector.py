@@ -5,8 +5,8 @@ C = B @ A   with  B: [N, K] f16 row-major,  A: [K] f16,  C: [N] f32.
 style2 (纯 svector): vconfig/vzero/vload/vmacc/vreduce_sum/vstore, no packing.
 style3 (svector + pack): the same, but B's 4-row block is pre-packed into a
         contiguous scratch buffer via tle.alloc + tle.pack before the K loop.
-style4 (svector + vmadot 矩阵单元): matrix-engine dot (tle.vmadot →
-        vector_ext.matmul, m=n=k=8 → llvm.riscv.smt.vmadot) produces the wide
+style4 (svector + vfwmadot 矩阵单元): matrix-engine dot (tle.vfwmadot →
+        vector_ext.matmul, m=n=k=8 → llvm.riscv.smt.vfwmadot) produces the wide
         result directly, no vreduce_sum. N must be a multiple of 8.
 
 Fixed VL (f16 -> 64) this round: no dynamic vsetvl tail handling, so the tests
@@ -98,10 +98,10 @@ def _mv_sv_host_style3(B, A, C, K, N):
 
 
 # ---------------------------------------------------------------------------
-# 写法4 — svector + tle.vmadot 矩阵单元(feishu 3.3 第三段, vmadot 风格)
+# 写法4 — svector + tle.vfwmadot 矩阵单元(feishu 3.3 第三段, vfwmadot 风格)
 #
-# 矩阵引擎指令 vmadot 直接产出宽结果, 不需 vreduce_sum。映射到 K3 已注册的
-# vector_ext.matmul (m=n=k=8 tile) → llvm.riscv.smt.vmadot (xsmtvdotii mattr)。
+# 矩阵引擎指令 vfwmadot 直接产出宽结果, 不需 vreduce_sum。映射到 K3 已注册的
+# vector_ext.matmul (m=n=k=8 tile) → llvm.riscv.smt.vfwmadot (xsmtvdotii mattr)。
 # operand 为整寄存器宽 (f16=64, f32=64), 与仓库 mma_gen.mlir 实验一致。
 # ---------------------------------------------------------------------------
 @tle.raw_kernel
@@ -113,7 +113,7 @@ def mv_block_style4(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
             nvl = tle.vconfig(K - ki, 2)
             vb = tle.vload(B, (ni, ki), K)
             va = tle.vload(A, (ki, ))
-            acc = tle.vmadot(acc, vb, va)
+            acc = tle.vfwmadot(acc, vb, va)
         tle.vstore(C, (ni, ), acc)
 
 
@@ -146,14 +146,14 @@ def test_raw_mv_svector_style3(N, K):
     _run(_mv_sv_host_style3, N, K)
 
 
-# 写法4 (vmadot 矩阵单元): N 须为 8 的倍数 (matmul tile m=8)。
+# 写法4 (vfwmadot 矩阵单元): N 须为 8 的倍数 (matmul tile m=8)。
 _SHAPES_MADOT = [(8, 64), (16, 128), (32, 256), (64, 512)]
 
 
 @pytest.mark.parametrize("N, K", _SHAPES_MADOT)
 @pytest.mark.xfail(
-    reason="写法4 前端 (tle.vmadot → vector_ext.matmul) 已实现并在 K3 "
-    "干净 lower 到 llvm.riscv.smt.vmadot(无 legalize 失败);但 mv→GEMM "
+    reason="写法4 前端 (tle.vfwmadot → vector_ext.matmul) 已实现并在 K3 "
+    "干净 lower 到 llvm.riscv.smt.vfwmadot(无 legalize 失败);但 mv→GEMM "
     "的 8×8×8 tile 映射数值待对齐:vector_ext.matmul 是把 64 宽 operand "
     "当 8×8 行主 cube 的整块 GEMM(out[m,n]=Σ_k lhs[m,k]·rhs[n,k]),正确 "
     "mv 需 lhs=B 的 8×8 strided tile、rhs=A 广播、输出取第 0 列 strided "
