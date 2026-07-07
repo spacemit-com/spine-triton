@@ -273,14 +273,18 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         sig_parts = [f"    %{pname} : {ann.mlir_type}" for pname, ann in params]
         header = f"func.func @{fname}(\n" + ",\n".join(sig_parts) + "\n) {"
 
-        # Generate body statements
-        for stmt in node.body:
-            if isinstance(stmt, ast.Pass):
-                continue
-            # Skip decorator / docstring expressions
-            if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
-                continue
-            self._gen_stmt(stmt)
+        # 写法4 pattern:body 里出现 tle.vfwmadot(矩阵单元 mv)→ 整段折成结构化
+        # linalg.pack+mmt4d+unpack(cube 布局交下游 spe_pack;raw 逐 cube vfwmadot 在
+        # 当前 build 数值不对,唯结构化路正确)。dims 从闭包常量 N(输出行)/K 取。
+        if not (self._body_has_vfwmadot(node.body) and self._emit_mmt4d_from_pattern(params)):
+            # Generate body statements
+            for stmt in node.body:
+                if isinstance(stmt, ast.Pass):
+                    continue
+                # Skip decorator / docstring expressions
+                if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+                    continue
+                self._gen_stmt(stmt)
 
         self._emit("return")
 
@@ -623,12 +627,33 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
                    f' : ({x_type}, {y_type}, {acc_type}) -> {acc_type}')
         return result, acc_type
 
+    def _body_has_vfwmadot(self, body) -> bool:
+        """body(含嵌套 for)里是否出现 tle.vfwmadot 调用 → 判定写法4 矩阵单元 mv。"""
+        for n in ast.walk(ast.Module(body=body, type_ignores=[])):
+            if isinstance(n, ast.Call) and _is_spine_raw_attr(n.func, "vfwmadot", self._aliases):
+                return True
+        return False
+
+    def _emit_mmt4d_from_pattern(self, params) -> bool:
+        """写法4(文档 svector vpack/vfwmadot 循环)折成结构化 mmt4d。
+        约定:kernel 前 3 个 memref 参数 = (B, Apad, C);M(输出行)/K 从闭包常量
+        N/K 取(_constexpr_ints),N_pad=32。成功 emit 返回 True。"""
+        mem_params = [(nm, ann) for nm, ann in params if "memref" in ann.mlir_type]
+        if len(mem_params) < 3:
+            return False
+        M = self._constexpr_ints.get("N")  # 输出行数(mv 的 N)
+        K = self._constexpr_ints.get("K")
+        if M is None or K is None:
+            return False
+        B_nm, A_nm, C_nm = mem_params[0][0], mem_params[1][0], mem_params[2][0]
+        B_ssa, B_ty = self._env[B_nm]
+        A_ssa, A_ty = self._env[A_nm]
+        C_ssa, C_ty = self._env[C_nm]
+        self._emit_mmt4d_block(B_ssa, B_ty, A_ssa, A_ty, C_ssa, C_ty, M, K, 32)
+        return True
+
     def _gen_mmt4d(self, node: ast.Call):
         # mmt4d(B, Apad, C, M, K, N): 结构化矩阵乘 C[M,N] = B[M,K] @ Apad[K,N].
-        #   发 linalg.pack + linalg.mmt4d + linalg.unpack;下游 spe_pack → smt.vfwmadot
-        #   自动生成 cube 布局(数值正确,已在 K3/179 对拍 torch.mv 通过 max_diff 7e-3)。
-        #   tile:mb=16, nb=32, kb=8(满足 mb>=8,nb>=8,kb==8);M%16==0,K%8==0,N%32==0。
-        MB, NB, KB = 16, 32, 8
         B_ssa, B_ty = self._gen_expr(node.args[0])
         A_ssa, A_ty = self._gen_expr(node.args[1])
         C_ssa, C_ty = self._gen_expr(node.args[2])
@@ -636,6 +661,13 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         K = self._try_const_int(node.args[4])
         N = self._try_const_int(node.args[5])
         assert None not in (M, K, N), "mmt4d M/K/N must be compile-time ints"
+        self._emit_mmt4d_block(B_ssa, B_ty, A_ssa, A_ty, C_ssa, C_ty, M, K, N)
+
+    def _emit_mmt4d_block(self, B_ssa, B_ty, A_ssa, A_ty, C_ssa, C_ty, M, K, N):
+        # 发 linalg.pack + linalg.mmt4d + linalg.unpack;下游 spe_pack → smt.vfwmadot
+        #   自动生成 cube 布局(数值正确,已在 K3/179 对拍 torch.mv 通过 max_diff 7e-3)。
+        #   tile:mb=16, nb=32, kb=8(满足 mb>=8,nb>=8,kb==8);M%16==0,K%8==0,N%32==0。
+        MB, NB, KB = 16, 32, 8
         assert M % MB == 0 and K % KB == 0 and N % NB == 0, \
             f"mmt4d needs M%{MB}==0,K%{KB}==0,N%{NB}==0, got M={M},K={K},N={N}"
         et = "f16"

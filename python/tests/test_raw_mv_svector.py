@@ -113,12 +113,22 @@ def _mv_sv_host_style3(B, A, C, K, N):
 # tile mb=16/nb=32/kb=8：Nrow%16==0，K%8==0。已在 K3(179) 对拍 torch.mv max_diff~7e-3。
 @functools.lru_cache(maxsize=None)
 def _make_style4_host(N, K):
-    # mmt4d 需编译期维度，故按 shape 生成 kernel（N/K 作字面量烘进 tle.mmt4d）。
-    # 每个 shape 的 kernel/host 需唯一 __name__，否则 Triton JIT 按名缓存会串用
-    # 首个编译的 kernel（导致其余 shape 复用错误维度 → 数值错）。
+    # 文档 §3.3 第三段的 svector 写法4 surface:packed_B=tle.alloc + tle.vpack 打包 B,
+    # 内层 for ki 逐 8-K-tile 取 vb/va 用 tle.vfwmadot 矩阵单元累加。codegen 把这套
+    # 「vfwmadot 循环」pattern 整体折成结构化 linalg.pack+mmt4d+unpack(cube 布局交下游
+    # spe_pack 自动生成),底层复用已在 K3 对拍 torch.mv 通过的 mmt4d 路。N/K 经闭包烘成
+    # 编译期常量(mmt4d 需固定维度)。每 shape 唯一 __name__ 避免 Triton JIT 按名缓存串用。
     @tle.raw_kernel
     def mv_block_style4(B: tle.mem(f16), Apad: tle.mem(f16), C2: tle.mem(f16, out=True)):
-        tle.mmt4d(B, Apad, C2, N, K, 32)
+        packed_B = tle.alloc((1, K // 8, 32, 8), f16)
+        for ni in tle.range(0, N, 32):
+            acc = tle.vzero(f32)
+            tle.vpack(B, (ni, 0), packed_B, (1, K // 8, 32, 8))
+            for ki in tle.range(0, K, 8):
+                vb = tle.vload(packed_B, (0, ki // 8, 0, 0))
+                va = tle.vload(Apad, (ki, ))
+                acc = tle.vfwmadot(acc, vb, va)
+            tle.vstore(C2, (ni, ), acc)
 
     mv_block_style4._fn.__name__ = f"mv_block_style4_{N}_{K}"
 
