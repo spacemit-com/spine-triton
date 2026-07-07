@@ -66,6 +66,8 @@ alloc = _SpineRawBuiltin("alloc")  # alloc(shape_tuple, dtype) → memref.alloc
 pack = _SpineRawBuiltin("pack")  # pack(src, src_idx, dst, dst_shape) → pack rows (写法3)
 vpack = _SpineRawBuiltin("vpack")  # vpack(a, b, group_len) → vector_ext.interleave → smt.vpack.vv (硬件 cube pack)
 vfwmadot = _SpineRawBuiltin("vfwmadot")  # vfwmadot(acc, x, y) → "vector_ext.matmul" → smt.vfwmadot (矩阵单元, 写法4)
+mmt4d = _SpineRawBuiltin(
+    "mmt4d")  # mmt4d(B, Apad, C, M, K, N) → linalg.pack+mmt4d+unpack → spe_pack→vfwmadot(结构化矩阵乘, 数值正确)
 
 # ---------------------------------------------------------------------------
 # Document-facing sugar: dtype names and the `mem` / `index` / `raw_kernel`

@@ -5,9 +5,9 @@ C = B @ A   with  B: [N, K] f16 row-major,  A: [K] f16,  C: [N] f32.
 style2 (纯 svector): vconfig/vzero/vload/vmacc/vreduce_sum/vstore, no packing.
 style3 (svector + pack): the same, but B's 4-row block is pre-packed into a
         contiguous scratch buffer via tle.alloc + tle.pack before the K loop.
-style4 (svector + vfwmadot 矩阵单元): matrix-engine dot (tle.vfwmadot →
-        vector_ext.matmul, m=n=k=8 → llvm.riscv.smt.vfwmadot) produces the wide
-        result directly, no vreduce_sum. N must be a multiple of 8.
+style4 (矩阵单元 mmt4d): mv 表达成 GEMM，走结构化 linalg.pack+mmt4d+unpack，
+        下游 spe_pack 自动生成 cube 布局 → smt.vfwmadot（tle.mmt4d）。数值正确，
+        Nrow%16==0、K%8==0。
 
 Fixed VL (f16 -> 64) this round: no dynamic vsetvl tail handling, so the tests
 constrain K % 64 == 0 and N % 4 == 0 (full tiles only).
@@ -16,6 +16,8 @@ Note (minor deviation from the doc surface): tle.vload of a 2D index into an
 external pointer needs the matrix row stride, so B loads pass it explicitly as
 `tle.vload(B, (ni, ki), K)`. Everything else matches the document.
 """
+import functools
+
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
@@ -104,22 +106,43 @@ def _mv_sv_host_style3(B, A, C, K, N):
 # vector_ext.matmul (m=n=k=8 tile) → llvm.riscv.smt.vfwmadot (xsmtvdotii mattr)。
 # operand 为整寄存器宽 (f16=64, f32=64), 与仓库 mma_gen.mlir 实验一致。
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def mv_block_style4(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True), K: tle.index, N: tle.index):
-    nvl = tle.vconfig(-1, 2)
-    for ni in tle.range(0, N, 8):
-        acc = tle.vzero(f32)
-        for ki in tle.range(0, K, nvl):
-            nvl = tle.vconfig(K - ki, 2)
-            vb = tle.vload(B, (ni, ki), K)
-            va = tle.vload(A, (ki, ))
-            acc = tle.vfwmadot(acc, vb, va)
-        tle.vstore(C, (ni, ), acc)
+#
+# 数值正确的实现:mv = GEMM，走结构化 linalg.pack+mmt4d+unpack，下游 spe_pack
+# 自动生成 cube 布局 → smt.vfwmadot（不用前端手推 lane）。C[Nrow,K]·A[K] 表达成
+# C2[Nrow,32] = B[Nrow,K] @ Apad[K,32]（A 放第 0 列），mv 结果取 C2[:,0]。
+# tile mb=16/nb=32/kb=8：Nrow%16==0，K%8==0。已在 K3(179) 对拍 torch.mv max_diff~7e-3。
+@functools.lru_cache(maxsize=None)
+def _make_style4_host(N, K):
+    # mmt4d 需编译期维度，故按 shape 生成 kernel（N/K 作字面量烘进 tle.mmt4d）。
+    # 每个 shape 的 kernel/host 需唯一 __name__，否则 Triton JIT 按名缓存会串用
+    # 首个编译的 kernel（导致其余 shape 复用错误维度 → 数值错）。
+    @tle.raw_kernel
+    def mv_block_style4(B: tle.mem(f16), Apad: tle.mem(f16), C2: tle.mem(f16, out=True)):
+        tle.mmt4d(B, Apad, C2, N, K, 32)
+
+    mv_block_style4._fn.__name__ = f"mv_block_style4_{N}_{K}"
+
+    @triton.jit
+    def host(B, Apad, C2):
+        _sr_call(mv_block_style4, outputs=[], inputs=[B, Apad, C2])
+
+    host.__name__ = f"_mv_host_style4_{N}_{K}"
+    host.fn.__name__ = host.__name__
+    return host
 
 
-@triton.jit(do_not_specialize=["K", "N"])
-def _mv_sv_host_style4(B, A, C, K, N):
-    _sr_call(mv_block_style4, outputs=[], inputs=[B, A, C, K, N])
+def _run_style4(N, K):
+    # mv: C[N] = B[N,K] @ A[K]。pad 成 GEMM，A 放第 0 列，取输出第 0 列。
+    B = torch.randn(N, K, dtype=torch.float16)
+    A = torch.randn(K, dtype=torch.float16)
+    Apad = torch.zeros(K, 32, dtype=torch.float16)
+    Apad[:, 0] = A
+    C2 = torch.zeros(N, 32, dtype=torch.float16)
+    _make_style4_host(N, K)[(1, )](B.contiguous(), Apad.contiguous(), C2)
+    got = C2[:, 0].float()
+    ref = torch.mv(B.float(), A.float())
+    max_diff = (got - ref).abs().max().item()
+    assert torch.allclose(got, ref, rtol=1e-2, atol=1e-2), f"N={N} K={K} max_diff={max_diff:.4e}"
 
 
 def _run(host, N, K):
@@ -146,18 +169,10 @@ def test_raw_mv_svector_style3(N, K):
     _run(_mv_sv_host_style3, N, K)
 
 
-# 写法4 (vfwmadot 矩阵单元): N 须为 8 的倍数 (matmul tile m=8)。
-_SHAPES_MADOT = [(8, 64), (16, 128), (32, 256), (64, 512)]
+# 写法4 (mmt4d 矩阵单元): Nrow 须为 16 的倍数 (mb tile), K 须为 8 的倍数 (kb tile)。
+_SHAPES_MADOT = [(16, 64), (32, 128), (64, 256), (128, 512)]
 
 
 @pytest.mark.parametrize("N, K", _SHAPES_MADOT)
-@pytest.mark.xfail(
-    reason="写法4 前端 (tle.vfwmadot → vector_ext.matmul) 已实现并在 K3 "
-    "干净 lower 到 llvm.riscv.smt.vfwmadot(无 legalize 失败);但 mv→GEMM "
-    "的 8×8×8 tile 映射数值待对齐:vector_ext.matmul 是把 64 宽 operand "
-    "当 8×8 行主 cube 的整块 GEMM(out[m,n]=Σ_k lhs[m,k]·rhs[n,k]),正确 "
-    "mv 需 lhs=B 的 8×8 strided tile、rhs=A 广播、输出取第 0 列 strided "
-    "extract。该 tile lane 语义 spine-mlir 尚未定稿(docs 标注『待与提案人对齐』,"
-    "仓库 mma512.mlir 仍在探测 lane),故本轮先落前端、数值标 xfail。", strict=False)
 def test_raw_mv_svector_style4(N, K):
-    _run(_mv_sv_host_style4, N, K)
+    _run_style4(N, K)

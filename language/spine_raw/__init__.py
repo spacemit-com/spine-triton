@@ -14,7 +14,7 @@ from .types import In, InOut, mem, index
 from .runtime import spine_raw, SpineLinalgJITFunction
 from .call_registry import call
 from .builtins import proton_mark
-from .builtins import vconfig, vzero, vload, vmacc, vreduce_sum, vstore, alloc, pack, vpack, vfwmadot
+from .builtins import vconfig, vzero, vload, vmacc, vreduce_sum, vstore, alloc, pack, vpack, vfwmadot, mmt4d
 from .builtins import f16, f32, bf16
 from .builtins import range as range  # noqa: A001 (shadows builtin intentionally)
 
@@ -42,6 +42,7 @@ __all__ = [
     "pack",
     "vpack",
     "vfwmadot",
+    "mmt4d",
     "f16",
     "f32",
     "bf16",

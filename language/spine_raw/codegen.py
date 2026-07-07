@@ -69,7 +69,7 @@ def _memref_elem(mlir_type: str) -> str:
 
 _SPINE_RAW_BUILTIN_NAMES = {
     "range", "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "pack", "vfwmadot",
-    "vpack"
+    "vpack", "mmt4d"
 }
 
 
@@ -239,6 +239,21 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         params = _parse_signature(fn)
         fname = node.name
 
+        # Resolve closure/global int free-vars as compile-time consts (so shapes
+        # baked into a kernel via closure — e.g. tle.mmt4d(B, A, C, N, K, 32) with
+        # N/K captured — fold to literals for _try_const_int).
+        freevars: dict[str, object] = {}
+        if getattr(fn, "__closure__", None):
+            names = fn.__code__.co_freevars
+            for nm, cell in zip(names, fn.__closure__):
+                try:
+                    freevars[nm] = cell.cell_contents
+                except ValueError:
+                    pass
+        for nm, val in {**(fn.__globals__ or {}), **freevars}.items():
+            if isinstance(val, int) and not isinstance(val, bool):
+                self._constexpr_ints.setdefault(nm, val)
+
         # Bind parameters
         for pname, ann in params:
             self._defined_ssas.add(pname)
@@ -396,6 +411,8 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             self._gen_vstore(node)
         elif _is_spine_raw_attr(node.func, "pack", self._aliases):
             self._gen_pack(node)
+        elif _is_spine_raw_attr(node.func, "mmt4d", self._aliases):
+            self._gen_mmt4d(node)
         else:
             raise NotImplementedError(f"Unsupported call statement: {ast.dump(node.func)}")
 
@@ -605,6 +622,72 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
                    f' <{{m = {m} : i64, n = {n} : i64, k = {k} : i64}}>'
                    f' : ({x_type}, {y_type}, {acc_type}) -> {acc_type}')
         return result, acc_type
+
+    def _gen_mmt4d(self, node: ast.Call):
+        # mmt4d(B, Apad, C, M, K, N): 结构化矩阵乘 C[M,N] = B[M,K] @ Apad[K,N].
+        #   发 linalg.pack + linalg.mmt4d + linalg.unpack;下游 spe_pack → smt.vfwmadot
+        #   自动生成 cube 布局(数值正确,已在 K3/179 对拍 torch.mv 通过 max_diff 7e-3)。
+        #   tile:mb=16, nb=32, kb=8(满足 mb>=8,nb>=8,kb==8);M%16==0,K%8==0,N%32==0。
+        MB, NB, KB = 16, 32, 8
+        B_ssa, B_ty = self._gen_expr(node.args[0])
+        A_ssa, A_ty = self._gen_expr(node.args[1])
+        C_ssa, C_ty = self._gen_expr(node.args[2])
+        M = self._try_const_int(node.args[3])
+        K = self._try_const_int(node.args[4])
+        N = self._try_const_int(node.args[5])
+        assert None not in (M, K, N), "mmt4d M/K/N must be compile-time ints"
+        assert M % MB == 0 and K % KB == 0 and N % NB == 0, \
+            f"mmt4d needs M%{MB}==0,K%{KB}==0,N%{NB}==0, got M={M},K={K},N={N}"
+        et = "f16"
+        sp = "#ptr.generic_space"
+        mr = lambda r, c: f"memref<{r}x{c}xf16, strided<[{c}, 1]>, {sp}>"
+        cst = self._alloc_ssa("cst")
+        self._emit(f"{cst} = arith.constant 0.000000e+00 : {et}")
+        # B[M,K] → pack <M/MB,K/KB,MB,KB>
+        rB = self._alloc_ssa("rB")
+        self._emit(f"{rB} = memref.reinterpret_cast {B_ssa} to offset: [0], sizes: [{M}, {K}], "
+                   f"strides: [{K}, 1] : {B_ty} to {mr(M, K)}")
+        tB = self._alloc_ssa("tB")
+        self._emit(f"{tB} = bufferization.to_tensor {rB} restrict : {mr(M, K)} to tensor<{M}x{K}x{et}>")
+        eB = self._alloc_ssa("eB")
+        self._emit(f"{eB} = tensor.empty() : tensor<{M//MB}x{K//KB}x{MB}x{KB}x{et}>")
+        pB = self._alloc_ssa("packB")
+        self._emit(f"{pB} = linalg.pack {tB} padding_value({cst} : {et}) outer_dims_perm = [0, 1] "
+                   f"inner_dims_pos = [0, 1] inner_tiles = [{MB}, {KB}] into {eB} : "
+                   f"tensor<{M}x{K}x{et}> -> tensor<{M//MB}x{K//KB}x{MB}x{KB}x{et}>")
+        # Apad[K,N] → pack perm[1,0] <N/NB,K/KB,NB,KB>
+        rA = self._alloc_ssa("rA")
+        self._emit(f"{rA} = memref.reinterpret_cast {A_ssa} to offset: [0], sizes: [{K}, {N}], "
+                   f"strides: [{N}, 1] : {A_ty} to {mr(K, N)}")
+        tA = self._alloc_ssa("tA")
+        self._emit(f"{tA} = bufferization.to_tensor {rA} restrict : {mr(K, N)} to tensor<{K}x{N}x{et}>")
+        eA = self._alloc_ssa("eA")
+        self._emit(f"{eA} = tensor.empty() : tensor<{N//NB}x{K//KB}x{NB}x{KB}x{et}>")
+        pA = self._alloc_ssa("packA")
+        self._emit(f"{pA} = linalg.pack {tA} padding_value({cst} : {et}) outer_dims_perm = [1, 0] "
+                   f"inner_dims_pos = [1, 0] inner_tiles = [{NB}, {KB}] into {eA} : "
+                   f"tensor<{K}x{N}x{et}> -> tensor<{N//NB}x{K//KB}x{NB}x{KB}x{et}>")
+        # mmt4d → <M/MB,N/NB,MB,NB>
+        eO = self._alloc_ssa("eO")
+        self._emit(f"{eO} = tensor.empty() : tensor<{M//MB}x{N//NB}x{MB}x{NB}x{et}>")
+        fO = self._alloc_ssa("fill")
+        self._emit(f"{fO} = linalg.fill ins({cst} : {et}) outs({eO} : "
+                   f"tensor<{M//MB}x{N//NB}x{MB}x{NB}x{et}>) -> tensor<{M//MB}x{N//NB}x{MB}x{NB}x{et}>")
+        mm = self._alloc_ssa("mm")
+        self._emit(f"{mm} = linalg.mmt4d ins({pB}, {pA} : tensor<{M//MB}x{K//KB}x{MB}x{KB}x{et}>, "
+                   f"tensor<{N//NB}x{K//KB}x{NB}x{KB}x{et}>) outs({fO} : "
+                   f"tensor<{M//MB}x{N//NB}x{MB}x{NB}x{et}>) -> tensor<{M//MB}x{N//NB}x{MB}x{NB}x{et}>")
+        # unpack → C[M,N]
+        rC = self._alloc_ssa("rC")
+        self._emit(f"{rC} = memref.reinterpret_cast {C_ssa} to offset: [0], sizes: [{M}, {N}], "
+                   f"strides: [{N}, 1] : {C_ty} to {mr(M, N)}")
+        tC = self._alloc_ssa("tC")
+        self._emit(f"{tC} = bufferization.to_tensor {rC} restrict writable : {mr(M, N)} to tensor<{M}x{N}x{et}>")
+        up = self._alloc_ssa("unpack")
+        self._emit(f"{up} = linalg.unpack {mm} inner_dims_pos = [0, 1] inner_tiles = [{MB}, {NB}] "
+                   f"into {tC} : tensor<{M//MB}x{N//NB}x{MB}x{NB}x{et}> -> tensor<{M}x{N}x{et}>")
+        self._emit(f"bufferization.materialize_in_destination {up} in writable {rC} : "
+                   f"(tensor<{M}x{N}x{et}>, {mr(M, N)}) -> ()")
 
     def _gen_vpack(self, node: ast.Call, hint: str) -> tuple[str, str]:
         # vpack(a, b, group_len) → "vector_ext.interleave"(a, b) <{groupLen}>
