@@ -20,6 +20,7 @@ import functools
 
 import torch
 import triton
+import triton.language as tl
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
@@ -35,9 +36,11 @@ f32 = tle.f32
 # 写法2 — 纯 svector
 # ---------------------------------------------------------------------------
 @tle.raw_kernel
-def mv_block_style2(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True), K: tle.index, N: tle.index):
+def mv_block_style2(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True), K: tle.index, row_base: tle.index,
+                    row_end: tle.index):
+    # grid 并发:host 按 program_id 把 N 行切块,本 program 只算 [row_base, row_end) 行。
     nvl = tle.vconfig(-1, 2)
-    for ni in tle.range(0, N, 4):
+    for ni in tle.range(row_base, row_end, 4):
         acc0 = tle.vzero(f32)
         acc1 = tle.vzero(f32)
         acc2 = tle.vzero(f32)
@@ -60,18 +63,23 @@ def mv_block_style2(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
 
 
 @triton.jit(do_not_specialize=["K", "N"])
-def _mv_sv_host_style2(B, A, C, K, N):
-    _sr_call(mv_block_style2, outputs=[], inputs=[B, A, C, K, N])
+def _mv_sv_host_style2(B, A, C, K, N, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    row_base = pid * BLOCK
+    row_end = row_base + BLOCK
+    _sr_call(mv_block_style2, outputs=[], inputs=[B, A, C, K, row_base, row_end])
 
 
 # ---------------------------------------------------------------------------
 # 写法3 — svector + tle.alloc/tle.pack 预打包 B
 # ---------------------------------------------------------------------------
 @tle.raw_kernel
-def mv_block_style3(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True), K: tle.index, N: tle.index):
+def mv_block_style3(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True), K: tle.index, row_base: tle.index,
+                    row_end: tle.index):
+    # grid 并发:本 program 只算 [row_base, row_end) 行。
     nvl = tle.vconfig(-1, 2)
     packed_B = tle.alloc((1, K // nvl, 4, nvl), f16)
-    for ni in tle.range(0, N, 4):
+    for ni in tle.range(row_base, row_end, 4):
         acc0 = tle.vzero(f32)
         acc1 = tle.vzero(f32)
         acc2 = tle.vzero(f32)
@@ -95,8 +103,11 @@ def mv_block_style3(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
 
 
 @triton.jit(do_not_specialize=["K", "N"])
-def _mv_sv_host_style3(B, A, C, K, N):
-    _sr_call(mv_block_style3, outputs=[], inputs=[B, A, C, K, N])
+def _mv_sv_host_style3(B, A, C, K, N, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    row_base = pid * BLOCK
+    row_end = row_base + BLOCK
+    _sr_call(mv_block_style3, outputs=[], inputs=[B, A, C, K, row_base, row_end])
 
 
 # ---------------------------------------------------------------------------
@@ -118,10 +129,12 @@ def _make_style4_host(N, K):
     # 「vfwmadot 循环」pattern 整体折成结构化 linalg.pack+mmt4d+unpack(cube 布局交下游
     # spe_pack 自动生成),底层复用已在 K3 对拍 torch.mv 通过的 mmt4d 路。N/K 经闭包烘成
     # 编译期常量(mmt4d 需固定维度)。每 shape 唯一 __name__ 避免 Triton JIT 按名缓存串用。
+    # grid 并发:每 program 算 BLOCK 行,codegen 把 vfwmadot 循环折成 mmt4d,M=BLOCK(编译期
+    # 闭包常量)、B/C 按 row_base(=pid*BLOCK)动态偏移。row_base 形参驱动 fold 的动态 offset。
     @tle.raw_kernel
-    def mv_block_style4(B: tle.mem(f16), Apad: tle.mem(f16), C2: tle.mem(f16, out=True)):
+    def mv_block_style4(B: tle.mem(f16), Apad: tle.mem(f16), C2: tle.mem(f16, out=True), row_base: tle.index):
         packed_B = tle.alloc((1, K // 8, 32, 8), f16)
-        for ni in tle.range(0, N, 32):
+        for ni in tle.range(row_base, row_base + N, 32):
             acc = tle.vzero(f32)
             tle.vpack(B, (ni, 0), packed_B, (1, K // 8, 32, 8))
             for ki in tle.range(0, K, 8):
@@ -133,33 +146,39 @@ def _make_style4_host(N, K):
     mv_block_style4._fn.__name__ = f"mv_block_style4_{N}_{K}"
 
     @triton.jit
-    def host(B, Apad, C2):
-        _sr_call(mv_block_style4, outputs=[], inputs=[B, Apad, C2])
+    def host(B, Apad, C2, BLOCK: tl.constexpr):
+        pid = tl.program_id(0)
+        row_base = pid * BLOCK
+        _sr_call(mv_block_style4, outputs=[], inputs=[B, Apad, C2, row_base])
 
     host.__name__ = f"_mv_host_style4_{N}_{K}"
     host.fn.__name__ = host.__name__
     return host
 
 
-def _run_style4(N, K):
+def _run_style4(N, K, BLOCK=16):
     # mv: C[N] = B[N,K] @ A[K]。pad 成 GEMM，A 放第 0 列，取输出第 0 列。
+    # grid 并发:N 行按 BLOCK(须%16,mmt4d mb tile)切成 N//BLOCK 个 program。
     B = torch.randn(N, K, dtype=torch.float16)
     A = torch.randn(K, dtype=torch.float16)
     Apad = torch.zeros(K, 32, dtype=torch.float16)
     Apad[:, 0] = A
     C2 = torch.zeros(N, 32, dtype=torch.float16)
-    _make_style4_host(N, K)[(1, )](B.contiguous(), Apad.contiguous(), C2)
+    grid = (N // BLOCK, )
+    _make_style4_host(BLOCK, K)[grid](B.contiguous(), Apad.contiguous(), C2, BLOCK=BLOCK)
     got = C2[:, 0].float()
     ref = torch.mv(B.float(), A.float())
     max_diff = (got - ref).abs().max().item()
     assert torch.allclose(got, ref, rtol=1e-2, atol=1e-2), f"N={N} K={K} max_diff={max_diff:.4e}"
 
 
-def _run(host, N, K):
+def _run(host, N, K, BLOCK=4):
+    # grid 并发:N 行按 BLOCK 切成 N//BLOCK 个 program(每个算 BLOCK 行,内层 4 行一组)。
     B = torch.randn(N, K, dtype=torch.float16)
     A = torch.randn(K, dtype=torch.float16)
     C = torch.empty(N, dtype=torch.float32)
-    host[(1, )](B.contiguous(), A.contiguous(), C, K, N)
+    grid = (N // BLOCK, )
+    host[grid](B.contiguous(), A.contiguous(), C, K, N, BLOCK=BLOCK)
     ref = torch.mv(B.float(), A.float())
     max_diff = (C - ref).abs().max().item()
     assert torch.allclose(C, ref, rtol=1e-2, atol=1e-2), \

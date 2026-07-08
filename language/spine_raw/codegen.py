@@ -641,15 +641,21 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         mem_params = [(nm, ann) for nm, ann in params if "memref" in ann.mlir_type]
         if len(mem_params) < 3:
             return False
-        M = self._constexpr_ints.get("N")  # 输出行数(mv 的 N)
         K = self._constexpr_ints.get("K")
-        if M is None or K is None:
+        if K is None:
             return False
+        # M = 每 program 处理的行数(闭包常量 N)。有 row_base 形参(index)时为 grid 并发:
+        # B/C 按 row_base 运行期动态偏移;否则单 program、无偏移。
+        M = self._constexpr_ints.get("N")
+        if M is None:
+            return False
+        idx_params = [nm for nm, ann in params if ann.mlir_type == "index"]
+        row_off_ssa = self._env[idx_params[0]][0] if idx_params else None
         B_nm, A_nm, C_nm = mem_params[0][0], mem_params[1][0], mem_params[2][0]
         B_ssa, B_ty = self._env[B_nm]
         A_ssa, A_ty = self._env[A_nm]
         C_ssa, C_ty = self._env[C_nm]
-        self._emit_mmt4d_block(B_ssa, B_ty, A_ssa, A_ty, C_ssa, C_ty, M, K, 32)
+        self._emit_mmt4d_block(B_ssa, B_ty, A_ssa, A_ty, C_ssa, C_ty, M, K, 32, row_off_ssa=row_off_ssa)
         return True
 
     def _gen_mmt4d(self, node: ast.Call):
@@ -663,24 +669,39 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         assert None not in (M, K, N), "mmt4d M/K/N must be compile-time ints"
         self._emit_mmt4d_block(B_ssa, B_ty, A_ssa, A_ty, C_ssa, C_ty, M, K, N)
 
-    def _emit_mmt4d_block(self, B_ssa, B_ty, A_ssa, A_ty, C_ssa, C_ty, M, K, N):
+    def _emit_mmt4d_block(self, B_ssa, B_ty, A_ssa, A_ty, C_ssa, C_ty, M, K, N, row_off_ssa=None):
         # 发 linalg.pack + linalg.mmt4d + linalg.unpack;下游 spe_pack → smt.vfwmadot
         #   自动生成 cube 布局(数值正确,已在 K3/179 对拍 torch.mv 通过 max_diff 7e-3)。
         #   tile:mb=16, nb=32, kb=8(满足 mb>=8,nb>=8,kb==8);M%16==0,K%8==0,N%32==0。
+        #   row_off_ssa:grid 并发时本 program 的起始行(运行期);B/C 按 row_off*K / row_off*N
+        #   动态偏移(memref 带 offset: ?),M=每 program 行数(BLOCK,编译期)。
         MB, NB, KB = 16, 32, 8
         assert M % MB == 0 and K % KB == 0 and N % NB == 0, \
             f"mmt4d needs M%{MB}==0,K%{KB}==0,N%{NB}==0, got M={M},K={K},N={N}"
         et = "f16"
         sp = "#ptr.generic_space"
         mr = lambda r, c: f"memref<{r}x{c}xf16, strided<[{c}, 1]>, {sp}>"
+        # 动态行偏移(grid):offset 类型带 ?,offset 值 = row_off * 列数
+        dyn = row_off_ssa is not None
+        mro = (lambda r, c: f"memref<{r}x{c}xf16, strided<[{c}, 1], offset: ?>, {sp}>") if dyn else mr
+
+        def _off(cols):  # B/C 的元素偏移 = row_off * cols;A 不偏移
+            if not dyn:
+                return "0"
+            o = self._alloc_ssa("roff")
+            ccols = self._const_int(cols)
+            self._emit(f"{o} = arith.muli {row_off_ssa}, {ccols} : index")
+            return o
+
         cst = self._alloc_ssa("cst")
         self._emit(f"{cst} = arith.constant 0.000000e+00 : {et}")
         # B[M,K] → pack <M/MB,K/KB,MB,KB>
+        offB = _off(K)
         rB = self._alloc_ssa("rB")
-        self._emit(f"{rB} = memref.reinterpret_cast {B_ssa} to offset: [0], sizes: [{M}, {K}], "
-                   f"strides: [{K}, 1] : {B_ty} to {mr(M, K)}")
+        self._emit(f"{rB} = memref.reinterpret_cast {B_ssa} to offset: [{offB}], sizes: [{M}, {K}], "
+                   f"strides: [{K}, 1] : {B_ty} to {mro(M, K)}")
         tB = self._alloc_ssa("tB")
-        self._emit(f"{tB} = bufferization.to_tensor {rB} restrict : {mr(M, K)} to tensor<{M}x{K}x{et}>")
+        self._emit(f"{tB} = bufferization.to_tensor {rB} restrict : {mro(M, K)} to tensor<{M}x{K}x{et}>")
         eB = self._alloc_ssa("eB")
         self._emit(f"{eB} = tensor.empty() : tensor<{M//MB}x{K//KB}x{MB}x{KB}x{et}>")
         pB = self._alloc_ssa("packB")
@@ -710,16 +731,17 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
                    f"tensor<{N//NB}x{K//KB}x{NB}x{KB}x{et}>) outs({fO} : "
                    f"tensor<{M//MB}x{N//NB}x{MB}x{NB}x{et}>) -> tensor<{M//MB}x{N//NB}x{MB}x{NB}x{et}>")
         # unpack → C[M,N]
+        offC = _off(N)
         rC = self._alloc_ssa("rC")
-        self._emit(f"{rC} = memref.reinterpret_cast {C_ssa} to offset: [0], sizes: [{M}, {N}], "
-                   f"strides: [{N}, 1] : {C_ty} to {mr(M, N)}")
+        self._emit(f"{rC} = memref.reinterpret_cast {C_ssa} to offset: [{offC}], sizes: [{M}, {N}], "
+                   f"strides: [{N}, 1] : {C_ty} to {mro(M, N)}")
         tC = self._alloc_ssa("tC")
-        self._emit(f"{tC} = bufferization.to_tensor {rC} restrict writable : {mr(M, N)} to tensor<{M}x{N}x{et}>")
+        self._emit(f"{tC} = bufferization.to_tensor {rC} restrict writable : {mro(M, N)} to tensor<{M}x{N}x{et}>")
         up = self._alloc_ssa("unpack")
         self._emit(f"{up} = linalg.unpack {mm} inner_dims_pos = [0, 1] inner_tiles = [{MB}, {NB}] "
                    f"into {tC} : tensor<{M//MB}x{N//NB}x{MB}x{NB}x{et}> -> tensor<{M}x{N}x{et}>")
         self._emit(f"bufferization.materialize_in_destination {up} in writable {rC} : "
-                   f"(tensor<{M}x{N}x{et}>, {mr(M, N)}) -> ()")
+                   f"(tensor<{M}x{N}x{et}>, {mro(M, N)}) -> ()")
 
     def _gen_vpack(self, node: ast.Call, hint: str) -> tuple[str, str]:
         # vpack(a, b, group_len) → "vector_ext.interleave"(a, b) <{groupLen}>
