@@ -4,12 +4,13 @@ from triton.language.core import builtin
 
 @builtin
 def call(fn, outputs=None, inputs=None, _semantic=None):
-    """Inside @triton.jit: emit tle.dsl_region TTIR op with full raw_linalg text.
+    """Inside @triton.jit: emit tle.dsl_region TTIR op holding the raw kernel body.
 
-    The linalg body is generated at trace time and embedded in the op's
-    raw_linalg attr, so the C++ DSLRegionOpPattern (TLEToLinalg) can parse it
-    and build spine_ext.raw_region during --triton-to-linalg-experimental.
-    Mirrors FlagTree's tle_raw.call() which embeds LLVM text in DSLRegionOp.
+    The linalg body is generated as MLIR text at trace time and parsed in-process
+    by create_tle_dsl_region into tle.dsl_region's real region (no serialized
+    raw_linalg string attr — keeps the TTIR readable). The C++ DSLRegionOpPattern
+    (TLEToLinalg) then clones that region into spine_ext.raw_region during
+    --triton-to-linalg-experimental.
     """
     if inputs is None:
         inputs = []

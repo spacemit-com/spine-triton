@@ -186,40 +186,23 @@ struct InsertTileOpPattern : public OpRewritePattern<mlir::tle::InsertTileOp> {
 // ============================================================================
 // DSLRegionOpPattern: tle.dsl_region → spine_ext.raw_region
 //
-// Parses the raw_linalg attr text into a single-block region, clones the
-// raw fn body into it (replacing func.return with spine_ext.return), and
-// creates a generic (unregistered) "spine_ext.raw_region" op that spine-opt
-// knows how to process via SpineRawRegionInlinePass.
+// Reads the op's real region body (raw fn ops, built at trace time by
+// create_tle_dsl_region — no string attr to parse), clones it into a new
+// generic (unregistered) "spine_ext.raw_region" op that spine-opt processes
+// via SpineRawRegionInlinePass, replacing func.return → spine_ext.return.
 // ============================================================================
 struct DSLRegionOpPattern : public OpRewritePattern<tle::DSLRegionOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(tle::DSLRegionOp op,
                                 PatternRewriter &rewriter) const override {
-    // 1. Parse the raw linalg text. The payload may contain custom dialect ops
-    // Allow the parser to accept unregistered ops in generic form. We rely on
-    // the command-line --allow-unregistered-dialect (set in compiler.py, which
-    // enables it at context-creation time — safe in multi-threaded passes).
-    // Calling allowUnregisteredDialects(true) inside a pass triggers an assert
-    // (CLAUDE.md rule 40a), so we MUST NOT do that here.
-    std::string rawLinalg = op.getRawLinalg().str();
-    ParserConfig config(op.getContext(), /*verifyAfterParse=*/false);
-    OwningOpRef<ModuleOp> rawMod =
-        parseSourceString<ModuleOp>(rawLinalg, config);
-    if (!rawMod)
-      return op.emitError("tle.dsl_region: failed to parse raw_linalg text");
-
-    // Find the first non-empty func.func in the parsed module
-    func::FuncOp rawFunc;
-    rawMod->walk([&](func::FuncOp f) {
-      if (!f.empty()) {
-        rawFunc = f;
-        return WalkResult::interrupt();
-      }
-      return WalkResult::advance();
-    });
-    if (!rawFunc)
-      return op.emitError("tle.dsl_region: no func.func found in raw_linalg");
+    // 1. The raw fn body is already a real region on the op; its block args are
+    //    the raw fn parameters (memref<*> etc.).
+    Region &srcRegion = op.getBody();
+    if (srcRegion.empty())
+      return op.emitError("tle.dsl_region: empty region");
+    Block &srcBlock = srcRegion.front();
+    auto argTypes = srcBlock.getArgumentTypes();
 
     // 2. Build spine_ext.raw_region as a generic (unregistered) op.
     //    The ptr->memref pipeline wraps tle.dsl_region's !tt.ptr operands in a
@@ -228,7 +211,6 @@ struct DSLRegionOpPattern : public OpRewritePattern<tle::DSLRegionOp> {
     //    target. Trace each operand back through that chain to the value whose
     //    type matches the raw fn's block-arg type (the original memref<*>), so
     //    the raw_region operand types line up with the region block args.
-    auto argTypes = rawFunc.getArgumentTypes();
     OperationState state(op.getLoc(), "spine_ext.raw_region");
     SmallVector<Value> operands;
     unsigned idx = 0;
@@ -266,21 +248,21 @@ struct DSLRegionOpPattern : public OpRewritePattern<tle::DSLRegionOp> {
     Region *body = state.addRegion();
     Block *block = new Block();
     body->push_back(block);
-    for (Type paramTy : rawFunc.getArgumentTypes())
+    for (Type paramTy : argTypes)
       block->addArgument(paramTy, op.getLoc());
 
     Operation *newOp = rewriter.create(state);
 
-    // 4. Clone raw fn body into the now-attached region block, replacing
+    // 4. Clone the raw fn body into the now-attached region block, replacing
     //    func.return → spine_ext.return.
     Block *attached = &newOp->getRegion(0).front();
     IRMapping mapping;
     for (auto [fArg, bArg] :
-         llvm::zip(rawFunc.getArguments(), attached->getArguments()))
+         llvm::zip(srcBlock.getArguments(), attached->getArguments()))
       mapping.map(fArg, bArg);
 
     OpBuilder bodyBuilder(attached, attached->end());
-    for (Operation &inner : rawFunc.getBody().front()) {
+    for (Operation &inner : srcBlock) {
       if (isa<func::ReturnOp>(inner)) {
         OperationState retState(inner.getLoc(), "spine_ext.return");
         bodyBuilder.create(retState);

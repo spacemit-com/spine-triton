@@ -83,10 +83,17 @@ def TLE_InsertTileOp : TLE_Op<"insert_tile", [Pure,
 def TLE_DSLRegionOp : TLE_Op<"dsl_region",
     [MemoryEffects<[MemWrite<DefaultResource>]>]> {
   let summary = "Raw kernel region — spine_raw.call() target";
+  let description = [{
+    Wraps a spine_raw raw-kernel body as a TTIR-level op. The body lives in a
+    real single-block region holding the raw fn ops (linalg / memref / vector /
+    vector_ext …) — not a serialized string — so the TTIR stays readable. The
+    region's block args correspond to the raw fn parameters; `inputs` are the
+    Triton IR values (ptr / scalar) bound to them positionally.
+  }];
   let arguments = (ins Variadic<AnyType>:$inputs,
-                       StrAttr:$fn_name,
-                       StrAttr:$raw_linalg);
+                       StrAttr:$fn_name);
   let results  = (outs);
+  let regions  = (region SizedRegion<1>:$body);
   let hasVerifier = 0;
 }
 

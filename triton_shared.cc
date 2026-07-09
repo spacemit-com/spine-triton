@@ -5,6 +5,19 @@
 #include "include/triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
 #include "include/triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncOps.h"
 #include "ir.h"
+#include "mlir/AsmParser/AsmParser.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Ptr/IR/PtrDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/IR/OwningOpRef.h"
+#include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -299,10 +312,60 @@ void init_triton_tle_ir(py::module &&m) {
           "create_tle_dsl_region",
           [](TritonOpBuilder &self, const std::string &fn_name,
              const std::string &raw_linalg, std::vector<Value> &inputs) {
-            auto fnAttr = self.getBuilder().getStringAttr(fn_name);
-            auto linalgAttr = self.getBuilder().getStringAttr(raw_linalg);
+            // Parse the raw-kernel MLIR text once, here at build time, and hang
+            // the body in tle.dsl_region's real region — so the TTIR stays
+            // readable (no escaped raw_linalg string attr). Custom ops (e.g.
+            // vector_ext.matmul) parse in generic form thanks to the context's
+            // allow-unregistered flag (set in load_dialects).
+            auto &builder = self.getBuilder();
+            mlir::MLIRContext *ctx = builder.getContext();
+            mlir::ParserConfig config(ctx, /*verifyAfterParse=*/false);
+            mlir::OwningOpRef<mlir::ModuleOp> rawMod =
+                mlir::parseSourceString<mlir::ModuleOp>(raw_linalg, config);
+            if (!rawMod)
+              throw std::runtime_error(
+                  "create_tle_dsl_region: failed to parse raw_linalg text");
+            mlir::func::FuncOp rawFunc;
+            rawMod->walk([&](mlir::func::FuncOp f) {
+              if (!f.empty()) {
+                rawFunc = f;
+                return mlir::WalkResult::interrupt();
+              }
+              return mlir::WalkResult::advance();
+            });
+            if (!rawFunc)
+              throw std::runtime_error(
+                  "create_tle_dsl_region: no func.func in raw_linalg");
+
+            auto fnAttr = builder.getStringAttr(fn_name);
             SmallVector<Value> operands(inputs.begin(), inputs.end());
-            self.create<tle::DSLRegionOp>(operands, fnAttr, linalgAttr);
+            auto op = self.create<tle::DSLRegionOp>(operands, fnAttr);
+
+            // Build the region block with the raw fn's arg types, then clone the
+            // fn body into it (func.return stays — lowering turns it into
+            // spine_ext.return later).
+            mlir::Region &body = op.getBody();
+            mlir::Block *block = new mlir::Block();
+            body.push_back(block);
+            for (mlir::Type paramTy : rawFunc.getArgumentTypes())
+              block->addArgument(paramTy, op.getLoc());
+            mlir::IRMapping mapping;
+            for (auto [fArg, bArg] :
+                 llvm::zip(rawFunc.getArguments(), block->getArguments()))
+              mapping.map(fArg, bArg);
+            mlir::OpBuilder bodyBuilder(block, block->end());
+            for (mlir::Operation &inner : rawFunc.getBody().front()) {
+              // func.return can't live under tle.dsl_region (its verifier wants
+              // parent func.func). Emit generic spine_ext.return instead — the
+              // TLEToLinalg pattern expects that terminator anyway.
+              if (mlir::isa<mlir::func::ReturnOp>(inner)) {
+                mlir::OperationState retState(inner.getLoc(),
+                                              "spine_ext.return");
+                bodyBuilder.create(retState);
+              } else {
+                bodyBuilder.clone(inner, mapping);
+              }
+            }
           },
           py::arg("fn_name"), py::arg("raw_linalg"), py::arg("inputs"),
           "Create tle.dsl_region — spine_raw.call() TTIR op");
@@ -314,8 +377,24 @@ void init_triton_spine_triton(py::module &&m) {
     mlir::DialectRegistry registry;
     registry.insert<mlir::xsmt::XSMTDialect, mlir::xsmt_async::XSMTAsyncDialect,
                     tensor::TensorDialect, mlir::triton::proton::ProtonDialect,
-                    mlir::tle::TLEDialect>();
+                    mlir::tle::TLEDialect,
+                    // Payload dialects for tle.dsl_region's real region body,
+                    // so the raw-kernel MLIR text parses in-process (custom ops
+                    // like vector_ext.matmul stay generic via the context's
+                    // allow-unregistered flag).
+                    mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                    mlir::memref::MemRefDialect, mlir::vector::VectorDialect,
+                    mlir::arith::ArithDialect, mlir::scf::SCFDialect,
+                    mlir::math::MathDialect,
+                    mlir::bufferization::BufferizationDialect,
+                    mlir::ptr::PtrDialect>();
+    // Registering func dialect above makes TTIR's InlinerPass query func's
+    // DialectInlinerInterface; that interface lives in a separate extension
+    // that must be registered explicitly, or the inliner aborts with
+    // "interface promised by dialect 'func' but never implemented".
+    mlir::func::registerInlinerExtension(registry);
     context.appendDialectRegistry(registry);
+    context.allowUnregisteredDialects();
     context.loadAllAvailableDialects();
   });
 
