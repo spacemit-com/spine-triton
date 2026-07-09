@@ -12,9 +12,9 @@ style4 (矩阵单元 mmt4d): mv 表达成 GEMM，走结构化 linalg.pack+mmt4d+
 Fixed VL (f16 -> 64) this round: no dynamic vsetvl tail handling, so the tests
 constrain K % 64 == 0 and N % 4 == 0 (full tiles only).
 
-Note (minor deviation from the doc surface): tle.vload of a 2D index into an
-external pointer needs the matrix row stride, so B loads pass it explicitly as
-`tle.vload(B, (ni, ki), K)`. Everything else matches the document.
+访存按 SPEC §6.2 规格:vload(ptr, index)/vstore(ptr, index, value),index 为扁平
+标量元素偏移,二维坐标由用户自行压平(如 B 的行 ni 列 ki 写作 ni*K + ki)。对
+alloc 出的 ranked scratch(packed_B),index 仍是逐维下标元组(ranked 自然寻址)。
 """
 import functools
 
@@ -47,19 +47,19 @@ def mv_block_style2(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
         acc3 = tle.vzero(f32)
         for ki in tle.range(0, K, nvl):
             nvl = tle.vconfig(K - ki, 2)
-            vb0 = tle.vload(B, (ni, ki), K)
-            vb1 = tle.vload(B, (ni + 1, ki), K)
-            vb2 = tle.vload(B, (ni + 2, ki), K)
-            vb3 = tle.vload(B, (ni + 3, ki), K)
-            va = tle.vload(A, (ki, ))
+            vb0 = tle.vload(B, ni * K + ki)
+            vb1 = tle.vload(B, (ni + 1) * K + ki)
+            vb2 = tle.vload(B, (ni + 2) * K + ki)
+            vb3 = tle.vload(B, (ni + 3) * K + ki)
+            va = tle.vload(A, ki)
             acc0 = tle.vmacc(acc0, vb0, va)
             acc1 = tle.vmacc(acc1, vb1, va)
             acc2 = tle.vmacc(acc2, vb2, va)
             acc3 = tle.vmacc(acc3, vb3, va)
-        tle.vstore(C, (ni, ), tle.vreduce_sum(acc0))
-        tle.vstore(C, (ni + 1, ), tle.vreduce_sum(acc1))
-        tle.vstore(C, (ni + 2, ), tle.vreduce_sum(acc2))
-        tle.vstore(C, (ni + 3, ), tle.vreduce_sum(acc3))
+        tle.vstore(C, ni, tle.vreduce_sum(acc0))
+        tle.vstore(C, ni + 1, tle.vreduce_sum(acc1))
+        tle.vstore(C, ni + 2, tle.vreduce_sum(acc2))
+        tle.vstore(C, ni + 3, tle.vreduce_sum(acc3))
 
 
 @triton.jit(do_not_specialize=["K", "N"])
@@ -91,15 +91,15 @@ def mv_block_style3(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
             vb1 = tle.vload(packed_B, (0, ki // nvl, 1, 0))
             vb2 = tle.vload(packed_B, (0, ki // nvl, 2, 0))
             vb3 = tle.vload(packed_B, (0, ki // nvl, 3, 0))
-            va = tle.vload(A, (ki, ))
+            va = tle.vload(A, ki)
             acc0 = tle.vmacc(acc0, vb0, va)
             acc1 = tle.vmacc(acc1, vb1, va)
             acc2 = tle.vmacc(acc2, vb2, va)
             acc3 = tle.vmacc(acc3, vb3, va)
-        tle.vstore(C, (ni, ), tle.vreduce_sum(acc0))
-        tle.vstore(C, (ni + 1, ), tle.vreduce_sum(acc1))
-        tle.vstore(C, (ni + 2, ), tle.vreduce_sum(acc2))
-        tle.vstore(C, (ni + 3, ), tle.vreduce_sum(acc3))
+        tle.vstore(C, ni, tle.vreduce_sum(acc0))
+        tle.vstore(C, ni + 1, tle.vreduce_sum(acc1))
+        tle.vstore(C, ni + 2, tle.vreduce_sum(acc2))
+        tle.vstore(C, ni + 3, tle.vreduce_sum(acc3))
 
 
 @triton.jit(do_not_specialize=["K", "N"])
@@ -139,9 +139,9 @@ def _make_style4_host(N, K):
             tle.vpack(B, (ni, 0), packed_B, (1, K // 8, 32, 8))
             for ki in tle.range(0, K, 8):
                 vb = tle.vload(packed_B, (0, ki // 8, 0, 0))
-                va = tle.vload(Apad, (ki, ))
+                va = tle.vload(Apad, ki)
                 acc = tle.vfwmadot(acc, vb, va)
-            tle.vstore(C2, (ni, ), acc)
+            tle.vstore(C2, ni, acc)
 
     mv_block_style4._fn.__name__ = f"mv_block_style4_{N}_{K}"
 

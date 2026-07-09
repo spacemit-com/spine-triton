@@ -532,17 +532,17 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         return result, vec_type
 
     def _gen_vload(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        # vload(ptr, idx_tuple[, stride], dtype=?) → vector<VL x dtype>
-        #   1D external idx (ki,)      : transfer_read ptr[ki]
-        #   2D external idx (ni, ki)   : flat offset = ni*stride + ki (row-major
-        #                                B is N×K, stride = K passed explicitly)
-        #   ND ranked idx (packed_B)   : transfer_read reads the innermost dim
+        # SPEC §6.2:vload(ptr, index, stride=None, idx=None) -> vec
+        #   index — 起始元素偏移(基址),扁平标量;二维坐标由用户自行压平(如 ni*K + ki)。
+        #   stride — 逐元素间隔 → vlse(待扩);idx — 索引向量 → vluxei/gather(待扩)。
+        #   不带 stride/idx → 连续访存 vle(transfer_read)。
+        #   例外:对 alloc 出的 ranked memref(如 packed_B),index 为多维元组 = 逐维下标,
+        #   transfer_read 读最内维 VL 长切片(这是 ranked scratch 的自然寻址,非 2D 压平)。
         kwargs = {kw.arg: kw.value for kw in node.keywords}
         ptr_node = node.args[0]
         idx_node = node.args[1]
-        assert isinstance(idx_node, ast.Tuple), "vload index must be a tuple"
-        idx_elts = idx_node.elts
         stride_node = node.args[2] if len(node.args) > 2 else kwargs.get("stride")
+        idx_vec_node = kwargs.get("idx")
         dtype = _resolve_dtype(kwargs.get("dtype"), "f16")
         vl = self._require_vl()
         vec_type = f"vector<{vl}x{dtype}>"
@@ -554,28 +554,23 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             # Ranked memref (e.g. local packed_B): index every dim directly,
             # transfer_read pulls the innermost VL-length slice. in_bounds has
             # one entry per *vector* dim (rank 1 here), not per index element.
-            idx_ssas = [self._gen_expr(e)[0] for e in idx_elts]
+            assert isinstance(idx_node, ast.Tuple), \
+                "vload of a ranked memref (alloc) needs a per-dim index tuple"
+            idx_ssas = [self._gen_expr(e)[0] for e in idx_node.elts]
             result = self._alloc_ssa(hint or "vld")
             self._emit(f"{result} = vector.transfer_read {ptr_ssa}[{', '.join(idx_ssas)}], {pad}"
                        f" {{in_bounds = [true]}} : {ptr_type}, {vec_type}")
             return result, vec_type
 
-        # External unranked pointer: cast to ranked 1D, compute a flat offset.
+        # External unranked pointer (SPEC canonical): index = 扁平标量元素偏移。
+        if idx_vec_node is not None:
+            raise NotImplementedError("vload idx (gather → vluxei) 未实现(SPEC §6.2 待扩)")
+        if stride_node is not None:
+            raise NotImplementedError("vload stride (跨步 → vlse) 未实现(SPEC §6.2 待扩)")
+        assert not isinstance(idx_node, ast.Tuple), ("vload 的 index 须为扁平标量元素偏移(二维坐标请自行压平,如 ni*K + ki);"
+                                                     "SPEC §6.2")
         ranked_ssa, ranked_type = self._ranked_cast(ptr_ssa, ptr_type)
-        if len(idx_elts) == 1:
-            off_ssa, _ = self._gen_expr(idx_elts[0])
-        elif len(idx_elts) == 2:
-            assert stride_node is not None, \
-                "vload of a 2D index into an external pointer needs a row stride"
-            r_ssa, _ = self._gen_expr(idx_elts[0])
-            s_ssa, _ = self._gen_expr(stride_node)
-            c_ssa, _ = self._gen_expr(idx_elts[1])
-            mul = self._alloc_ssa("roff")
-            self._emit(f"{mul} = arith.muli {r_ssa}, {s_ssa} : index")
-            off_ssa = self._alloc_ssa("off")
-            self._emit(f"{off_ssa} = arith.addi {mul}, {c_ssa} : index")
-        else:
-            raise NotImplementedError(f"vload with {len(idx_elts)}-D index into external pointer unsupported")
+        off_ssa, _ = self._gen_expr(idx_node)
         result = self._alloc_ssa(hint or "vld")
         self._emit(f"{result} = vector.transfer_read {ranked_ssa}[{off_ssa}], {pad}"
                    f" {{in_bounds = [true]}} : {ranked_type}, {vec_type}")
@@ -760,14 +755,19 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         return result, out_type
 
     def _gen_vstore(self, node: ast.Call):
-        # vstore(ptr, idx_tuple, scalar | vec):
-        #   scalar → memref.store (写法2/3, reduce 后的标量);
-        #   vector → vector.transfer_write (写法4, 矩阵单元直接产出的宽结果)。
+        # SPEC §6.2:vstore(ptr, index, value, stride=None, idx=None)
+        #   index — 起始元素偏移(扁平标量,二维坐标由用户压平)。
+        #   value — 向量 → 写 VL 个元素(transfer_write → vse);标量 → 只写 1 个元素
+        #           (memref.store,reduce 回写)。
+        #   stride → vsse(待扩);idx → vsuxei/scatter(待扩)。
+        kwargs = {kw.arg: kw.value for kw in node.keywords}
         ptr_ssa, ptr_type = self._gen_expr(node.args[0])
         idx_node = node.args[1]
-        assert isinstance(idx_node, ast.Tuple), "vstore index must be a tuple"
-        assert len(idx_node.elts) == 1, "vstore currently supports a 1D index"
-        idx_ssa, _ = self._gen_expr(idx_node.elts[0])
+        stride_node = node.args[3] if len(node.args) > 3 else kwargs.get("stride")
+        if stride_node is not None or kwargs.get("idx") is not None:
+            raise NotImplementedError("vstore stride/idx (vsse/vsuxei) 未实现(SPEC §6.2 待扩)")
+        assert not isinstance(idx_node, ast.Tuple), ("vstore 的 index 须为扁平标量元素偏移(二维坐标请自行压平);SPEC §6.2")
+        idx_ssa, _ = self._gen_expr(idx_node)
         val_ssa, val_type = self._gen_expr(node.args[2])
         store_ssa, store_type = self._ranked_cast(ptr_ssa, ptr_type)
         if val_type.startswith("vector<"):
