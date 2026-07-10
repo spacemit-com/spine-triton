@@ -69,7 +69,46 @@ def _memref_elem(mlir_type: str) -> str:
 
 _SPINE_RAW_BUILTIN_NAMES = {
     "range", "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "pack", "vfwmadot",
-    "vpack", "mmt4d"
+    "vpack", "mmt4d", "vmin", "vmax", "sqrt", "rsqrt", "abs", "cast", "select"
+}
+
+# Element-type classification for §6.4 elementwise dispatch.
+_FLOAT_ELEMS = {"f16", "f32", "bf16", "f64"}
+_ELEM_BITS = {"i8": 8, "i16": 16, "i32": 32, "i64": 64, "f16": 16, "bf16": 16, "f32": 32, "f64": 64}
+
+
+def _is_float_elem(elem: str) -> bool:
+    return elem in _FLOAT_ELEMS
+
+
+def _elem_bits(elem: str) -> int:
+    return _ELEM_BITS[elem]
+
+
+# §6.4 binary operators → (float arith op, int arith op). None = not defined for
+# that domain (e.g. bitwise on floats, true division on ints).
+_BINOP_ARITH = {
+    ast.Add: ("addf", "addi"),
+    ast.Sub: ("subf", "subi"),
+    ast.Mult: ("mulf", "muli"),
+    ast.Div: ("divf", None),  # a / b  真除(浮点) → vfdiv
+    ast.FloorDiv: (None, "divsi"),  # a // b 整数向下取整除 → vdiv
+    ast.Mod: ("remf", "remsi"),  # a % b  取余 → vrem
+    ast.BitAnd: (None, "andi"),
+    ast.BitOr: (None, "ori"),
+    ast.BitXor: (None, "xori"),
+    ast.LShift: (None, "shli"),
+    ast.RShift: (None, "shrsi"),
+}
+
+# §6.4 comparisons → (arith.cmpf predicate, arith.cmpi predicate). Signed int.
+_CMP_PRED = {
+    ast.Lt: ("olt", "slt"),
+    ast.LtE: ("ole", "sle"),
+    ast.Gt: ("ogt", "sgt"),
+    ast.GtE: ("oge", "sge"),
+    ast.Eq: ("oeq", "eq"),
+    ast.NotEq: ("one", "ne"),
 }
 
 
@@ -214,6 +253,16 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             self._const_ints[n] = ssa
             self._preamble.append(f"  {ssa} = arith.constant {n} : index")
         return self._const_ints[n]
+
+    def _const_int_typed(self, n: int, itype: str) -> str:
+        """Integer constant in a specific integer element type (e.g. i8/i32),
+        as opposed to _const_int which always emits `index`."""
+        key = (n, itype)
+        if key not in self._const_ints:
+            ssa = self._alloc_ssa(f"c{abs(n)}{'_neg' if n < 0 else ''}_{itype}")
+            self._const_ints[key] = ssa
+            self._preamble.append(f"  {ssa} = arith.constant {n} : {itype}")
+        return self._const_ints[key]
 
     def _const_float(self, v: float, ftype: str = "f32") -> str:
         key = (v, ftype)
@@ -443,6 +492,10 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             return self._gen_literal(node)
         if isinstance(node, ast.BinOp):
             return self._gen_binop(node, hint)
+        if isinstance(node, ast.UnaryOp):
+            return self._gen_unaryop(node, hint)
+        if isinstance(node, ast.Compare):
+            return self._gen_compare(node, hint)
         if isinstance(node, ast.Call):
             return self._gen_call_expr(node, hint)
         raise NotImplementedError(f"Unsupported expr: {ast.dump(node)}")
@@ -455,12 +508,35 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             return self._const_float(v), "f32"
         raise NotImplementedError(f"Unsupported literal: {v!r}")
 
+    def _broadcast_to(self, ssa: str, typ: str, vec_type: str) -> str:
+        """Broadcast a scalar (or narrower value) to vec_type via vector.broadcast.
+        Returns the vector SSA. Assumes typ is the scalar element type of vec_type."""
+        out = self._alloc_ssa("bcast")
+        self._emit(f"{out} = vector.broadcast {ssa} : {typ} to {vec_type}")
+        return out
+
+    def _match_operands(self, lssa, ltype, rssa, rtype):
+        """§6.4: bring a (vec, scalar) or (scalar, vec) pair to a common vector
+        type by broadcasting the scalar side. Returns (lssa, rssa, vec_type)."""
+        l_is_vec = ltype.startswith("vector<")
+        r_is_vec = rtype.startswith("vector<")
+        if l_is_vec and r_is_vec:
+            if ltype != rtype:
+                raise NotImplementedError(f"elementwise between mismatched vectors {ltype} / {rtype}")
+            return lssa, rssa, ltype
+        if l_is_vec and not r_is_vec:
+            return lssa, self._broadcast_to(rssa, _vec_elem(ltype), ltype), ltype
+        if r_is_vec and not l_is_vec:
+            return self._broadcast_to(lssa, _vec_elem(rtype), rtype), rssa, rtype
+        return lssa, rssa, None  # both scalar
+
     def _gen_binop(self, node: ast.BinOp, hint: str) -> tuple[str, str]:
         lssa, ltype = self._gen_expr(node.left)
         rssa, rtype = self._gen_expr(node.right)
         op = type(node.op)
         result = self._alloc_ssa(hint or "t")
 
+        # Index arithmetic fast-path (loop bounds / flat offsets, compile-time-ish).
         if ltype == "index" and rtype == "index":
             opname = {ast.Add: "addi", ast.Mult: "muli", ast.Sub: "subi", ast.FloorDiv: "divui"}.get(op)
             if opname is None:
@@ -468,14 +544,64 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             self._emit(f"{result} = arith.{opname} {lssa}, {rssa} : index")
             return result, "index"
 
-        if ltype == rtype and ltype.startswith("vector<"):
-            opname = {ast.Add: "addf", ast.Mult: "mulf", ast.Sub: "subf"}.get(op)
-            if opname is None:
-                raise NotImplementedError(f"BinOp {op.__name__} not supported for {ltype}")
-            self._emit(f"{result} = arith.{opname} {lssa}, {rssa} : {ltype}")
-            return result, ltype
+        # §6.4 elementwise: broadcast the scalar side, then dispatch by float/int.
+        lssa, rssa, vec_type = self._match_operands(lssa, ltype, rssa, rtype)
+        if vec_type is None:
+            raise NotImplementedError(f"BinOp between {ltype!r} and {rtype!r} not supported")
+        elem = _vec_elem(vec_type)
+        is_float = _is_float_elem(elem)
+        arith = _BINOP_ARITH.get(op)
+        if arith is None:
+            raise NotImplementedError(f"§6.4 operator {op.__name__} not supported")
+        opname = arith[0] if is_float else arith[1]
+        if opname is None:
+            domain = "float" if is_float else "integer"
+            raise NotImplementedError(f"§6.4 operator {op.__name__} not defined for {domain} elements ({elem})")
+        self._emit(f"{result} = arith.{opname} {lssa}, {rssa} : {vec_type}")
+        return result, vec_type
 
-        raise NotImplementedError(f"BinOp between {ltype!r} and {rtype!r} not supported")
+    def _gen_unaryop(self, node: ast.UnaryOp, hint: str) -> tuple[str, str]:
+        # §6.4: -a (negate) and ~a (bitwise not).
+        vssa, vtype = self._gen_expr(node.operand)
+        result = self._alloc_ssa(hint or "u")
+        if not vtype.startswith("vector<"):
+            raise NotImplementedError(f"unary {type(node.op).__name__} on non-vector {vtype}")
+        elem = _vec_elem(vtype)
+        if isinstance(node.op, ast.USub):
+            if _is_float_elem(elem):
+                self._emit(f"{result} = arith.negf {vssa} : {vtype}")
+            else:
+                zero = self._broadcast_to(self._const_int_typed(0, elem), elem, vtype)
+                self._emit(f"{result} = arith.subi {zero}, {vssa} : {vtype}")
+            return result, vtype
+        if isinstance(node.op, ast.Invert):  # ~a  = xor -1 (integers only)
+            if _is_float_elem(elem):
+                raise NotImplementedError(f"§6.4 ~a not defined for float elements ({elem})")
+            ones = self._broadcast_to(self._const_int_typed(-1, elem), elem, vtype)
+            self._emit(f"{result} = arith.xori {vssa}, {ones} : {vtype}")
+            return result, vtype
+        raise NotImplementedError(f"§6.4 unary op {type(node.op).__name__} not supported")
+
+    def _gen_compare(self, node: ast.Compare, hint: str) -> tuple[str, str]:
+        # §6.4: a <cmp> b → mask vector<Nxi1> (§6.8). Single comparison only.
+        if len(node.ops) != 1:
+            raise NotImplementedError("chained comparison not supported (write as separate compares)")
+        lssa, ltype = self._gen_expr(node.left)
+        rssa, rtype = self._gen_expr(node.comparators[0])
+        op = type(node.ops[0])
+        lssa, rssa, vec_type = self._match_operands(lssa, ltype, rssa, rtype)
+        if vec_type is None:
+            raise NotImplementedError(f"comparison between {ltype!r} and {rtype!r} not supported")
+        pred = _CMP_PRED.get(op)
+        if pred is None:
+            raise NotImplementedError(f"§6.4 comparison {op.__name__} not supported")
+        elem = _vec_elem(vec_type)
+        cmp_op, predicate = ("cmpf", pred[0]) if _is_float_elem(elem) else ("cmpi", pred[1])
+        n = _vec_n(vec_type)
+        mask_type = f"vector<{n}xi1>"
+        result = self._alloc_ssa(hint or "cmp")
+        self._emit(f"{result} = arith.{cmp_op} {predicate}, {lssa}, {rssa} : {vec_type}")
+        return result, mask_type
 
     def _gen_call_expr(self, node: ast.Call, hint: str) -> tuple[str, str]:
         if _is_spine_raw_attr(node.func, "vzero", self._aliases):
@@ -492,6 +618,19 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             return self._gen_vpack(node, hint)
         if _is_spine_raw_attr(node.func, "alloc", self._aliases):
             return self._gen_alloc(node, hint)
+        for _nm in ("vmin", "vmax"):
+            if _is_spine_raw_attr(node.func, _nm, self._aliases):
+                return self._gen_vminmax(node, hint, _nm)
+        if _is_spine_raw_attr(node.func, "sqrt", self._aliases):
+            return self._gen_unary_math(node, hint, "sqrt")
+        if _is_spine_raw_attr(node.func, "rsqrt", self._aliases):
+            return self._gen_unary_math(node, hint, "rsqrt")
+        if _is_spine_raw_attr(node.func, "abs", self._aliases):
+            return self._gen_abs(node, hint)
+        if _is_spine_raw_attr(node.func, "cast", self._aliases):
+            return self._gen_cast(node, hint)
+        if _is_spine_raw_attr(node.func, "select", self._aliases):
+            return self._gen_select(node, hint)
         raise NotImplementedError(f"Unsupported call: {ast.dump(node.func)}")
 
     # ------------------------------------------------------------------
@@ -608,6 +747,86 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         result = self._alloc_ssa(hint or "vmacc")
         self._emit(f"{result} = math.fma {x_ssa}, {y_ssa}, {acc_ssa} : {acc_type}")
         return result, acc_type
+
+    # ---- §6.4 named elementwise functions -----------------------------------
+
+    def _gen_vminmax(self, node: ast.Call, hint: str, which: str) -> tuple[str, str]:
+        # vmin/vmax(a, b) → 逐元素 min/max. Float: arith.minimumf/maximumf;
+        # int: arith.minsi/maxsi (signed). b may be a broadcast scalar (§6.4).
+        lssa, ltype = self._gen_expr(node.args[0])
+        rssa, rtype = self._gen_expr(node.args[1])
+        lssa, rssa, vec_type = self._match_operands(lssa, ltype, rssa, rtype)
+        if vec_type is None:
+            raise NotImplementedError(f"{which}: needs at least one vector operand")
+        elem = _vec_elem(vec_type)
+        if _is_float_elem(elem):
+            opname = "minimumf" if which == "vmin" else "maximumf"
+        else:
+            opname = "minsi" if which == "vmin" else "maxsi"
+        result = self._alloc_ssa(hint or which)
+        self._emit(f"{result} = arith.{opname} {lssa}, {rssa} : {vec_type}")
+        return result, vec_type
+
+    def _gen_unary_math(self, node: ast.Call, hint: str, which: str) -> tuple[str, str]:
+        # sqrt(a) → math.sqrt; rsqrt(a) → math.rsqrt. Float only.
+        vssa, vtype = self._gen_expr(node.args[0])
+        if not vtype.startswith("vector<") or not _is_float_elem(_vec_elem(vtype)):
+            raise NotImplementedError(f"{which}: float vector operand required, got {vtype}")
+        result = self._alloc_ssa(hint or which)
+        self._emit(f"{result} = math.{which} {vssa} : {vtype}")
+        return result, vtype
+
+    def _gen_abs(self, node: ast.Call, hint: str) -> tuple[str, str]:
+        # abs(a) → |a|. Float: math.absf; int: math.absi.
+        vssa, vtype = self._gen_expr(node.args[0])
+        if not vtype.startswith("vector<"):
+            raise NotImplementedError(f"abs: vector operand required, got {vtype}")
+        opname = "absf" if _is_float_elem(_vec_elem(vtype)) else "absi"
+        result = self._alloc_ssa(hint or "abs")
+        self._emit(f"{result} = math.{opname} {vssa} : {vtype}")
+        return result, vtype
+
+    def _gen_cast(self, node: ast.Call, hint: str) -> tuple[str, str]:
+        # cast(a, dtype) → 类型转换. Same element count, new element type.
+        #   f16→f32 widening = arith.extf (直达); float→float narrowing = truncf;
+        #   int↔float = sitofp/fptosi; int width change = extsi/trunci.
+        vssa, vtype = self._gen_expr(node.args[0])
+        if not vtype.startswith("vector<"):
+            raise NotImplementedError(f"cast: vector operand required, got {vtype}")
+        src_elem = _vec_elem(vtype)
+        dst_elem = _resolve_dtype(node.args[1], src_elem)
+        if dst_elem == src_elem:
+            return vssa, vtype
+        n = _vec_n(vtype)
+        dst_type = f"vector<{n}x{dst_elem}>"
+        src_f, dst_f = _is_float_elem(src_elem), _is_float_elem(dst_elem)
+        if src_f and dst_f:
+            op = "extf" if _elem_bits(dst_elem) > _elem_bits(src_elem) else "truncf"
+        elif src_f and not dst_f:
+            op = "fptosi"
+        elif not src_f and dst_f:
+            op = "sitofp"
+        else:  # int → int
+            op = "extsi" if _elem_bits(dst_elem) > _elem_bits(src_elem) else "trunci"
+        result = self._alloc_ssa(hint or "cast")
+        self._emit(f"{result} = arith.{op} {vssa} : {vtype} to {dst_type}")
+        return result, dst_type
+
+    def _gen_select(self, node: ast.Call, hint: str) -> tuple[str, str]:
+        # select(m, a, b) → a if m else b, per lane. §6.8: falls back to
+        # arith.select (native vmerge deferred). m is a vector<Nxi1> mask.
+        mssa, mtype = self._gen_expr(node.args[0])
+        assa, atype = self._gen_expr(node.args[1])
+        bssa, btype = self._gen_expr(node.args[2])
+        # Broadcast scalar a/b against the other vector operand if needed.
+        assa, bssa, vec_type = self._match_operands(assa, atype, bssa, btype)
+        if vec_type is None:
+            raise NotImplementedError("select: a/b must include at least one vector")
+        if not mtype.startswith("vector<"):
+            raise NotImplementedError(f"select: mask must be a vector<Nxi1>, got {mtype}")
+        result = self._alloc_ssa(hint or "sel")
+        self._emit(f"{result} = arith.select {mssa}, {assa}, {bssa} : {mtype}, {vec_type}")
+        return result, vec_type
 
     def _gen_vreduce_sum(self, node: ast.Call, hint: str) -> tuple[str, str]:
         # vreduce_sum(vec) → scalar horizontal add

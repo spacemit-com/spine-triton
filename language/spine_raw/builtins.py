@@ -66,6 +66,14 @@ alloc = _SpineRawBuiltin("alloc")  # alloc(shape_tuple, dtype) → memref.alloc
 pack = _SpineRawBuiltin("pack")  # pack(src, src_idx, dst, dst_shape) → pack rows (写法3)
 vpack = _SpineRawBuiltin("vpack")  # vpack(a, b, group_len) → vector_ext.interleave → smt.vpack.vv (硬件 cube pack)
 vfwmadot = _SpineRawBuiltin("vfwmadot")  # vfwmadot(acc, x, y) → "vector_ext.matmul" → smt.vfwmadot (矩阵单元, 写法4)
+# §6.4 逐元素具名函数(算术运算符直接用 Python 操作符, 无需 marker)
+vmin = _SpineRawBuiltin("vmin")  # vmin(a, b) → 逐元素 min → arith.minimumf / minsi
+vmax = _SpineRawBuiltin("vmax")  # vmax(a, b) → 逐元素 max → arith.maximumf / maxsi
+sqrt = _SpineRawBuiltin("sqrt")  # sqrt(a) → √a → math.sqrt
+rsqrt = _SpineRawBuiltin("rsqrt")  # rsqrt(a) → 1/√a → math.rsqrt
+abs = _SpineRawBuiltin("abs")  # abs(a) → |a| → math.absf / absi  # noqa: A001 (shadows builtin intentionally)
+cast = _SpineRawBuiltin("cast")  # cast(a, dtype) → 类型转换 → arith.extf/truncf/sitofp/fptosi/extsi/trunci
+select = _SpineRawBuiltin("select")  # select(m, a, b) → a if m else b → arith.select (§6.8 回退)
 mmt4d = _SpineRawBuiltin(
     "mmt4d")  # mmt4d(B, Apad, C, M, K, N) → linalg.pack+mmt4d+unpack → spe_pack→vfwmadot(结构化矩阵乘, 数值正确)
 
