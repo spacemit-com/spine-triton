@@ -248,8 +248,8 @@ my_host[(N // 256,)](A, C, M, N, BLOCK=256)
 ### 3.2 向量值与宽度
 
 向量值的元素类型由构造原语的 dtype 参数给出，宽度按 2.2 节确定。当前实现中，`vconfig`
-设定的活跃向量长度为定长 `VL = VLEN / SEW`（K3 VLEN=1024：f16→64, f32→32, i8→128）；
-`vconfig` 的签名与参数见 6.1。
+设定的活跃向量长度为定长 `VLMAX = lmul × VLEN / SEW`（K3 VLEN=1024，SEW 由 dtype 推导：
+f16 + lmul=1→64, lmul=2→128）；`vconfig` 的签名与参数见 6.1。
 
 ### 3.3 参数注解类型
 
@@ -355,9 +355,10 @@ visitor 预扫描循环体，凡「循环外已定义且循环内被重新赋值
 vconfig(avl, lmul) -> int      # VL = min(avl, VLMAX)，VLMAX = lmul × VLEN / SEW
 ```
 
-当前实现签名为 `vconfig(avl, sew_bytes)`，忽略 `avl` 与 `lmul`，返回定长
-`VL = VLEN / SEW`（K3 VLEN=1024：f16→64, f32→32, i8→128）；应改齐为 `vconfig(avl, lmul)`。
-`avl` 运行期收窄（真 strip-mine）为待扩。
+当前实现签名已对齐为 `vconfig(avl, lmul)`：SEW 由 dtype 推导（§3.1，svector 循环以
+f16 为粒度，基准 SEW=16），返回定长 `VLMAX = lmul × VLEN / SEW`（K3 VLEN=1024：
+f16 + lmul=1→64, lmul=2→128, lmul=4→256, lmul=8→512）。`avl` 运行期收窄（真
+strip-mine）为待扩：本轮忽略 `avl`，返回该 LMUL 下的定长 VLMAX。
 
 ### 6.2 访存
 

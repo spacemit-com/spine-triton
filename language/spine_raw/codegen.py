@@ -73,13 +73,22 @@ _SPINE_RAW_BUILTIN_NAMES = {
 }
 
 
-def _vl_from_sew(sew_bytes: int) -> int:
-    """Fixed VL (element count) for a K3 scalable register at the given SEW.
+# RVV vector config (SPEC §6.1). VLEN is the physical scalable-register width;
+# SEW is the element width derived from the dtype (SPEC §3.1), not a vconfig
+# parameter. The svector eDSL's element granularity is f16 (all svector kernels
+# load f16 and count VL in f16 elements); f32 accumulators are the same element
+# count at a wider LMUL group. VLMAX = lmul * VLEN / SEW.
+_VLEN_BITS = 1024  # K3 scalable register width
+_BASE_SEW_BITS = 16  # f16 element width (SPEC §3.1); the svector loop's VL granularity
 
-    K3 vlen = 1024 bits = 128 bytes, so VL = 128 / sew_bytes:
-      sew=2 (f16) -> 64, sew=1 (i8) -> 128, sew=4 (f32) -> 32.
+
+def _vlmax(lmul: int, sew_bits: int = _BASE_SEW_BITS) -> int:
+    """VLMAX (element count) for K3 at the given LMUL, per SPEC §6.1.
+
+    VLMAX = lmul * VLEN / SEW. With VLEN=1024 and SEW=16 (f16):
+      lmul=1 -> 64, lmul=2 -> 128, lmul=4 -> 256, lmul=8 -> 512.
     """
-    return 128 // sew_bytes
+    return lmul * _VLEN_BITS // sew_bits
 
 
 def _is_spine_raw_attr(node, attr: str, aliases: set | None = None) -> bool:
@@ -313,7 +322,7 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         assert len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
         target = node.targets[0].id
 
-        # vconfig(avl, sew) → compile-time VL constant, tracked separately from
+        # vconfig(avl, lmul) → compile-time VL constant, tracked separately from
         # SSA env so it never becomes an scf.for iter_arg. Records the active VL
         # used by subsequent vzero/vload/vmacc calls.
         if isinstance(node.value, ast.Call) and \
@@ -509,10 +518,13 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         self._emit(f'proton.record {action} "{name}"')
 
     def _gen_vconfig_assign(self, target: str, node: ast.Call):
-        # vconfig(avl, sew_bytes) → fixed compile-time VL. avl (dynamic tail
-        # length) is ignored this round: we run full VL tiles only.
-        sew = ast.literal_eval(node.args[1]) if len(node.args) > 1 else 2
-        vl = _vl_from_sew(int(sew))
+        # SPEC §6.1: vconfig(avl, lmul) -> VL = min(avl, VLMAX),
+        # VLMAX = lmul * VLEN / SEW. SEW is derived from the dtype (§3.1), not a
+        # parameter; the svector loop counts VL in f16 elements (base SEW=16).
+        # avl (runtime tail narrowing / true strip-mine) is deferred (SPEC §6.1),
+        # so VL is the fixed VLMAX for the requested LMUL this round.
+        lmul = ast.literal_eval(node.args[1]) if len(node.args) > 1 else 1
+        vl = _vlmax(int(lmul))
         self._constexpr_ints[target] = vl
         self._active_vl = vl
 

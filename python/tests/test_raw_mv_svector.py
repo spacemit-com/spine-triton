@@ -39,14 +39,14 @@ f32 = tle.f32
 def mv_block_style2(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True), K: tle.index, row_base: tle.index,
                     row_end: tle.index):
     # grid 并发:host 按 program_id 把 N 行切块,本 program 只算 [row_base, row_end) 行。
-    nvl = tle.vconfig(-1, 2)
+    nvl = tle.vconfig(-1, 1)   # lmul=1 → VLMAX=64 (f16, SPEC §6.1)
     for ni in tle.range(row_base, row_end, 4):
         acc0 = tle.vzero(f32)
         acc1 = tle.vzero(f32)
         acc2 = tle.vzero(f32)
         acc3 = tle.vzero(f32)
         for ki in tle.range(0, K, nvl):
-            nvl = tle.vconfig(K - ki, 2)
+            nvl = tle.vconfig(K - ki, 1)  # avl=K-ki (tail narrowing deferred), lmul=1
             vb0 = tle.vload(B, ni * K + ki)
             vb1 = tle.vload(B, (ni + 1) * K + ki)
             vb2 = tle.vload(B, (ni + 2) * K + ki)
@@ -77,7 +77,7 @@ def _mv_sv_host_style2(B, A, C, K, N, BLOCK: tl.constexpr):
 def mv_block_style3(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True), K: tle.index, row_base: tle.index,
                     row_end: tle.index):
     # grid 并发:本 program 只算 [row_base, row_end) 行。
-    nvl = tle.vconfig(-1, 2)
+    nvl = tle.vconfig(-1, 1)   # lmul=1 → VLMAX=64 (f16, SPEC §6.1)
     packed_B = tle.alloc((1, K // nvl, 4, nvl), f16)
     for ni in tle.range(row_base, row_end, 4):
         acc0 = tle.vzero(f32)
@@ -86,7 +86,7 @@ def mv_block_style3(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
         acc3 = tle.vzero(f32)
         tle.pack(B, (ni, 0), packed_B, (1, K // nvl, 4, nvl), K)
         for ki in tle.range(0, K, nvl):
-            nvl = tle.vconfig(K - ki, 2)
+            nvl = tle.vconfig(K - ki, 1)  # avl=K-ki (tail narrowing deferred), lmul=1
             vb0 = tle.vload(packed_B, (0, ki // nvl, 0, 0))
             vb1 = tle.vload(packed_B, (0, ki // nvl, 1, 0))
             vb2 = tle.vload(packed_B, (0, ki // nvl, 2, 0))

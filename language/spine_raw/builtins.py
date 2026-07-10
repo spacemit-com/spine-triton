@@ -45,7 +45,7 @@ range = _SpineRawRange()  # range(n) / range(start, stop, step) → scf.for boun
 # ---------------------------------------------------------------------------
 # svector-level markers (feishu 3.3 mv 示例). Fixed-VL eDSL that maps document
 # names to already-verified vector/arith/memref primitives.
-#   vconfig  : record active VL/SEW, return fixed VL constant (constexpr int)
+#   vconfig  : vconfig(avl, lmul) → VLMAX const (SEW from dtype); avl deferred
 #   vzero    : vector.broadcast 0.0 -> vector<VL x dtype>
 #   vload    : transfer_read a VL-length vector (1D idx, or 2D idx + row stride)
 #   vmacc    : widening multiply-accumulate  acc += extf(x) * extf(y)
@@ -56,7 +56,7 @@ range = _SpineRawRange()  # range(n) / range(start, stop, step) → scf.for boun
 #   vpack    : vpack(a, b, group_len) → vector_ext.interleave → smt.vpack.vv (硬件 cube pack)
 #   vfwmadot : matrix-unit dot (写法4) -> vector_ext.matmul → smt.vfwmadot, 直接产出宽结果
 # ---------------------------------------------------------------------------
-vconfig = _SpineRawBuiltin("vconfig")  # vconfig(avl, sew_bytes) → fixed VL
+vconfig = _SpineRawBuiltin("vconfig")  # vconfig(avl, lmul) → VL = min(avl, VLMAX), VLMAX = lmul × VLEN / SEW (SPEC §6.1)
 vzero = _SpineRawBuiltin("vzero")  # vzero(dtype) → vector<VL x dtype> zeros
 vload = _SpineRawBuiltin("vload")  # vload(ptr, idx_tuple[, stride]) → vector<VL x dtype>
 vmacc = _SpineRawBuiltin("vmacc")  # vmacc(acc, x, y) → widening fma accumulate
