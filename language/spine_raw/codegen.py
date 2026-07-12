@@ -59,6 +59,14 @@ def _vec_elem(mlir_type: str) -> str:
     raise ValueError(f"Cannot extract elem type from {mlir_type!r}")
 
 
+def _vec_elem_last(mlir_type: str) -> str:
+    """Element dtype of a rank-N vector (last component), e.g. vector<2x256xf16> -> f16."""
+    m = re.match(r'vector<(?:\d+x)+(bf16|f16|f32|f64|i8|i16|i32|i64)>', mlir_type)
+    if m:
+        return m.group(1)
+    raise ValueError(f"Cannot extract elem type from {mlir_type!r}")
+
+
 def _memref_elem(mlir_type: str) -> str:
     """Element dtype of a plain ranked memref, e.g. memref<1x?x4x64xf16> -> f16."""
     m = re.findall(r'x(bf16|f16|f32|f64|i8|i16|i32|i64)', mlir_type)
@@ -68,8 +76,8 @@ def _memref_elem(mlir_type: str) -> str:
 
 
 _SPINE_RAW_BUILTIN_NAMES = {
-    "range", "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "pack", "vfwmadot",
-    "vpack", "mmt4d", "vmin", "vmax", "sqrt", "rsqrt", "abs", "cast", "select"
+    "range", "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "pack", "vmadot",
+    "vpack", "vbroadcast", "vshape", "vmin", "vmax", "sqrt", "rsqrt", "abs", "cast", "select"
 }
 
 # Element-type classification for §6.4 elementwise dispatch.
@@ -298,8 +306,8 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         fname = node.name
 
         # Resolve closure/global int free-vars as compile-time consts (so shapes
-        # baked into a kernel via closure — e.g. tle.mmt4d(B, A, C, N, K, 32) with
-        # N/K captured — fold to literals for _try_const_int).
+        # baked into a kernel via closure — e.g. tile dims N/K captured in a
+        # closure — fold to literals for _try_const_int / vshape / vbroadcast).
         freevars: dict[str, object] = {}
         if getattr(fn, "__closure__", None):
             names = fn.__code__.co_freevars
@@ -331,18 +339,14 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         sig_parts = [f"    %{pname} : {ann.mlir_type}" for pname, ann in params]
         header = f"func.func @{fname}(\n" + ",\n".join(sig_parts) + "\n) {"
 
-        # 写法4 pattern:body 里出现 tle.vfwmadot(矩阵单元 mv)→ 整段折成结构化
-        # linalg.pack+mmt4d+unpack(cube 布局交下游 spe_pack;raw 逐 cube vfwmadot 在
-        # 当前 build 数值不对,唯结构化路正确)。dims 从闭包常量 N(输出行)/K 取。
-        if not (self._body_has_vfwmadot(node.body) and self._emit_mmt4d_from_pattern(params)):
-            # Generate body statements
-            for stmt in node.body:
-                if isinstance(stmt, ast.Pass):
-                    continue
-                # Skip decorator / docstring expressions
-                if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
-                    continue
-                self._gen_stmt(stmt)
+        # Generate body statements
+        for stmt in node.body:
+            if isinstance(stmt, ast.Pass):
+                continue
+            # Skip decorator / docstring expressions
+            if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+                continue
+            self._gen_stmt(stmt)
 
         self._emit("return")
 
@@ -473,8 +477,6 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             self._gen_vstore(node)
         elif _is_spine_raw_attr(node.func, "pack", self._aliases):
             self._gen_pack(node)
-        elif _is_spine_raw_attr(node.func, "mmt4d", self._aliases):
-            self._gen_mmt4d(node)
         else:
             raise NotImplementedError(f"Unsupported call statement: {ast.dump(node.func)}")
 
@@ -612,10 +614,14 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             return self._gen_vmacc(node, hint)
         if _is_spine_raw_attr(node.func, "vreduce_sum", self._aliases):
             return self._gen_vreduce_sum(node, hint)
-        if _is_spine_raw_attr(node.func, "vfwmadot", self._aliases):
-            return self._gen_vfwmadot(node, hint)
+        if _is_spine_raw_attr(node.func, "vmadot", self._aliases):
+            return self._gen_vmadot(node, hint)
         if _is_spine_raw_attr(node.func, "vpack", self._aliases):
             return self._gen_vpack(node, hint)
+        if _is_spine_raw_attr(node.func, "vshape", self._aliases):
+            return self._gen_vshape(node, hint)
+        if _is_spine_raw_attr(node.func, "vbroadcast", self._aliases):
+            return self._gen_vbroadcast(node, hint)
         if _is_spine_raw_attr(node.func, "alloc", self._aliases):
             return self._gen_alloc(node, hint)
         for _nm in ("vmin", "vmax"):
@@ -673,10 +679,13 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         return self._active_vl
 
     def _gen_vzero(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        # vzero(dtype) → vector<VL x dtype> of zeros
+        # vzero(dtype[, group=b]) → zeros. Without group: vector<VL×dtype>.
+        #   group=b: rank-2 vector<b×VL×dtype> (cbm acc, b = b1·b2). broadcast 0.
+        kwargs = {kw.arg: kw.value for kw in node.keywords}
         dtype = _resolve_dtype(node.args[0] if node.args else None, "f32")
         vl = self._require_vl()
-        vec_type = f"vector<{vl}x{dtype}>"
+        group = self._try_const_int(kwargs["group"]) if "group" in kwargs else None
+        vec_type = f"vector<{group}x{vl}x{dtype}>" if group else f"vector<{vl}x{dtype}>"
         zero = self._const_float(0.0, dtype)
         result = self._alloc_ssa(hint or "vzero")
         self._emit(f"{result} = vector.broadcast {zero} : {dtype} to {vec_type}")
@@ -722,6 +731,17 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
                                                      "SPEC §6.2")
         ranked_ssa, ranked_type = self._ranked_cast(ptr_ssa, ptr_type)
         off_ssa, _ = self._gen_expr(idx_node)
+        # group=b (SPEC §6.2): 读 b×VL 连续 → transfer_read<b*VL> + shape_cast → vector<b×VL>.
+        group = self._try_const_int(kwargs["group"]) if "group" in kwargs else None
+        if group:
+            flat_ty = f"vector<{group * vl}x{dtype}>"
+            flat = self._alloc_ssa(hint or "vldflat")
+            self._emit(f"{flat} = vector.transfer_read {ranked_ssa}[{off_ssa}], {pad}"
+                       f" {{in_bounds = [true]}} : {ranked_type}, {flat_ty}")
+            out_ty = f"vector<{group}x{vl}x{dtype}>"
+            result = self._alloc_ssa(hint or "vld")
+            self._emit(f"{result} = vector.shape_cast {flat} : {flat_ty} to {out_ty}")
+            return result, out_ty
         result = self._alloc_ssa(hint or "vld")
         self._emit(f"{result} = vector.transfer_read {ranked_ssa}[{off_ssa}], {pad}"
                    f" {{in_bounds = [true]}} : {ranked_type}, {vec_type}")
@@ -793,12 +813,12 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         vssa, vtype = self._gen_expr(node.args[0])
         if not vtype.startswith("vector<"):
             raise NotImplementedError(f"cast: vector operand required, got {vtype}")
-        src_elem = _vec_elem(vtype)
+        src_elem = _vec_elem_last(vtype)
         dst_elem = _resolve_dtype(node.args[1], src_elem)
         if dst_elem == src_elem:
             return vssa, vtype
-        n = _vec_n(vtype)
-        dst_type = f"vector<{n}x{dst_elem}>"
+        # 保留形状(rank-N),只换元素类型:vector<...x{src}> → vector<...x{dst}>
+        dst_type = vtype[:vtype.rfind("x") + 1] + dst_elem + ">"
         src_f, dst_f = _is_float_elem(src_elem), _is_float_elem(dst_elem)
         if src_f and dst_f:
             op = "extf" if _elem_bits(dst_elem) > _elem_bits(src_elem) else "truncf"
@@ -836,160 +856,97 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         self._emit(f"{result} = vector.reduction <add>, {v_ssa} : {v_type} into {elem}")
         return result, elem
 
-    def _gen_vfwmadot(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        # vfwmadot(acc, x, y) → "vector_ext.matmul"(x, y, acc) <{m,n,k}> (写法4, 矩阵单元).
-        #   矩阵引擎直接产出宽结果 (不需 vreduce_sum);K3 spine-opt 注册了
-        #   vector_ext::MatmulOp + ConvertOpToLLVMPattern,lower 到
-        #   llvm.riscv.smt.vfwmadot (需 xsmtvdotii mattr, 已在 compiler.py 配)。
-        #   用 generic form 让未注册 vector_ext 的 spine-triton-opt 也能 parse。
-        #   operand 均为整寄存器宽 (f16=64, f32=64);tile 规格 m=n=k=8 (SMT 单元固定)。
+    def _gen_vmadot(self, node: ast.Call, hint: str) -> tuple[str, str]:
+        # vmadot(acc, x, y) → "vector_ext.cross_batch_matmul"(x, y, acc) <{m=8,n=8,k=8}>
+        #   (generic form — host 未注册 vector_ext, custom form parse 失败)。
+        #   一条 cbm 自动展开成 b1·b2 条 vector_ext.matmul → 多条 smt.vfwmadot。
+        #   契约(ExpandCrossBatchMatmul): lhs=x<b1×64>, rhs=y<b2×64>, acc/out<(b1·b2)×64>,
+        #   每 64-lane 行 = 1 个 8×8 cube;m=n=k=8 SMT 单元固定;x/y f16 或 bf16,acc/out f32。
+        #   b1/b2 从 operand 的 rank-2 vector shape[0] 推。
         acc_ssa, acc_type = self._gen_expr(node.args[0])
         x_ssa, x_type = self._gen_expr(node.args[1])
         y_ssa, y_type = self._gen_expr(node.args[2])
-        m = n = k = 8
-        result = self._alloc_ssa(hint or "vfwmadot")
-        self._emit(f'{result} = "vector_ext.matmul"({x_ssa}, {y_ssa}, {acc_ssa})'
-                   f' <{{m = {m} : i64, n = {n} : i64, k = {k} : i64}}>'
+        # 校验:x/y rank-2 f16/bf16 cube 向量,acc rank-2 f32,acc 行数 = b1·b2。
+        xm = re.match(r'vector<(\d+)x64x(f16|bf16)>', x_type)
+        ym = re.match(r'vector<(\d+)x64x(f16|bf16)>', y_type)
+        am = re.match(r'vector<(\d+)x64xf32>', acc_type)
+        if not (xm and ym and am):
+            raise ValueError(
+                f"vmadot needs x/y vector<b×64×f16|bf16> and acc vector<B×64×f32>, "
+                f"got x={x_type}, y={y_type}, acc={acc_type}")
+        b1, b2, B = int(xm.group(1)), int(ym.group(1)), int(am.group(1))
+        if B != b1 * b2:
+            raise ValueError(f"vmadot acc rows must be b1·b2 = {b1}·{b2} = {b1*b2}, got {B}")
+        result = self._alloc_ssa(hint or "vmadot")
+        self._emit(f'{result} = "vector_ext.cross_batch_matmul"({x_ssa}, {y_ssa}, {acc_ssa})'
+                   f' <{{k = 8 : i64, m = 8 : i64, n = 8 : i64}}>'
                    f' : ({x_type}, {y_type}, {acc_type}) -> {acc_type}')
         return result, acc_type
 
-    def _body_has_vfwmadot(self, body) -> bool:
-        """body(含嵌套 for)里是否出现 tle.vfwmadot 调用 → 判定写法4 矩阵单元 mv。"""
-        for n in ast.walk(ast.Module(body=body, type_ignores=[])):
-            if isinstance(n, ast.Call) and _is_spine_raw_attr(n.func, "vfwmadot", self._aliases):
-                return True
-        return False
-
-    def _emit_mmt4d_from_pattern(self, params) -> bool:
-        """写法4(文档 svector vpack/vfwmadot 循环)折成结构化 mmt4d。
-        约定:kernel 前 3 个 memref 参数 = (B, Apad, C);M(输出行)/K 从闭包常量
-        N/K 取(_constexpr_ints),N_pad=32。成功 emit 返回 True。"""
-        mem_params = [(nm, ann) for nm, ann in params if "memref" in ann.mlir_type]
-        if len(mem_params) < 3:
-            return False
-        K = self._constexpr_ints.get("K")
-        if K is None:
-            return False
-        # M = 每 program 处理的行数(闭包常量 N)。有 row_base 形参(index)时为 grid 并发:
-        # B/C 按 row_base 运行期动态偏移;否则单 program、无偏移。
-        M = self._constexpr_ints.get("N")
-        if M is None:
-            return False
-        idx_params = [nm for nm, ann in params if ann.mlir_type == "index"]
-        row_off_ssa = self._env[idx_params[0]][0] if idx_params else None
-        B_nm, A_nm, C_nm = mem_params[0][0], mem_params[1][0], mem_params[2][0]
-        B_ssa, B_ty = self._env[B_nm]
-        A_ssa, A_ty = self._env[A_nm]
-        C_ssa, C_ty = self._env[C_nm]
-        self._emit_mmt4d_block(B_ssa, B_ty, A_ssa, A_ty, C_ssa, C_ty, M, K, 32, row_off_ssa=row_off_ssa)
-        return True
-
-    def _gen_mmt4d(self, node: ast.Call):
-        # mmt4d(B, Apad, C, M, K, N): 结构化矩阵乘 C[M,N] = B[M,K] @ Apad[K,N].
-        B_ssa, B_ty = self._gen_expr(node.args[0])
-        A_ssa, A_ty = self._gen_expr(node.args[1])
-        C_ssa, C_ty = self._gen_expr(node.args[2])
-        M = self._try_const_int(node.args[3])
-        K = self._try_const_int(node.args[4])
-        N = self._try_const_int(node.args[5])
-        assert None not in (M, K, N), "mmt4d M/K/N must be compile-time ints"
-        self._emit_mmt4d_block(B_ssa, B_ty, A_ssa, A_ty, C_ssa, C_ty, M, K, N)
-
-    def _emit_mmt4d_block(self, B_ssa, B_ty, A_ssa, A_ty, C_ssa, C_ty, M, K, N, row_off_ssa=None):
-        # 发 linalg.pack + linalg.mmt4d + linalg.unpack;下游 spe_pack → smt.vfwmadot
-        #   自动生成 cube 布局(数值正确,已在 K3/179 对拍 torch.mv 通过 max_diff 7e-3)。
-        #   tile:mb=16, nb=32, kb=8(满足 mb>=8,nb>=8,kb==8);M%16==0,K%8==0,N%32==0。
-        #   row_off_ssa:grid 并发时本 program 的起始行(运行期);B/C 按 row_off*K / row_off*N
-        #   动态偏移(memref 带 offset: ?),M=每 program 行数(BLOCK,编译期)。
-        MB, NB, KB = 16, 32, 8
-        assert M % MB == 0 and K % KB == 0 and N % NB == 0, \
-            f"mmt4d needs M%{MB}==0,K%{KB}==0,N%{NB}==0, got M={M},K={K},N={N}"
-        et = "f16"
-        sp = "#ptr.generic_space"
-        mr = lambda r, c: f"memref<{r}x{c}xf16, strided<[{c}, 1]>, {sp}>"
-        # 动态行偏移(grid):offset 类型带 ?,offset 值 = row_off * 列数
-        dyn = row_off_ssa is not None
-        mro = (lambda r, c: f"memref<{r}x{c}xf16, strided<[{c}, 1], offset: ?>, {sp}>") if dyn else mr
-
-        def _off(cols):  # B/C 的元素偏移 = row_off * cols;A 不偏移
-            if not dyn:
-                return "0"
-            o = self._alloc_ssa("roff")
-            ccols = self._const_int(cols)
-            self._emit(f"{o} = arith.muli {row_off_ssa}, {ccols} : index")
-            return o
-
-        cst = self._alloc_ssa("cst")
-        self._emit(f"{cst} = arith.constant 0.000000e+00 : {et}")
-        # B[M,K] → pack <M/MB,K/KB,MB,KB>
-        offB = _off(K)
-        rB = self._alloc_ssa("rB")
-        self._emit(f"{rB} = memref.reinterpret_cast {B_ssa} to offset: [{offB}], sizes: [{M}, {K}], "
-                   f"strides: [{K}, 1] : {B_ty} to {mro(M, K)}")
-        tB = self._alloc_ssa("tB")
-        self._emit(f"{tB} = bufferization.to_tensor {rB} restrict : {mro(M, K)} to tensor<{M}x{K}x{et}>")
-        eB = self._alloc_ssa("eB")
-        self._emit(f"{eB} = tensor.empty() : tensor<{M//MB}x{K//KB}x{MB}x{KB}x{et}>")
-        pB = self._alloc_ssa("packB")
-        self._emit(f"{pB} = linalg.pack {tB} padding_value({cst} : {et}) outer_dims_perm = [0, 1] "
-                   f"inner_dims_pos = [0, 1] inner_tiles = [{MB}, {KB}] into {eB} : "
-                   f"tensor<{M}x{K}x{et}> -> tensor<{M//MB}x{K//KB}x{MB}x{KB}x{et}>")
-        # Apad[K,N] → pack perm[1,0] <N/NB,K/KB,NB,KB>
-        rA = self._alloc_ssa("rA")
-        self._emit(f"{rA} = memref.reinterpret_cast {A_ssa} to offset: [0], sizes: [{K}, {N}], "
-                   f"strides: [{N}, 1] : {A_ty} to {mr(K, N)}")
-        tA = self._alloc_ssa("tA")
-        self._emit(f"{tA} = bufferization.to_tensor {rA} restrict : {mr(K, N)} to tensor<{K}x{N}x{et}>")
-        eA = self._alloc_ssa("eA")
-        self._emit(f"{eA} = tensor.empty() : tensor<{N//NB}x{K//KB}x{NB}x{KB}x{et}>")
-        pA = self._alloc_ssa("packA")
-        self._emit(f"{pA} = linalg.pack {tA} padding_value({cst} : {et}) outer_dims_perm = [1, 0] "
-                   f"inner_dims_pos = [1, 0] inner_tiles = [{NB}, {KB}] into {eA} : "
-                   f"tensor<{K}x{N}x{et}> -> tensor<{N//NB}x{K//KB}x{NB}x{KB}x{et}>")
-        # mmt4d → <M/MB,N/NB,MB,NB>
-        eO = self._alloc_ssa("eO")
-        self._emit(f"{eO} = tensor.empty() : tensor<{M//MB}x{N//NB}x{MB}x{NB}x{et}>")
-        fO = self._alloc_ssa("fill")
-        self._emit(f"{fO} = linalg.fill ins({cst} : {et}) outs({eO} : "
-                   f"tensor<{M//MB}x{N//NB}x{MB}x{NB}x{et}>) -> tensor<{M//MB}x{N//NB}x{MB}x{NB}x{et}>")
-        mm = self._alloc_ssa("mm")
-        self._emit(f"{mm} = linalg.mmt4d ins({pB}, {pA} : tensor<{M//MB}x{K//KB}x{MB}x{KB}x{et}>, "
-                   f"tensor<{N//NB}x{K//KB}x{NB}x{KB}x{et}>) outs({fO} : "
-                   f"tensor<{M//MB}x{N//NB}x{MB}x{NB}x{et}>) -> tensor<{M//MB}x{N//NB}x{MB}x{NB}x{et}>")
-        # unpack → C[M,N]
-        offC = _off(N)
-        rC = self._alloc_ssa("rC")
-        self._emit(f"{rC} = memref.reinterpret_cast {C_ssa} to offset: [{offC}], sizes: [{M}, {N}], "
-                   f"strides: [{N}, 1] : {C_ty} to {mro(M, N)}")
-        tC = self._alloc_ssa("tC")
-        self._emit(f"{tC} = bufferization.to_tensor {rC} restrict writable : {mro(M, N)} to tensor<{M}x{N}x{et}>")
-        up = self._alloc_ssa("unpack")
-        self._emit(f"{up} = linalg.unpack {mm} inner_dims_pos = [0, 1] inner_tiles = [{MB}, {NB}] "
-                   f"into {tC} : tensor<{M//MB}x{N//NB}x{MB}x{NB}x{et}> -> tensor<{M}x{N}x{et}>")
-        self._emit(f"bufferization.materialize_in_destination {up} in writable {rC} : "
-                   f"(tensor<{M}x{N}x{et}>, {mro(M, N)}) -> ()")
-
     def _gen_vpack(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        # vpack(a, b, group_len) → "vector_ext.interleave"(a, b) <{groupLen}>
-        #   → lower 到 smt.vpack.vv(硬件 cube pack)。RVV-faithful:1:1 映射硬件
-        #   vpack.vv。a/b 同型 1D vector<VLxdtype>,out 为 vector<2VLxdtype>(交织)。
-        a_ssa, a_type = self._gen_expr(node.args[0])
-        b_ssa, b_type = self._gen_expr(node.args[1])
-        group_len = ast.literal_eval(node.args[2])
-        n = _vec_n(a_type)
-        elem = _vec_elem(a_type)
-        out_type = f"vector<{2 * n}x{elem}>"
-        result = self._alloc_ssa(hint or "ilv")
-        self._emit(f'{result} = "vector_ext.interleave"({a_ssa}, {b_ssa})'
+        # vpack(v, group_len) → "vector_ext.group_interleave"(v) <{groupLen}>
+        #   (generic form — host 未注册 vector_ext)。语义 vector<b×N> → vector<(b/2)×(2N)>
+        #   (ExpandGroupInterleave)。一条展开成 b/2 条 interleave → b/2 条 smt.vpack.vv。
+        #   双向复用:输入侧行主序→cube 交织(配 pack 搬连续);输出侧 cube→行主序还原。
+        #   硬件约束:seg = group_len × 元素位宽,seg ∈ {128,256,512}(<128 或其它非法)。
+        v_ssa, v_type = self._gen_expr(node.args[0])
+        group_len = ast.literal_eval(node.args[1])
+        m = re.match(r'vector<(\d+)x(\d+)x(f16|bf16|f32)>', v_type)
+        if not m:
+            raise ValueError(f"vpack needs a rank-2 vector<b×N×dtype>, got {v_type}")
+        b, ncol, elem = int(m.group(1)), int(m.group(2)), m.group(3)
+        if b % 2 != 0:
+            raise ValueError(f"vpack input rows must be even (folds b→b/2), got b={b}")
+        bits = {"f16": 16, "bf16": 16, "f32": 32}[elem]
+        seg = group_len * bits
+        if seg not in (128, 256, 512):
+            raise ValueError(
+                f"vpack seg = group_len({group_len}) × {bits}bit = {seg}; "
+                f"hardware VPACK_TYPE needs seg ∈ {{128,256,512}}")
+        out_type = f"vector<{b // 2}x{ncol * 2}x{elem}>"
+        result = self._alloc_ssa(hint or "vpack")
+        self._emit(f'{result} = "vector_ext.group_interleave"({v_ssa})'
                    f' <{{groupLen = {group_len} : i64}}>'
-                   f' : ({a_type}, {b_type}) -> {out_type}')
+                   f' : ({v_type}) -> {out_type}')
+        return result, out_type
+
+    def _gen_vshape(self, node: ast.Call, hint: str) -> tuple[str, str]:
+        # vshape(v, shape) → vector.shape_cast (标准 vector 方言, host 已注册, 无 generic 问题).
+        #   同 total-numel 的 reshape;用于 vpack 输出 <2×256> → 行主序 <16×32> 等还原。
+        v_ssa, v_type = self._gen_expr(node.args[0])
+        elem = _vec_elem_last(v_type)
+        dims = [self._try_const_int(e) for e in node.args[1].elts] if isinstance(node.args[1], ast.Tuple) \
+            else [self._try_const_int(node.args[1])]
+        if any(d is None for d in dims):
+            raise ValueError("vshape shape must be compile-time ints")
+        out_type = f"vector<{'x'.join(str(d) for d in dims)}x{elem}>"
+        result = self._alloc_ssa(hint or "vshape")
+        self._emit(f"{result} = vector.shape_cast {v_ssa} : {v_type} to {out_type}")
+        return result, out_type
+
+    def _gen_vbroadcast(self, node: ast.Call, hint: str) -> tuple[str, str]:
+        # vbroadcast(v, n) → vector.broadcast: vector<64×dtype> → vector<n×64×dtype>.
+        #   用于广播维(mv 的 A:1 个 cube 复制成 rhs 的 b2 份)。
+        #   约束(实测): 结果 n×64 的 totalNumel 须整除 vscale(2×64=128 崩, 8×64=512 过)。
+        v_ssa, v_type = self._gen_expr(node.args[0])
+        n = self._try_const_int(node.args[1])
+        if n is None:
+            raise ValueError("vbroadcast n must be a compile-time int")
+        elem = _vec_elem_last(v_type)
+        inner = _vec_n(v_type)
+        out_type = f"vector<{n}x{inner}x{elem}>"
+        result = self._alloc_ssa(hint or "vbcast")
+        self._emit(f"{result} = vector.broadcast {v_ssa} : {v_type} to {out_type}")
         return result, out_type
 
     def _gen_vstore(self, node: ast.Call):
-        # SPEC §6.2:vstore(ptr, index, value, stride=None, idx=None)
+        # SPEC §6.2:vstore(ptr, index, value, stride=None, idx=None, shape=None)
         #   index — 起始元素偏移(扁平标量,二维坐标由用户压平)。
-        #   value — 向量 → 写 VL 个元素(transfer_write → vse);标量 → 只写 1 个元素
-        #           (memref.store,reduce 回写)。
+        #   value — 向量 → 写 VL 个元素(transfer_write → vse);标量 → memref.store。
+        #   shape=(R,C) — 2D 块写回:value 为 rank-2 vector<R×C>,reinterpret_cast 到
+        #     memref<R×C strided<[C,1]>> 后 2D transfer_write(in_bounds=[false,false])。
+        #     一维 reinterpret + 宽向量 transfer_write 在本 build 会丢 lane(只写 lane0),
+        #     故 rank-2 结果必须走 2D 路(对齐 probe_cbm_e2e 的 <16×32>→<16×32> 写法)。
         #   stride → vsse(待扩);idx → vsuxei/scatter(待扩)。
         kwargs = {kw.arg: kw.value for kw in node.keywords}
         ptr_ssa, ptr_type = self._gen_expr(node.args[0])
@@ -997,12 +954,30 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         stride_node = node.args[3] if len(node.args) > 3 else kwargs.get("stride")
         if stride_node is not None or kwargs.get("idx") is not None:
             raise NotImplementedError("vstore stride/idx (vsse/vsuxei) 未实现(SPEC §6.2 待扩)")
+        val_ssa, val_type = self._gen_expr(node.args[2])
+        # 2D 块写回:shape=(R,C) 给出目标行列。
+        shape_node = kwargs.get("shape")
+        if shape_node is not None:
+            dims = [self._try_const_int(e) for e in shape_node.elts]
+            if any(d is None for d in dims) or len(dims) != 2:
+                raise ValueError("vstore shape= must be a 2-tuple of compile-time ints")
+            R, C = dims
+            elem = _vec_elem_last(val_type)
+            off_ssa, _ = self._gen_expr(idx_node)
+            sp = "#ptr.generic_space"
+            m2 = f"memref<{R}x{C}x{elem}, strided<[{C}, 1], offset: ?>, {sp}>"
+            r2 = self._alloc_ssa("st2d")
+            self._emit(f"{r2} = memref.reinterpret_cast {ptr_ssa} to offset: [{off_ssa}], "
+                       f"sizes: [{R}, {C}], strides: [{C}, 1] : {ptr_type} to {m2}")
+            c0 = self._const_int(0)
+            self._emit(f"vector.transfer_write {val_ssa}, {r2}[{c0}, {c0}] "
+                       f"{{in_bounds = [false, false]}} : {val_type}, {m2}")
+            return
         assert not isinstance(idx_node, ast.Tuple), ("vstore 的 index 须为扁平标量元素偏移(二维坐标请自行压平);SPEC §6.2")
         idx_ssa, _ = self._gen_expr(idx_node)
-        val_ssa, val_type = self._gen_expr(node.args[2])
         store_ssa, store_type = self._ranked_cast(ptr_ssa, ptr_type)
         if val_type.startswith("vector<"):
-            # 宽结果向量写回 (写法4 vfwmadot): 只写 acc 的前 m(=8) 宽有效元素。
+            # 1D 向量写回: transfer_write → vse。
             self._emit(f"vector.transfer_write {val_ssa}, {store_ssa}[{idx_ssa}]"
                        f" {{in_bounds = [true]}} : {val_type}, {store_type}")
         else:

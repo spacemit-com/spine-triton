@@ -53,8 +53,10 @@ range = _SpineRawRange()  # range(n) / range(start, stop, step) → scf.for boun
 #   vstore   : store a scalar to memref[idx]
 #   alloc    : memref.alloc N-D scratch (写法3 packed_B)
 #   pack     : pack a B row-block into the packed_B scratch layout (写法3)
-#   vpack    : vpack(a, b, group_len) → vector_ext.interleave → smt.vpack.vv (硬件 cube pack)
-#   vfwmadot : matrix-unit dot (写法4) -> vector_ext.matmul → smt.vfwmadot, 直接产出宽结果
+#   vpack    : vpack(v, group_len) → vector_ext.group_interleave → 多条 smt.vpack.vv (cube 交织)
+#   vmadot   : vmadot(acc, x, y) → vector_ext.cross_batch_matmul → 多条 smt.vfwmadot (批量 cube 叉乘)
+#   vshape   : vshape(v, shape) → vector.shape_cast (reshape)
+#   vbroadcast: vbroadcast(v, n) → vector.broadcast (广播维)
 # ---------------------------------------------------------------------------
 vconfig = _SpineRawBuiltin("vconfig")  # vconfig(avl, lmul) → VL = min(avl, VLMAX), VLMAX = lmul × VLEN / SEW (SPEC §6.1)
 vzero = _SpineRawBuiltin("vzero")  # vzero(dtype) → vector<VL x dtype> zeros
@@ -64,8 +66,10 @@ vreduce_sum = _SpineRawBuiltin("vreduce_sum")  # vreduce_sum(vec) → scalar
 vstore = _SpineRawBuiltin("vstore")  # vstore(ptr, idx_tuple, scalar | vec) → memref.store / transfer_write
 alloc = _SpineRawBuiltin("alloc")  # alloc(shape_tuple, dtype) → memref.alloc
 pack = _SpineRawBuiltin("pack")  # pack(src, src_idx, dst, dst_shape) → pack rows (写法3)
-vpack = _SpineRawBuiltin("vpack")  # vpack(a, b, group_len) → vector_ext.interleave → smt.vpack.vv (硬件 cube pack)
-vfwmadot = _SpineRawBuiltin("vfwmadot")  # vfwmadot(acc, x, y) → "vector_ext.matmul" → smt.vfwmadot (矩阵单元, 写法4)
+vpack = _SpineRawBuiltin("vpack")  # vpack(v, group_len) → vector_ext.group_interleave → 多条 smt.vpack.vv (cube 交织, vector<b×N>→<(b/2)×2N>)
+vmadot = _SpineRawBuiltin("vmadot")  # vmadot(acc, x, y) → vector_ext.cross_batch_matmul → 多条 smt.vfwmadot (批量 cube 叉乘)
+vshape = _SpineRawBuiltin("vshape")  # vshape(v, shape) → vector.shape_cast (同 numel reshape)
+vbroadcast = _SpineRawBuiltin("vbroadcast")  # vbroadcast(v, n) → vector.broadcast: vector<64> → vector<n×64> (广播维)
 # §6.4 逐元素具名函数(算术运算符直接用 Python 操作符, 无需 marker)
 vmin = _SpineRawBuiltin("vmin")  # vmin(a, b) → 逐元素 min → arith.minimumf / minsi
 vmax = _SpineRawBuiltin("vmax")  # vmax(a, b) → 逐元素 max → arith.maximumf / maxsi
@@ -74,8 +78,6 @@ rsqrt = _SpineRawBuiltin("rsqrt")  # rsqrt(a) → 1/√a → math.rsqrt
 abs = _SpineRawBuiltin("abs")  # abs(a) → |a| → math.absf / absi  # noqa: A001 (shadows builtin intentionally)
 cast = _SpineRawBuiltin("cast")  # cast(a, dtype) → 类型转换 → arith.extf/truncf/sitofp/fptosi/extsi/trunci
 select = _SpineRawBuiltin("select")  # select(m, a, b) → a if m else b → arith.select (§6.8 回退)
-mmt4d = _SpineRawBuiltin(
-    "mmt4d")  # mmt4d(B, Apad, C, M, K, N) → linalg.pack+mmt4d+unpack → spe_pack→vfwmadot(结构化矩阵乘, 数值正确)
 
 # ---------------------------------------------------------------------------
 # Document-facing sugar: dtype names and the `mem` / `index` / `raw_kernel`
