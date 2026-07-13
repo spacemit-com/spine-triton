@@ -710,6 +710,25 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
 
         ptr_ssa, ptr_type = self._gen_expr(ptr_node)
 
+        # Packed cube tensor from vpack(memref): tensor<oc×kc×(rt*kt)>. Read a 1D
+        # <group*vl> slice at [mc, kc, 0] then shape_cast → <group×vl> (avoids the
+        # 2D <rt×kt> row<vscale crash; PLAN §3.6 step②). idx = (mc, kc), group=b1.
+        group_kw = kwargs.get("group")
+        if ptr_type.startswith("tensor<") and isinstance(idx_node, ast.Tuple) and group_kw is not None:
+            group = self._try_const_int(group_kw)
+            assert group is not None, "vload group= must be a compile-time int"
+            elem = re.search(r'(bf16|f16|f32|f64|i8|i16|i32|i64)>$', ptr_type).group(1)
+            idx_ssas = [self._gen_expr(e)[0] for e in idx_node.elts]
+            c0 = self._const_int(0)
+            flat_ty = f"vector<{group * vl}x{elem}>"
+            flat = self._alloc_ssa(hint or "vldflat")
+            self._emit(f"{flat} = vector.transfer_read {ptr_ssa}[{', '.join(idx_ssas)}, {c0}], {pad}"
+                       f" {{in_bounds = [true]}} : {ptr_type}, {flat_ty}")
+            out_ty = f"vector<{group}x{vl}x{elem}>"
+            result = self._alloc_ssa(hint or "vld")
+            self._emit(f"{result} = vector.shape_cast {flat} : {flat_ty} to {out_ty}")
+            return result, out_ty
+
         if not ptr_type.startswith("memref<*x"):
             # Ranked memref (e.g. local packed_B): index every dim directly,
             # transfer_read pulls the innermost VL-length slice. in_bounds has
@@ -884,16 +903,53 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         return result, acc_type
 
     def _gen_vpack(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        # vpack(v, group_len) → "vector_ext.group_interleave"(v) <{groupLen}>
-        #   (generic form — host 未注册 vector_ext)。语义 vector<b×N> → vector<(b/2)×(2N)>
-        #   (ExpandGroupInterleave)。一条展开成 b/2 条 interleave → b/2 条 smt.vpack.vv。
-        #   双向复用:输入侧行主序→cube 交织(配 pack 搬连续);输出侧 cube→行主序还原。
-        #   硬件约束:seg = group_len × 元素位宽,seg ∈ {128,256,512}(<128 或其它非法)。
-        v_ssa, v_type = self._gen_expr(node.args[0])
+        # tle.vpack 一名两签(PLAN §3.1),按首参类型分派,底层都到 vpack.vv:
+        #   vpack(vector, group_len)              → "vector_ext.group_interleave"(输出侧还原)
+        #   vpack(memref, inner_tiles=, stride=, rows=) → linalg.pack(输入侧摆 cube)+collapse
+        # memref 分支:行主序 <rows×K> --linalg.pack[rt,kt]--> <rows/rt, K/kt, rt, kt>
+        #   --collapse[[0],[1],[2,3]]--> <rows/rt, K/kt, rt*kt>,供后续 1D vload(避 2D<rt×kt>
+        #   行=rt<vscale 崩;1D <rt*kt> 过)。inner_tiles/rows/stride 从 kwargs;stride=K(列数)。
+        kwargs = {kw.arg: kw.value for kw in node.keywords}
+        first_ssa, first_type = self._gen_expr(node.args[0])
+        if first_type.startswith("memref<"):
+            it = kwargs.get("inner_tiles")
+            assert it is not None and isinstance(it, ast.Tuple) and len(it.elts) == 2, \
+                "vpack(memref) needs inner_tiles=(rt, kt)"
+            rt = self._try_const_int(it.elts[0])
+            kt = self._try_const_int(it.elts[1])
+            K = self._try_const_int(kwargs["stride"]) if "stride" in kwargs else None
+            rows = self._try_const_int(kwargs["rows"]) if "rows" in kwargs else None
+            assert None not in (rt, kt, K, rows), \
+                "vpack(memref) inner_tiles/stride(=K)/rows must be compile-time ints"
+            assert rows % rt == 0 and K % kt == 0, f"vpack: rows%rt & K%kt required, got rows={rows},K={K},rt={rt},kt={kt}"
+            et = _memref_elem(first_type) if "memref<*x" not in first_type else \
+                re.search(r'memref<\*x([a-z0-9]+)', first_type).group(1)
+            sp = "#ptr.generic_space"
+            mr = f"memref<{rows}x{K}x{et}, strided<[{K}, 1]>, {sp}>"
+            cst = self._const_float(0.0, et)
+            r2 = self._alloc_ssa("vpsrc")
+            self._emit(f"{r2} = memref.reinterpret_cast {first_ssa} to offset: [0], "
+                       f"sizes: [{rows}, {K}], strides: [{K}, 1] : {first_type} to {mr}")
+            t2 = self._alloc_ssa("vpten")
+            self._emit(f"{t2} = bufferization.to_tensor {r2} restrict : {mr} to tensor<{rows}x{K}x{et}>")
+            oc, kc = rows // rt, K // kt
+            eP = self._alloc_ssa("vpe")
+            self._emit(f"{eP} = tensor.empty() : tensor<{oc}x{kc}x{rt}x{kt}x{et}>")
+            pk = self._alloc_ssa("vppk")
+            self._emit(f"{pk} = linalg.pack {t2} padding_value({cst} : {et}) outer_dims_perm = [0, 1] "
+                       f"inner_dims_pos = [0, 1] inner_tiles = [{rt}, {kt}] into {eP} : "
+                       f"tensor<{rows}x{K}x{et}> -> tensor<{oc}x{kc}x{rt}x{kt}x{et}>")
+            # collapse 内两维 → 1D(供 vload 1D 读, 避 2D <rt×kt> 崩)
+            col = self._alloc_ssa("vpcol")
+            col_type = f"tensor<{oc}x{kc}x{rt * kt}x{et}>"
+            self._emit(f"{col} = tensor.collapse_shape {pk} [[0], [1], [2, 3]] : "
+                       f"tensor<{oc}x{kc}x{rt}x{kt}x{et}> into {col_type}")
+            return col, col_type
+        # vector 分支:group_interleave(输出侧还原)
         group_len = ast.literal_eval(node.args[1])
-        m = re.match(r'vector<(\d+)x(\d+)x(f16|bf16|f32)>', v_type)
+        m = re.match(r'vector<(\d+)x(\d+)x(f16|bf16|f32)>', first_type)
         if not m:
-            raise ValueError(f"vpack needs a rank-2 vector<b×N×dtype>, got {v_type}")
+            raise ValueError(f"vpack(vector) needs a rank-2 vector<b×N×dtype>, got {first_type}")
         b, ncol, elem = int(m.group(1)), int(m.group(2)), m.group(3)
         if b % 2 != 0:
             raise ValueError(f"vpack input rows must be even (folds b→b/2), got b={b}")
@@ -905,9 +961,9 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
                 f"hardware VPACK_TYPE needs seg ∈ {{128,256,512}}")
         out_type = f"vector<{b // 2}x{ncol * 2}x{elem}>"
         result = self._alloc_ssa(hint or "vpack")
-        self._emit(f'{result} = "vector_ext.group_interleave"({v_ssa})'
+        self._emit(f'{result} = "vector_ext.group_interleave"({first_ssa})'
                    f' <{{groupLen = {group_len} : i64}}>'
-                   f' : ({v_type}) -> {out_type}')
+                   f' : ({first_type}) -> {out_type}')
         return result, out_type
 
     def _gen_vshape(self, node: ast.Call, hint: str) -> tuple[str, str]:
