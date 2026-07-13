@@ -30,6 +30,7 @@ f32 = tle.f32
 # getMMACubicSize; K3 f16 = {m8,n8,k8}), not hardcoded 8.
 CM, CN, CK = tle.mma_cube(f16)  # (8, 8, 8) for f16
 
+VL = CN * CK                     # cube lane 宽 = n×k(一个 cube 展平成 VL 个 lane),f16→64
 M, K, Npad = 64, 64, 32          # M=64 → 多个 MB 行块(grid 并发)
 MB = 16                          # 每 program 一个 cube 行块(rt=MB, b1=MB/CM=2)
 KB = CK
@@ -39,7 +40,9 @@ B1, B2 = MB // CM, Npad // CN     # 2, 4
 
 @tle.raw_kernel
 def mv(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f16, out=True), row_base: tle.index):
-    nvl = tle.vconfig(-1, 1)  # VL=64
+    # 活跃向量长度 = cube lane 宽(n×k=VL);贯穿整个 kernel:vzero/vload 的每行都是 VL lane。
+    # avl 传 VL 写明含义(vconfig 现忽略 avl 只按 lmul 算 VLMAX=VLEN/SEW=64,降级不变)。
+    nvl = tle.vconfig(VL, 1)
     # ① B 侧:vpack(memref, offset=row_base*K) 只摆本 program 的 MB 行块 cube
     Bcube = tle.vpack(B, inner_tiles=(MB, CK), stride=K, rows=MB, offset=row_base * K)
     # ② A 侧:spread 软件广播成 cube scratch(与行块无关,每 program 读同一 A[K])
