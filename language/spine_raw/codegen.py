@@ -77,7 +77,7 @@ def _memref_elem(mlir_type: str) -> str:
 
 _SPINE_RAW_BUILTIN_NAMES = {
     "range", "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "pack", "vmadot",
-    "vpack", "vbroadcast", "vshape", "vmin", "vmax", "sqrt", "rsqrt", "abs", "cast", "select"
+    "vpack", "vbroadcast", "vshape", "spread", "vmin", "vmax", "sqrt", "rsqrt", "abs", "cast", "select"
 }
 
 # Element-type classification for §6.4 elementwise dispatch.
@@ -624,6 +624,8 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             return self._gen_vbroadcast(node, hint)
         if _is_spine_raw_attr(node.func, "alloc", self._aliases):
             return self._gen_alloc(node, hint)
+        if _is_spine_raw_attr(node.func, "spread", self._aliases):
+            return self._gen_spread(node, hint)
         for _nm in ("vmin", "vmax"):
             if _is_spine_raw_attr(node.func, _nm, self._aliases):
                 return self._gen_vminmax(node, hint, _nm)
@@ -1088,6 +1090,67 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         operands = ", ".join(dyn_ssas)
         self._emit(f"{result} = memref.alloc({operands}) {{alignment = 64 : i64}} : {mtype}")
         return result, mtype
+
+    def _gen_spread(self, node: ast.Call, hint: str) -> tuple[str, str]:
+        # spread(src, cube_shape=(kc, n, k)) → memref<kc×(n*k)> (PLAN §3.3e).
+        #   软件广播 pack:三层 scf.for + 标量 memref.load/store,
+        #   scrA[c, ni, ki] = src[c*k + ki](每个 n 写同一个 src[k],沿 n 广播)。
+        #   纯标量内存操作,不产生 vector → 完全绕开 vscale(ConvertToScalableVector 不碰)。
+        #   返回 collapse 后的 <kc×(n*k)>,供后续 vload(scrA, (c, 0)) 读单 cube <n*k>。
+        kwargs = {kw.arg: kw.value for kw in node.keywords}
+        cs_node = kwargs.get("cube_shape") or (node.args[1] if len(node.args) > 1 else None)
+        assert isinstance(cs_node, ast.Tuple) and len(cs_node.elts) == 3, \
+            "spread needs cube_shape=(kc, n, k)"
+        kc = self._try_const_int(cs_node.elts[0])
+        n = self._try_const_int(cs_node.elts[1])
+        k = self._try_const_int(cs_node.elts[2])
+        assert None not in (kc, n, k), "spread cube_shape must be compile-time ints"
+        src_ssa, src_type = self._gen_expr(node.args[0])
+        et = re.search(r'([a-z0-9]+)(?:,|>)', src_type.split("memref<")[1]).group(1) \
+            if "memref<*x" not in src_type else re.search(r'memref<\*x([a-z0-9]+)', src_type).group(1)
+        sp = "#ptr.generic_space"
+        total = kc * k  # src 有效长度(K)
+        # src <*x> → 1D <total>
+        rsrc = self._alloc_ssa("sprsrc")
+        src1d = f"memref<{total}x{et}, strided<[1]>, {sp}>"
+        self._emit(f"{rsrc} = memref.reinterpret_cast {src_ssa} to offset: [0], "
+                   f"sizes: [{total}], strides: [1] : {src_type} to {src1d}")
+        # cube scratch <kc×n×k>
+        scr = self._alloc_ssa("spscr")
+        scr_ty = f"memref<{kc}x{n}x{k}x{et}>"
+        self._emit(f"{scr} = memref.alloc() {{alignment = 64 : i64}} : {scr_ty}")
+        c0 = self._const_int(0)
+        c1 = self._const_int(1)
+        ckc = self._const_int(kc)
+        cn = self._const_int(n)
+        ck = self._const_int(k)
+        li = self._alloc_ssa("spc")
+        self._emit(f"scf.for {li} = {c0} to {ckc} step {c1} {{")
+        self._indent += 2
+        lni = self._alloc_ssa("spn")
+        self._emit(f"scf.for {lni} = {c0} to {cn} step {c1} {{")
+        self._indent += 2
+        lki = self._alloc_ssa("spk")
+        self._emit(f"scf.for {lki} = {c0} to {ck} step {c1} {{")
+        self._indent += 2
+        ck8 = self._alloc_ssa("spmul")
+        self._emit(f"{ck8} = arith.muli {li}, {ck} : index")
+        idx = self._alloc_ssa("spidx")
+        self._emit(f"{idx} = arith.addi {ck8}, {lki} : index")
+        av = self._alloc_ssa("spv")
+        self._emit(f"{av} = memref.load {rsrc}[{idx}] : {src1d}")
+        self._emit(f"memref.store {av}, {scr}[{li}, {lni}, {lki}] : {scr_ty}")
+        self._indent -= 2
+        self._emit("}")
+        self._indent -= 2
+        self._emit("}")
+        self._indent -= 2
+        self._emit("}")
+        # collapse <kc×n×k> → <kc×(n*k)>,供 1D 单 cube vload
+        col = self._alloc_ssa("spcol")
+        col_ty = f"memref<{kc}x{n * k}x{et}>"
+        self._emit(f"{col} = memref.collapse_shape {scr} [[0], [1, 2]] : {scr_ty} into {col_ty}")
+        return col, col_ty
 
     def _gen_pack(self, node: ast.Call):
         # pack(src, (row0, col0), dst, dst_shape, stride):
