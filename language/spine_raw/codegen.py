@@ -938,10 +938,19 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             et = _memref_elem(first_type) if "memref<*x" not in first_type else \
                 re.search(r'memref<\*x([a-z0-9]+)', first_type).group(1)
             sp = "#ptr.generic_space"
-            mr = f"memref<{rows}x{K}x{et}, strided<[{K}, 1]>, {sp}>"
+            # offset= : runtime element offset (grid 并发时每 program 只 pack 自己的
+            # row_base*K 起始行块)。给出则 reinterpret_cast 用 offset:[?] 动态偏移。
+            off_node = kwargs.get("offset")
+            if off_node is not None:
+                off_ssa, _ = self._gen_expr(off_node)
+                mr = f"memref<{rows}x{K}x{et}, strided<[{K}, 1], offset: ?>, {sp}>"
+                off_field = off_ssa
+            else:
+                mr = f"memref<{rows}x{K}x{et}, strided<[{K}, 1]>, {sp}>"
+                off_field = "0"
             cst = self._const_float(0.0, et)
             r2 = self._alloc_ssa("vpsrc")
-            self._emit(f"{r2} = memref.reinterpret_cast {first_ssa} to offset: [0], "
+            self._emit(f"{r2} = memref.reinterpret_cast {first_ssa} to offset: [{off_field}], "
                        f"sizes: [{rows}, {K}], strides: [{K}, 1] : {first_type} to {mr}")
             t2 = self._alloc_ssa("vpten")
             self._emit(f"{t2} = bufferization.to_tensor {r2} restrict : {mr} to tensor<{rows}x{K}x{et}>")
