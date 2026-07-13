@@ -19,10 +19,14 @@ from triton.language.extra.spine_raw import call as _sr_call
 f16 = tle.f16
 f32 = tle.f32
 
+# MMA cube dims from the target dtype (mirror of TargetDescriptionAnalysis
+# getMMACubicSize; K3 f16 = {m8,n8,k8}), not hardcoded 8.
+CM, CN, CK = tle.mma_cube(f16)  # (8, 8, 8) for f16
+
 M, K, Npad = 16, 64, 32
-KB = 8
+KB = CK
 KC = K // KB  # 8
-B1, B2 = M // 8, Npad // 8  # 2, 4
+B1, B2 = M // CM, Npad // CN  # 2, 4
 
 
 @tle.raw_kernel
@@ -31,7 +35,7 @@ def mv(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f16, out=True)):
     # ① B 侧:vpack(memref) 在 DSL 内摆 cube 布局(行主序 → linalg.pack → collapse)
     Bcube = tle.vpack(B, inner_tiles=(16, 8), stride=K, rows=M)  # tensor<1×8×128>
     # ② A 侧:spread 软件广播成 cube scratch(scf.for 标量, 无 vector→无 vscale)
-    scrA = tle.spread(A, cube_shape=(KC, 8, 8))  # memref<8×64>(每 kc 一个已 n 广播的 cube)
+    scrA = tle.spread(A, cube_shape=(KC, CN, CK))  # memref<8×64>(每 kc 一个已 n 广播的 cube)
     acc = tle.vzero(f32, group=8)  # <8×64xf32>
     for kc in tle.range(0, KC, 1):
         vb = tle.vload(Bcube, (0, kc), group=B1)  # <2×64xf16>

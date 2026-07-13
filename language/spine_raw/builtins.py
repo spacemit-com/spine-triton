@@ -88,3 +88,28 @@ select = _SpineRawBuiltin("select")  # select(m, a, b) → a if m else b → ari
 f16 = "f16"
 f32 = "f32"
 bf16 = "bf16"
+
+# ---------------------------------------------------------------------------
+# MMA cube size per dtype (K3, arch 0xA064). Mirrors spine-mlir's
+# TargetDescriptionAnalysis::getMMACubicSize (MMACubicSize{m, n, k}):
+#   f16/bf16 -> {8, 8, 8},  i8 -> {8, 16, 8},  i4 -> {8, 32, 8}
+# so kernels derive spread/vmadot cube dims from the dtype instead of a
+# hardcoded 8. Keyed by the eDSL element-type string.
+# ---------------------------------------------------------------------------
+_MMA_CUBE = {
+    "f16": (8, 8, 8),
+    "bf16": (8, 8, 8),
+    "i8": (8, 16, 8),
+    "i4": (8, 32, 8),
+}
+
+
+def mma_cube(dtype: str) -> tuple:
+    """Return the (m, n, k) MMA cube size for `dtype` on K3.
+
+    Mirrors TargetDescriptionAnalysis::getMMACubicSize so raw kernels can size
+    spread/vmadot cubes from the target's MMA shape rather than a literal 8.
+    """
+    if dtype not in _MMA_CUBE:
+        raise KeyError(f"no MMA cube size for dtype {dtype!r}; known: {sorted(_MMA_CUBE)}")
+    return _MMA_CUBE[dtype]

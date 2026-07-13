@@ -13,6 +13,7 @@ import re
 import textwrap
 from typing import Callable
 
+from .builtins import mma_cube as _mma_cube
 from .types import _TypedAnnotation
 
 # ---------------------------------------------------------------------------
@@ -878,29 +879,39 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         return result, elem
 
     def _gen_vmadot(self, node: ast.Call, hint: str) -> tuple[str, str]:
-        # vmadot(acc, x, y) → "vector_ext.cross_batch_matmul"(x, y, acc) <{m=8,n=8,k=8}>
+        # vmadot(acc, x, y) → "vector_ext.cross_batch_matmul"(x, y, acc) <{m,n,k}>
         #   (generic form — host 未注册 vector_ext, custom form parse 失败)。
         #   一条 cbm 自动展开成 b1·b2 条 vector_ext.matmul → 多条 smt.vfwmadot。
-        #   契约(ExpandCrossBatchMatmul): lhs=x<b1×64>, rhs=y<b2×64>, acc/out<(b1·b2)×64>,
-        #   每 64-lane 行 = 1 个 8×8 cube;m=n=k=8 SMT 单元固定;x/y f16 或 bf16,acc/out f32。
-        #   b1/b2 从 operand 的 rank-2 vector shape[0] 推。
+        #   契约(ExpandCrossBatchMatmul): lhs=x<b1×L>, rhs=y<b2×L>, acc/out<(b1·b2)×L>,
+        #   每 L-lane 行 = 1 个 m×n cube(L = n*k, 见下);x/y f16|bf16, acc/out f32。
+        #   MMA cube 尺寸 {m,n,k} 按 dtype 从 MMACubicSize 推(K3: f16={8,8,8},
+        #   i8={8,16,8}, i4={8,32,8}),不硬编码 8。b1/b2 从 operand rank-2 shape[0] 推。
         acc_ssa, acc_type = self._gen_expr(node.args[0])
         x_ssa, x_type = self._gen_expr(node.args[1])
         y_ssa, y_type = self._gen_expr(node.args[2])
         # 校验:x/y rank-2 f16/bf16 cube 向量,acc rank-2 f32,acc 行数 = b1·b2。
-        xm = re.match(r'vector<(\d+)x64x(f16|bf16)>', x_type)
-        ym = re.match(r'vector<(\d+)x64x(f16|bf16)>', y_type)
-        am = re.match(r'vector<(\d+)x64xf32>', acc_type)
+        xm = re.match(r'vector<(\d+)x(\d+)x(f16|bf16)>', x_type)
+        ym = re.match(r'vector<(\d+)x(\d+)x(f16|bf16)>', y_type)
+        am = re.match(r'vector<(\d+)x(\d+)xf32>', acc_type)
         if not (xm and ym and am):
             raise ValueError(
-                f"vmadot needs x/y vector<b×64×f16|bf16> and acc vector<B×64×f32>, "
+                f"vmadot needs x/y vector<b×L×f16|bf16> and acc vector<B×L×f32>, "
                 f"got x={x_type}, y={y_type}, acc={acc_type}")
         b1, b2, B = int(xm.group(1)), int(ym.group(1)), int(am.group(1))
         if B != b1 * b2:
             raise ValueError(f"vmadot acc rows must be b1·b2 = {b1}·{b2} = {b1*b2}, got {B}")
+        # MMA cube {m,n,k} from x's dtype (mirror of TargetDescriptionAnalysis
+        # getMMACubicSize). The cube flattens to a lane row of n*k elements.
+        m, n, k = _mma_cube(xm.group(3))
+        lane = n * k
+        for tag, mm in (("x", xm), ("y", ym), ("acc", am)):
+            if int(mm.group(2)) != lane:
+                raise ValueError(
+                    f"vmadot {tag} lane width must be n*k = {n}*{k} = {lane} for "
+                    f"dtype {xm.group(3)}, got {mm.group(2)} (type {mm.group(0)})")
         result = self._alloc_ssa(hint or "vmadot")
         self._emit(f'{result} = "vector_ext.cross_batch_matmul"({x_ssa}, {y_ssa}, {acc_ssa})'
-                   f' <{{k = 8 : i64, m = 8 : i64, n = 8 : i64}}>'
+                   f' <{{k = {k} : i64, m = {m} : i64, n = {n} : i64}}>'
                    f' : ({x_type}, {y_type}, {acc_type}) -> {acc_type}')
         return result, acc_type
 

@@ -17,6 +17,7 @@ from .builtins import proton_mark
 from .builtins import vconfig, vzero, vload, vmacc, vreduce_sum, vstore, alloc, pack, vpack, vmadot, vshape, vbroadcast, spread
 from .builtins import vmin, vmax, sqrt, rsqrt, abs, cast, select  # §6.4 elementwise
 from .builtins import f16, f32, bf16
+from .builtins import mma_cube
 from .builtins import range as range  # noqa: A001 (shadows builtin intentionally)
 
 # raw_kernel: bare decorator alias for @spine_raw(name="linalg") to match the
@@ -56,5 +57,6 @@ __all__ = [
     "f16",
     "f32",
     "bf16",
+    "mma_cube",
     "range",
 ]
