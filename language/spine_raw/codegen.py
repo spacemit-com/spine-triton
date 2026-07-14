@@ -967,8 +967,11 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             self._emit(f"{col} = tensor.collapse_shape {pk} [[0], [1], [2, 3]] : "
                        f"tensor<{oc}x{kc}x{rt}x{kt}x{et}> into {col_type}")
             return col, col_type
-        # vector 分支:group_interleave(输出侧还原)
-        group_len = ast.literal_eval(node.args[1])
+        # vector 分支:group_interleave(输出侧还原)。group_len 支持字面量或编译期
+        # 常量(闭包 freevar / vconfig nvl, 如 CN、2*CN),经 _try_const_int 折叠。
+        group_len = self._try_const_int(node.args[1])
+        if group_len is None:
+            raise ValueError("vpack(vector) group_len must be a compile-time int (literal or closure const)")
         m = re.match(r'vector<(\d+)x(\d+)x(f16|bf16|f32)>', first_type)
         if not m:
             raise ValueError(f"vpack(vector) needs a rank-2 vector<b×N×dtype>, got {first_type}")
