@@ -45,19 +45,16 @@ def make_mv(M, K):
     """
     Kp = ((K + CK - 1) // CK) * CK      # K 上取整到 CK 倍数(pad 尾补 0)
     KC = Kp // CK                        # K 循环迭代数(按 pad 后)
-    if M % MB == 0:
-        grid_blocks = M // MB
-        MROWS = MB                        # 每 program 满 MB 行(整除)
-    else:
-        assert M < MB, f"non-divisible M>{MB} needs §2.B dynamic rows (未实现); got M={M}"
-        grid_blocks = 1
-        MROWS = M                         # 单 block:vpack 读真实 M 行, codegen fill+insert 补到 MB
+    Mtot = M                             # 闭包常量, 供 kernel 算 valid_rows = imin(MB, M-row_base)
+    grid_blocks = (M + MB - 1) // MB     # 任意 M:grid=ceil(M/MB), 末 block 动态行数
 
     @tle.raw_kernel
     def mv(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f16, out=True), row_base: tle.index):
         nvl = tle.vconfig(VL, 1)  # 活跃 VL = cube lane 宽(经 _active_vl 供 vzero/vload)
-        # ① B 侧:vpack(memref) 读真实 MROWS 行;M/K 非整除时 codegen 自动 fill+insert 补到 MB/Kp
-        Bcube = tle.vpack(B, inner_tiles=(MB, CK), stride=K, rows=MROWS, offset=row_base * K)
+        # ① B 侧:valid_rows = min(MB, M-row_base)(末 block 不满 MB);vpack 只读真实行,
+        #    codegen fill+insert 把 M(行)/K(列)一起补到 MB×Kp,越界行/列填 0(PLAN_pad §2.B)。
+        vr = tle.imin(MB, Mtot - row_base)
+        Bcube = tle.vpack(B, inner_tiles=(MB, CK), stride=K, rows=MB, offset=row_base * K, valid_rows=vr)
         # ② A 侧:spread 标量广播成 cube scratch;k_real=K 让尾 tile 填 0(避免 over-read A)
         scrA = tle.spread(A, cube_shape=(KC, CN, CK), k_real=K)
         acc = tle.vzero(f32, group=B1 * B2)  # <8×64xf32>
@@ -103,10 +100,11 @@ def _run(M, K):
     assert diff < 5e-2, f"M={M} K={K} max_diff={diff:.4e}\ngot={got[:4]}\ngold={golden[:4]}"
 
 
-# 整除族(回归)+ 任意 shape(K 非整除 / M<MB 非整除)
+# 整除族(回归)+ 任意 shape(K 非整除 / M<MB / M>MB 非整除)
 _SHAPES = [(64, 64), (128, 64), (64, 128), (256, 64),    # 整除回归
            (64, 60), (128, 100), (64, 40),               # K 非整除(fill+insert 补 K 尾)
-           (12, 60), (12, 64), (4, 40)]                  # M<MB 且 K 任意(单 block fill+insert 补 M/K)
+           (12, 60), (12, 64), (4, 40),                  # M<MB 且 K 任意(单 block fill+insert 补 M/K)
+           (20, 64), (20, 60), (100, 64), (50, 100)]     # M>MB 非整除(§2.B 动态行数 valid_rows)
 
 
 @pytest.mark.parametrize("M, K", _SHAPES)

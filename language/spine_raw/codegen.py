@@ -78,7 +78,7 @@ def _memref_elem(mlir_type: str) -> str:
 
 _SPINE_RAW_BUILTIN_NAMES = {
     "range", "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "pack", "vmadot",
-    "vpack", "vbroadcast", "vshape", "spread", "vmin", "vmax", "sqrt", "rsqrt", "abs", "cast", "select"
+    "vpack", "vbroadcast", "vshape", "spread", "imin", "vmin", "vmax", "sqrt", "rsqrt", "abs", "cast", "select"
 }
 
 # Element-type classification for §6.4 elementwise dispatch.
@@ -627,6 +627,13 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             return self._gen_alloc(node, hint)
         if _is_spine_raw_attr(node.func, "spread", self._aliases):
             return self._gen_spread(node, hint)
+        if _is_spine_raw_attr(node.func, "imin", self._aliases):
+            # imin(a, b) → arith.minsi on index(供 valid_rows = imin(MB, M-row_base))
+            a_ssa, _ = self._gen_expr(node.args[0])
+            b_ssa, _ = self._gen_expr(node.args[1])
+            r = self._alloc_ssa("imin")
+            self._emit(f"{r} = arith.minsi {a_ssa}, {b_ssa} : index")
+            return r, "index"
         for _nm in ("vmin", "vmax"):
             if _is_spine_raw_attr(node.func, _nm, self._aliases):
                 return self._gen_vminmax(node, hint, _nm)
@@ -940,35 +947,53 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             # 非整除 → fill+insert 把 <rows×K> 补成整除的 <Mp×Kp> 再 pack(PLAN_pad §2.1)。
             # linalg.pack 的 padding_value 只补 M 维不补 K inner-tile(K 越界读脏值→NaN, probe 坐实),
             # 故不能只放开断言, 必须先 fill 0 + insert_slice 造出整除干净 source。
+            # valid_rows= (PLAN_pad §2.B):运行期有效行数 min(rows, M-row_base)。给出则 reinterpret/
+            # to_tensor 用动态 <?×K>、insert_slice 用动态 size,末 block 只读真实行、其余 fill 0 补到
+            # rows(=MB)。cube 布局(pack/collapse)仍静态 <Mp×Kp>,只前端读+插入动态。
+            vr_node = kwargs.get("valid_rows")
             Mp = ((rows + rt - 1) // rt) * rt
             Kp = ((K + kt - 1) // kt) * kt
-            need_pad = (Mp != rows) or (Kp != K)
+            need_pad = (Mp != rows) or (Kp != K) or (vr_node is not None)
             # offset= : runtime element offset (grid 并发时每 program 只 pack 自己的
             # row_base*K 起始行块)。给出则 reinterpret_cast 用 offset:[?] 动态偏移。
             off_node = kwargs.get("offset")
+            off_field = "0"
             if off_node is not None:
                 off_ssa, _ = self._gen_expr(off_node)
-                mr = f"memref<{rows}x{K}x{et}, strided<[{K}, 1], offset: ?>, {sp}>"
                 off_field = off_ssa
-            else:
-                mr = f"memref<{rows}x{K}x{et}, strided<[{K}, 1]>, {sp}>"
-                off_field = "0"
             cst = self._const_float(0.0, et)
             r2 = self._alloc_ssa("vpsrc")
-            self._emit(f"{r2} = memref.reinterpret_cast {first_ssa} to offset: [{off_field}], "
-                       f"sizes: [{rows}, {K}], strides: [{K}, 1] : {first_type} to {mr}")
             t2 = self._alloc_ssa("vpten")
-            self._emit(f"{t2} = bufferization.to_tensor {r2} restrict : {mr} to tensor<{rows}x{K}x{et}>")
+            if vr_node is not None:
+                # 动态行数:读 <?×K> 真实行(size=valid_rows), offset 必为运行期
+                vr_ssa, _ = self._gen_expr(vr_node)
+                mr = f"memref<?x{K}x{et}, strided<[{K}, 1], offset: ?>, {sp}>"
+                self._emit(f"{r2} = memref.reinterpret_cast {first_ssa} to offset: [{off_field}], "
+                           f"sizes: [{vr_ssa}, {K}], strides: [{K}, 1] : {first_type} to {mr}")
+                self._emit(f"{t2} = bufferization.to_tensor {r2} restrict : {mr} to tensor<?x{K}x{et}>")
+                dyn_rows_ssa = vr_ssa
+            else:
+                mr = (f"memref<{rows}x{K}x{et}, strided<[{K}, 1], offset: ?>, {sp}>"
+                      if off_node is not None else f"memref<{rows}x{K}x{et}, strided<[{K}, 1]>, {sp}>")
+                self._emit(f"{r2} = memref.reinterpret_cast {first_ssa} to offset: [{off_field}], "
+                           f"sizes: [{rows}, {K}], strides: [{K}, 1] : {first_type} to {mr}")
+                self._emit(f"{t2} = bufferization.to_tensor {r2} restrict : {mr} to tensor<{rows}x{K}x{et}>")
+                dyn_rows_ssa = None
             if need_pad:
-                # tensor.empty<Mp×Kp> → linalg.fill 0 → insert_slice src[rows,K] → pack<Mp×Kp>
+                # tensor.empty<Mp×Kp> → linalg.fill 0 → insert_slice → pack<Mp×Kp>
                 ep = self._alloc_ssa("vppad")
                 self._emit(f"{ep} = tensor.empty() : tensor<{Mp}x{Kp}x{et}>")
                 fp = self._alloc_ssa("vpfill")
                 self._emit(f"{fp} = linalg.fill ins({cst} : {et}) outs({ep} : "
                            f"tensor<{Mp}x{Kp}x{et}>) -> tensor<{Mp}x{Kp}x{et}>")
                 ins = self._alloc_ssa("vpins")
-                self._emit(f"{ins} = tensor.insert_slice {t2} into {fp}[0, 0] [{rows}, {K}] [1, 1] : "
-                           f"tensor<{rows}x{K}x{et}> into tensor<{Mp}x{Kp}x{et}>")
+                if dyn_rows_ssa is not None:
+                    # 动态 size:insert 真实 valid_rows 行, 其余保持 fill 的 0
+                    self._emit(f"{ins} = tensor.insert_slice {t2} into {fp}[0, 0] [{dyn_rows_ssa}, {K}] [1, 1] : "
+                               f"tensor<?x{K}x{et}> into tensor<{Mp}x{Kp}x{et}>")
+                else:
+                    self._emit(f"{ins} = tensor.insert_slice {t2} into {fp}[0, 0] [{rows}, {K}] [1, 1] : "
+                               f"tensor<{rows}x{K}x{et}> into tensor<{Mp}x{Kp}x{et}>")
                 src_ssa, src_rows, src_K = ins, Mp, Kp
             else:
                 src_ssa, src_rows, src_K = t2, rows, K

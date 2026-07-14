@@ -71,6 +71,7 @@ vmadot = _SpineRawBuiltin("vmadot")  # vmadot(acc, x, y) → vector_ext.cross_ba
 vshape = _SpineRawBuiltin("vshape")  # vshape(v, shape) → vector.shape_cast (同 numel reshape)
 vbroadcast = _SpineRawBuiltin("vbroadcast")  # vbroadcast(v, n) → vector.broadcast: vector<64> → vector<n×64> (广播维)
 spread = _SpineRawBuiltin("spread")  # spread(src, cube_shape=(kc,n,k)) → scf.for 标量广播 pack → memref<kc×(n*k)>(A 的 n 广播, 绕开 vscale)
+imin = _SpineRawBuiltin("imin")  # imin(a, b) → arith.minsi on index(valid_rows = imin(MB, M-row_base))
 # §6.4 逐元素具名函数(算术运算符直接用 Python 操作符, 无需 marker)
 vmin = _SpineRawBuiltin("vmin")  # vmin(a, b) → 逐元素 min → arith.minimumf / minsi
 vmax = _SpineRawBuiltin("vmax")  # vmax(a, b) → 逐元素 max → arith.maximumf / maxsi
