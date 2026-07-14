@@ -36,18 +36,30 @@ B1, B2 = MB // CM, Npad // CN   # 2, 4
 
 
 def make_mv(M, K):
-    """生成 (kernel, host) —— C[M]=B[M,K]@A[K],M%MB==0、K%CK==0。
-    每 shape 唯一 __name__ 避免 Triton JIT 按名缓存串用。"""
-    assert M % MB == 0 and K % CK == 0, f"cbm mv needs M%{MB}==0 & K%{CK}==0, got M={M},K={K}"
-    KC = K // CK
+    """生成 (kernel, host) —— C[M]=B[M,K]@A[K]。
+
+    K 任意(PLAN_pad §2.1/§2.2:vpack fill+insert 补 K 尾 + spread k_real 补 K 尾)。
+    M:整除 MB 时 grid=M/MB 多 program;M<MB 时 grid=1 单 block(vpack fill+insert 补 M 尾,
+    对齐 probe_fill_pad)。M>MB 且非整除的 per-program 动态行数属 §2.B 待扩,本函数不覆盖。
+    每 shape 唯一 __name__ 避免 Triton JIT 按名缓存串用。
+    """
+    Kp = ((K + CK - 1) // CK) * CK      # K 上取整到 CK 倍数(pad 尾补 0)
+    KC = Kp // CK                        # K 循环迭代数(按 pad 后)
+    if M % MB == 0:
+        grid_blocks = M // MB
+        MROWS = MB                        # 每 program 满 MB 行(整除)
+    else:
+        assert M < MB, f"non-divisible M>{MB} needs §2.B dynamic rows (未实现); got M={M}"
+        grid_blocks = 1
+        MROWS = M                         # 单 block:vpack 读真实 M 行, codegen fill+insert 补到 MB
 
     @tle.raw_kernel
     def mv(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f16, out=True), row_base: tle.index):
         nvl = tle.vconfig(VL, 1)  # 活跃 VL = cube lane 宽(经 _active_vl 供 vzero/vload)
-        # ① B 侧:vpack(memref, offset=row_base*K) 只摆本 program 的 MB 行块 cube
-        Bcube = tle.vpack(B, inner_tiles=(MB, CK), stride=K, rows=MB, offset=row_base * K)
-        # ② A 侧:spread 标量广播成 cube scratch(与行块无关,每 program 读同一 A[K])
-        scrA = tle.spread(A, cube_shape=(KC, CN, CK))
+        # ① B 侧:vpack(memref) 读真实 MROWS 行;M/K 非整除时 codegen 自动 fill+insert 补到 MB/Kp
+        Bcube = tle.vpack(B, inner_tiles=(MB, CK), stride=K, rows=MROWS, offset=row_base * K)
+        # ② A 侧:spread 标量广播成 cube scratch;k_real=K 让尾 tile 填 0(避免 over-read A)
+        scrA = tle.spread(A, cube_shape=(KC, CN, CK), k_real=K)
         acc = tle.vzero(f32, group=B1 * B2)  # <8×64xf32>
         for kc in tle.range(0, KC, 1):
             vb = tle.vload(Bcube, (0, kc), group=B1)   # <2×64xf16>
@@ -71,6 +83,7 @@ def make_mv(M, K):
 
     host.__name__ = f"_mv_cbm_host_{M}_{K}"
     host.fn.__name__ = host.__name__
+    host._grid_blocks = grid_blocks
     return host
 
 
@@ -81,16 +94,19 @@ def _run(M, K):
     golden = Blog.astype(np.float64) @ Alog.astype(np.float64)
     B = torch.tensor(Blog.reshape(-1))
     A = torch.tensor(Alog.reshape(-1))
-    C = torch.zeros(M, Npad, dtype=torch.float16)
+    Mp = ((M + MB - 1) // MB) * MB       # kernel 每 block 写 MB 行 → C 按 Mp 分配, 尾行丢弃
+    C = torch.zeros(Mp, Npad, dtype=torch.float16)
     host = make_mv(M, K)
-    host[(M // MB,)](B.contiguous(), A.contiguous(), C, BLOCK=MB)
-    got = C[:, 0].float().numpy().astype(np.float64)
+    host[(host._grid_blocks,)](B.contiguous(), A.contiguous(), C, BLOCK=MB)
+    got = C[:M, 0].float().numpy().astype(np.float64)   # 取真实 M 行 col0
     diff = np.abs(got - golden).max()
     assert diff < 5e-2, f"M={M} K={K} max_diff={diff:.4e}\ngot={got[:4]}\ngold={golden[:4]}"
 
 
-# 8-multiple shape family: M%16==0, K%8==0
-_SHAPES = [(64, 64), (128, 64), (64, 128), (128, 128), (64, 256), (256, 64), (32, 64), (16, 128)]
+# 整除族(回归)+ 任意 shape(K 非整除 / M<MB 非整除)
+_SHAPES = [(64, 64), (128, 64), (64, 128), (256, 64),    # 整除回归
+           (64, 60), (128, 100), (64, 40),               # K 非整除(fill+insert 补 K 尾)
+           (12, 60), (12, 64), (4, 40)]                  # M<MB 且 K 任意(单 block fill+insert 补 M/K)
 
 
 @pytest.mark.parametrize("M, K", _SHAPES)

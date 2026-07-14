@@ -934,10 +934,15 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             rows = self._try_const_int(kwargs["rows"]) if "rows" in kwargs else None
             assert None not in (rt, kt, K, rows), \
                 "vpack(memref) inner_tiles/stride(=K)/rows must be compile-time ints"
-            assert rows % rt == 0 and K % kt == 0, f"vpack: rows%rt & K%kt required, got rows={rows},K={K},rt={rt},kt={kt}"
             et = _memref_elem(first_type) if "memref<*x" not in first_type else \
                 re.search(r'memref<\*x([a-z0-9]+)', first_type).group(1)
             sp = "#ptr.generic_space"
+            # 非整除 → fill+insert 把 <rows×K> 补成整除的 <Mp×Kp> 再 pack(PLAN_pad §2.1)。
+            # linalg.pack 的 padding_value 只补 M 维不补 K inner-tile(K 越界读脏值→NaN, probe 坐实),
+            # 故不能只放开断言, 必须先 fill 0 + insert_slice 造出整除干净 source。
+            Mp = ((rows + rt - 1) // rt) * rt
+            Kp = ((K + kt - 1) // kt) * kt
+            need_pad = (Mp != rows) or (Kp != K)
             # offset= : runtime element offset (grid 并发时每 program 只 pack 自己的
             # row_base*K 起始行块)。给出则 reinterpret_cast 用 offset:[?] 动态偏移。
             off_node = kwargs.get("offset")
@@ -954,13 +959,26 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
                        f"sizes: [{rows}, {K}], strides: [{K}, 1] : {first_type} to {mr}")
             t2 = self._alloc_ssa("vpten")
             self._emit(f"{t2} = bufferization.to_tensor {r2} restrict : {mr} to tensor<{rows}x{K}x{et}>")
-            oc, kc = rows // rt, K // kt
+            if need_pad:
+                # tensor.empty<Mp×Kp> → linalg.fill 0 → insert_slice src[rows,K] → pack<Mp×Kp>
+                ep = self._alloc_ssa("vppad")
+                self._emit(f"{ep} = tensor.empty() : tensor<{Mp}x{Kp}x{et}>")
+                fp = self._alloc_ssa("vpfill")
+                self._emit(f"{fp} = linalg.fill ins({cst} : {et}) outs({ep} : "
+                           f"tensor<{Mp}x{Kp}x{et}>) -> tensor<{Mp}x{Kp}x{et}>")
+                ins = self._alloc_ssa("vpins")
+                self._emit(f"{ins} = tensor.insert_slice {t2} into {fp}[0, 0] [{rows}, {K}] [1, 1] : "
+                           f"tensor<{rows}x{K}x{et}> into tensor<{Mp}x{Kp}x{et}>")
+                src_ssa, src_rows, src_K = ins, Mp, Kp
+            else:
+                src_ssa, src_rows, src_K = t2, rows, K
+            oc, kc = src_rows // rt, src_K // kt
             eP = self._alloc_ssa("vpe")
             self._emit(f"{eP} = tensor.empty() : tensor<{oc}x{kc}x{rt}x{kt}x{et}>")
             pk = self._alloc_ssa("vppk")
-            self._emit(f"{pk} = linalg.pack {t2} padding_value({cst} : {et}) outer_dims_perm = [0, 1] "
+            self._emit(f"{pk} = linalg.pack {src_ssa} padding_value({cst} : {et}) outer_dims_perm = [0, 1] "
                        f"inner_dims_pos = [0, 1] inner_tiles = [{rt}, {kt}] into {eP} : "
-                       f"tensor<{rows}x{K}x{et}> -> tensor<{oc}x{kc}x{rt}x{kt}x{et}>")
+                       f"tensor<{src_rows}x{src_K}x{et}> -> tensor<{oc}x{kc}x{rt}x{kt}x{et}>")
             # collapse 内两维 → 1D(供 vload 1D 读, 避 2D <rt×kt> 崩)
             col = self._alloc_ssa("vpcol")
             col_type = f"tensor<{oc}x{kc}x{rt * kt}x{et}>"
@@ -1132,12 +1150,18 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         et = re.search(r'([a-z0-9]+)(?:,|>)', src_type.split("memref<")[1]).group(1) \
             if "memref<*x" not in src_type else re.search(r'memref<\*x([a-z0-9]+)', src_type).group(1)
         sp = "#ptr.generic_space"
-        total = kc * k  # src 有效长度(K)
-        # src <*x> → 1D <total>
+        total = kc * k  # scratch 的逻辑 K 长(= KC*CK, 可能 > 真实 K)
+        # k_real= : src 的真实有效长度(默认 total)。KC=ceil(K/CK) 补 K 尾时 k_real<total,
+        # 此时 reinterpret 只读真实 k_real, 尾部 idx>=k_real 的 lane clamp 索引避免越界读 + select 填 0
+        # (纯标量, 不产 vector, 也不越界; PLAN_pad §2.2 A 侧 K 尾)。
+        k_real = self._try_const_int(kwargs["k_real"]) if "k_real" in kwargs else total
+        assert k_real is not None and k_real <= total, "spread k_real must be a compile-time int <= kc*k"
+        pad_k = k_real < total
+        # src <*x> → 1D <k_real>(只映射真实长度, 不越界)
         rsrc = self._alloc_ssa("sprsrc")
-        src1d = f"memref<{total}x{et}, strided<[1]>, {sp}>"
+        src1d = f"memref<{k_real}x{et}, strided<[1]>, {sp}>"
         self._emit(f"{rsrc} = memref.reinterpret_cast {src_ssa} to offset: [0], "
-                   f"sizes: [{total}], strides: [1] : {src_type} to {src1d}")
+                   f"sizes: [{k_real}], strides: [1] : {src_type} to {src1d}")
         # cube scratch <kc×n×k>
         scr = self._alloc_ssa("spscr")
         scr_ty = f"memref<{kc}x{n}x{k}x{et}>"
@@ -1147,6 +1171,10 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         ckc = self._const_int(kc)
         cn = self._const_int(n)
         ck = self._const_int(k)
+        if pad_k:
+            ckreal = self._const_int(k_real)
+            ckrm1 = self._const_int(k_real - 1)
+            zcst = self._const_float(0.0, et)
         li = self._alloc_ssa("spc")
         self._emit(f"scf.for {li} = {c0} to {ckc} step {c1} {{")
         self._indent += 2
@@ -1160,8 +1188,19 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         self._emit(f"{ck8} = arith.muli {li}, {ck} : index")
         idx = self._alloc_ssa("spidx")
         self._emit(f"{idx} = arith.addi {ck8}, {lki} : index")
-        av = self._alloc_ssa("spv")
-        self._emit(f"{av} = memref.load {rsrc}[{idx}] : {src1d}")
+        if pad_k:
+            # idx < k_real ? A[idx] : 0 —— clamp 索引避免越界读, 再 select 填 0
+            inb = self._alloc_ssa("spinb")
+            self._emit(f"{inb} = arith.cmpi slt, {idx}, {ckreal} : index")
+            cl = self._alloc_ssa("spcl")
+            self._emit(f"{cl} = arith.minsi {idx}, {ckrm1} : index")
+            ld = self._alloc_ssa("spld")
+            self._emit(f"{ld} = memref.load {rsrc}[{cl}] : {src1d}")
+            av = self._alloc_ssa("spv")
+            self._emit(f"{av} = arith.select {inb}, {ld}, {zcst} : {et}")
+        else:
+            av = self._alloc_ssa("spv")
+            self._emit(f"{av} = memref.load {rsrc}[{idx}] : {src1d}")
         self._emit(f"memref.store {av}, {scr}[{li}, {lni}, {lki}] : {scr_ty}")
         self._indent -= 2
         self._emit("}")
