@@ -67,7 +67,7 @@ def mv_block_style2(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
 def _mv_sv_host_style2(B, A, C, K, N, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     row_base = pid * BLOCK
-    row_end = row_base + BLOCK
+    row_end = min(row_base + BLOCK, N)   # 限行:末 program 不越 N, 避免读 phantom 行 B
     _sr_call(mv_block_style2, outputs=[], inputs=[B, A, C, K, row_base, row_end])
 
 
@@ -79,13 +79,17 @@ def mv_block_style3(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
                     row_end: tle.index):
     # grid 并发:本 program 只算 [row_base, row_end) 行。
     nvl = tle.vconfig(-1, 1)   # lmul=1 → VLMAX=64 (f16, SPEC §6.1)
-    packed_B = tle.alloc((1, K // nvl, 4, nvl), f16)
+    # tile 数须 ceil(K/nvl):pack 的 kb 循环跑 0..K step nvl = ceil(K/nvl) 个 tile,
+    # alloc 用 floor(K//nvl)在 K%64≠0 时欠分配 → pack 写 dst[0,ceil-1,..] 越界 dim-1
+    # → 堆缓冲区溢出(跨-kernel 污染, NaN)。用 ceil 匹配 pack 实际写的 tile 数。
+    kct = (K + nvl - 1) // nvl
+    packed_B = tle.alloc((1, kct, 4, nvl), f16)
     for ni in tle.range(row_base, row_end, 4):
         acc0 = tle.vzero(f32)
         acc1 = tle.vzero(f32)
         acc2 = tle.vzero(f32)
         acc3 = tle.vzero(f32)
-        tle.pack(B, (ni, 0), packed_B, (1, K // nvl, 4, nvl), K)
+        tle.pack(B, (ni, 0), packed_B, (1, kct, 4, nvl), K)
         for ki in tle.range(0, K, nvl):
             nvl = tle.vconfig(K - ki, 1)  # avl=K-ki (tail narrowing deferred), lmul=1
             vb0 = tle.vload(packed_B, (0, ki // nvl, 0, 0))
@@ -107,20 +111,25 @@ def mv_block_style3(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
 def _mv_sv_host_style3(B, A, C, K, N, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     row_base = pid * BLOCK
-    row_end = row_base + BLOCK
+    row_end = min(row_base + BLOCK, N)   # 限行:末 program 不越 N, pack 不读 phantom 行 B
     _sr_call(mv_block_style3, outputs=[], inputs=[B, A, C, K, row_base, row_end])
 
 
 def _run(host, N, K, BLOCK=4):
-    # grid 并发:N 行按 BLOCK 切成 N//BLOCK 个 program(每个算 BLOCK 行,内层 4 行一组)。
+    # grid 并发:N 行按 BLOCK 切成 ceil(N/BLOCK) 个 program(每个算 BLOCK 行,内层 4 行一组)。
+    # N%BLOCK≠0 时末 program 的 row_end 会超过 N,内层无条件 vstore(C, ni..ni+3) 会写
+    # phantom 行 C[N..Np-1]。C 须分配到 Np=ceil(N/BLOCK)*BLOCK 行吸收这些写(仅多分配,
+    # 无 data copy),否则写越界 → 堆损坏(fix:N 尾 phantom 行越界)。取结果切 C[:N]。
+    Np = ((N + BLOCK - 1) // BLOCK) * BLOCK
     B = torch.randn(N, K, dtype=torch.float16)
     A = torch.randn(K, dtype=torch.float16)
-    C = torch.empty(N, dtype=torch.float32)
-    grid = (N // BLOCK, )
-    host[grid](B.contiguous(), A.contiguous(), C, K, N, BLOCK=BLOCK)
+    C = torch.empty(Np, dtype=torch.float32)
+    grid = (Np // BLOCK, )
+    host[grid](B.contiguous().reshape(-1), A.contiguous(), C, K, N, BLOCK=BLOCK)
+    got = C[:N]
     ref = torch.mv(B.float(), A.float())
-    max_diff = (C - ref).abs().max().item()
-    assert torch.allclose(C, ref, rtol=1e-2, atol=1e-2), \
+    max_diff = (got - ref).abs().max().item()
+    assert torch.allclose(got, ref, rtol=1e-2, atol=1e-2), \
         f"N={N} K={K} max_diff={max_diff:.4e}"
 
 
@@ -138,29 +147,25 @@ def test_raw_mv_svector_style3(N, K):
 
 
 # ---------------------------------------------------------------------------
-# 任意 K — kernel 内 padding 方案(零 host copy,style2)
+# 任意 shape — 全 kernel 内 padding(零 host copy)
 # ---------------------------------------------------------------------------
-# 约束一(K%64)在 kernel 内解决:K 尾块 vload valid=imin(64, K-ki) 走 fill-0 scratch
-# (probe_svpad_fill 坐实),尾 lane 补 0,vmacc/vreduce_sum 补 0 无害。B/A 不做任何 host
-# copy,kernel 直接吃真实 K。此处保持 N%4==0(约束二 N 尾另做,见 _SHAPES_ARB 说明)。
-def _run_arb(host, N, K, BLOCK=4):
-    assert N % 4 == 0, "本轮 kernel 内 padding 覆盖任意 K;N 尾(N%4)另做"
-    B = torch.randn(N, K, dtype=torch.float16)     # 真实 K, 不 pad
-    A = torch.randn(K, dtype=torch.float16)
-    C = torch.empty(N, dtype=torch.float32)
-    grid = (N // BLOCK, )
-    host[grid](B.contiguous().reshape(-1), A.contiguous(), C, K, N, BLOCK=BLOCK)
-    ref = torch.mv(B.float(), A.float())
-    max_diff = (C - ref).abs().max().item()
-    assert torch.allclose(C, ref, rtol=1e-2, atol=1e-2), \
-        f"N={N} K={K} max_diff={max_diff:.4e}"
-
-
-# 任意 K(N%4==0):K 非 64 倍数, kernel 内 fill-0 补 K 尾
-_SHAPES_ARB = [(4, 60), (4, 100), (8, 65), (4, 63), (8, 127), (4, 200), (16, 130), (12, 50)]
+# 两个约束都在 kernel/host 封装内解决,B/A 不做任何 host copy:
+#   ① K%64:K 尾块 vload 由 vconfig(K-ki,1) 降级为 fill-0 scratch,尾 lane 补 0
+#      (probe_svpad_fill 坐实),vmacc/vreduce_sum 补 0 无害。
+#   ② N%BLOCK:grid=ceil(N/BLOCK),末 program row_end>N,内层无条件写 phantom 行
+#      C[N..Np-1];C 分配到 Np=ceil(N/BLOCK)*BLOCK 吸收(仅分配无 copy),切 C[:N]。
+# _run 已同时处理 ①②,故任意 shape 直接复用 _run。
+# 任意 shape:K 非 64 倍数 / N 非 BLOCK 倍数 / 二者都非整除
+_SHAPES_ARB = [(4, 60), (4, 100), (8, 65), (4, 63), (8, 127), (4, 200), (16, 130), (12, 50),
+               (7, 64), (33, 65), (50, 130), (100, 100), (6, 60), (13, 200), (37, 130)]
 
 
 @pytest.mark.parametrize("N, K", _SHAPES_ARB)
 def test_raw_mv_svector_style2_arb(N, K):
-    _run_arb(_mv_sv_host_style2, N, K)
+    _run(_mv_sv_host_style2, N, K)
+
+
+@pytest.mark.parametrize("N, K", _SHAPES_ARB)
+def test_raw_mv_svector_style3_arb(N, K):
+    _run(_mv_sv_host_style3, N, K)
 

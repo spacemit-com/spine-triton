@@ -1346,9 +1346,32 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             self._emit(f"{roff} = arith.muli {nir}, {stride_ssa} : index")
             off = self._alloc_ssa("off")
             self._emit(f"{off} = arith.addi {roff}, {loop_ssa} : index")
+            # K 尾 tile 精确 bound fill-0(同 vload valid= 路):扁平 memref 上 in_bounds
+            # 靠不住(只在整 buffer 末尾 mask), 末 tile 末行读 64 元素会越出 B buffer 尾读脏
+            # (NaN/inf), 与 A fill-0 尾相乘 NaN×0=NaN 污染归约。正解:valid=min(vl, K-loop)
+            # 个真实元素经 reinterpret<?>+fill 0+insert → 尾 lane 真 0。
+            valid = self._alloc_ssa("pkvalid")
+            rem = self._alloc_ssa("pkrem")
+            self._emit(f"{rem} = arith.subi {stride_ssa}, {loop_ssa} : index")
+            self._emit(f"{valid} = arith.minsi {cvl}, {rem} : index")
+            sp = "#ptr.generic_space"
+            src_mr = f"memref<?x{dtype}, strided<[1], offset: ?>, {sp}>"
+            rsrc = self._alloc_ssa("pksrc")
+            self._emit(f"{rsrc} = memref.reinterpret_cast {ranked_ssa} to offset: [{off}], "
+                       f"sizes: [{valid}], strides: [1] : {ranked_type} to {src_mr}")
+            tsrc = self._alloc_ssa("pktsrc")
+            self._emit(f"{tsrc} = bufferization.to_tensor {rsrc} restrict : {src_mr} to tensor<?x{dtype}>")
+            escr = self._alloc_ssa("pkescr")
+            self._emit(f"{escr} = tensor.empty() : tensor<{vl}x{dtype}>")
+            fscr = self._alloc_ssa("pkfill")
+            self._emit(f"{fscr} = linalg.fill ins({pad} : {dtype}) outs({escr} : "
+                       f"tensor<{vl}x{dtype}>) -> tensor<{vl}x{dtype}>")
+            filled = self._alloc_ssa("pkfilled")
+            self._emit(f"{filled} = tensor.insert_slice {tsrc} into {fscr}[0] [{valid}] [1] : "
+                       f"tensor<?x{dtype}> into tensor<{vl}x{dtype}>")
             vec = self._alloc_ssa("pkv")
-            self._emit(f"{vec} = vector.transfer_read {ranked_ssa}[{off}], {pad}"
-                       f" {{in_bounds = [true]}} : {ranked_type}, {vec_type}")
+            self._emit(f"{vec} = vector.transfer_read {filled}[{c0}], {pad}"
+                       f" {{in_bounds = [true]}} : tensor<{vl}x{dtype}>, {vec_type}")
             cr_idx = self._const_int(r)
             self._emit(f"vector.transfer_write {vec}, {dst_ssa}[{c0}, {kb_ssa}, {cr_idx}, {c0}]"
                        f" {{in_bounds = [true]}} : {vec_type}, {dst_type}")
