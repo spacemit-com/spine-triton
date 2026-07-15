@@ -46,12 +46,14 @@ def mv_block_style2(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
         acc2 = tle.vzero(f32)
         acc3 = tle.vzero(f32)
         for ki in tle.range(0, K, nvl):
-            nvl = tle.vconfig(K - ki, 1)  # avl=K-ki (tail narrowing deferred), lmul=1
-            vb0 = tle.vload(B, ni * K + ki)
-            vb1 = tle.vload(B, (ni + 1) * K + ki)
-            vb2 = tle.vload(B, (ni + 2) * K + ki)
-            vb3 = tle.vload(B, (ni + 3) * K + ki)
-            va = tle.vload(A, ki)
+            # K 尾:本 tile 真实元素数 valid = min(64, K-ki);vload valid= 走 fill-0 scratch,
+            # 尾 lane 补 0(PLAN_svector_pad 约束一)。K 补 0 对 vmacc/vreduce_sum 无害。
+            vld = tle.imin(nvl, K - ki)
+            va = tle.vload(A, ki, valid=vld)
+            vb0 = tle.vload(B, ni * K + ki, valid=vld)
+            vb1 = tle.vload(B, (ni + 1) * K + ki, valid=vld)
+            vb2 = tle.vload(B, (ni + 2) * K + ki, valid=vld)
+            vb3 = tle.vload(B, (ni + 3) * K + ki, valid=vld)
             acc0 = tle.vmacc(acc0, vb0, va)
             acc1 = tle.vmacc(acc1, vb1, va)
             acc2 = tle.vmacc(acc2, vb2, va)
@@ -134,4 +136,32 @@ def test_raw_mv_svector_style2(N, K):
 @pytest.mark.parametrize("N, K", _SHAPES)
 def test_raw_mv_svector_style3(N, K):
     _run(_mv_sv_host_style3, N, K)
+
+
+# ---------------------------------------------------------------------------
+# 任意 K — kernel 内 padding 方案(零 host copy,style2)
+# ---------------------------------------------------------------------------
+# 约束一(K%64)在 kernel 内解决:K 尾块 vload valid=imin(64, K-ki) 走 fill-0 scratch
+# (probe_svpad_fill 坐实),尾 lane 补 0,vmacc/vreduce_sum 补 0 无害。B/A 不做任何 host
+# copy,kernel 直接吃真实 K。此处保持 N%4==0(约束二 N 尾另做,见 _SHAPES_ARB 说明)。
+def _run_arb(host, N, K, BLOCK=4):
+    assert N % 4 == 0, "本轮 kernel 内 padding 覆盖任意 K;N 尾(N%4)另做"
+    B = torch.randn(N, K, dtype=torch.float16)     # 真实 K, 不 pad
+    A = torch.randn(K, dtype=torch.float16)
+    C = torch.empty(N, dtype=torch.float32)
+    grid = (N // BLOCK, )
+    host[grid](B.contiguous().reshape(-1), A.contiguous(), C, K, N, BLOCK=BLOCK)
+    ref = torch.mv(B.float(), A.float())
+    max_diff = (C - ref).abs().max().item()
+    assert torch.allclose(C, ref, rtol=1e-2, atol=1e-2), \
+        f"N={N} K={K} max_diff={max_diff:.4e}"
+
+
+# 任意 K(N%4==0):K 非 64 倍数, kernel 内 fill-0 补 K 尾
+_SHAPES_ARB = [(4, 60), (4, 100), (8, 65), (4, 63), (8, 127), (4, 200), (16, 130), (12, 50)]
+
+
+@pytest.mark.parametrize("N, K", _SHAPES_ARB)
+def test_raw_mv_svector_style2_arb(N, K):
+    _run_arb(_mv_sv_host_style2, N, K)
 

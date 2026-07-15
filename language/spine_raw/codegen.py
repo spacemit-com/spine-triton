@@ -758,8 +758,38 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             raise NotImplementedError("vload stride (跨步 → vlse) 未实现(SPEC §6.2 待扩)")
         assert not isinstance(idx_node, ast.Tuple), ("vload 的 index 须为扁平标量元素偏移(二维坐标请自行压平,如 ni*K + ki);"
                                                      "SPEC §6.2")
-        ranked_ssa, ranked_type = self._ranked_cast(ptr_ssa, ptr_type)
         off_ssa, _ = self._gen_expr(idx_node)
+        # valid= (K 尾补 0, PLAN_svector_pad 约束一): 从 off 起只有 valid(运行期, 如 K-ki)个
+        # 真实元素, 尾 [valid:VL) 需补 0。直接 transfer_read<VL> 会越界读脏(实测 in_bounds=true
+        # 越界不补 0)。正解(probe_svpad_fill 已坐实): alloc scratch<VL> + linalg.fill 0 +
+        # memref.copy 真实 valid 元素进 scratch[0:valid] → 读整除 <VL>, 尾 lane = fill 的 0。
+        valid_node = kwargs.get("valid")
+        if valid_node is not None:
+            assert "group" not in kwargs, "vload valid= 暂不与 group= 组合"
+            valid_ssa, _ = self._gen_expr(valid_node)
+            sp = "#ptr.generic_space"
+            # 源: 从 off 起的动态 <?> view(size=valid), 只映射真实元素不越界
+            src_mr = f"memref<?x{dtype}, strided<[1], offset: ?>, {sp}>"
+            rsrc = self._alloc_ssa("vldsrc")
+            self._emit(f"{rsrc} = memref.reinterpret_cast {ptr_ssa} to offset: [{off_ssa}], "
+                       f"sizes: [{valid_ssa}], strides: [1] : {ptr_type} to {src_mr}")
+            tsrc = self._alloc_ssa("vldtsrc")
+            self._emit(f"{tsrc} = bufferization.to_tensor {rsrc} restrict : {src_mr} to tensor<?x{dtype}>")
+            # scratch<VL> fill 0 + insert 真实 valid 元素
+            escr = self._alloc_ssa("vldescr")
+            self._emit(f"{escr} = tensor.empty() : tensor<{vl}x{dtype}>")
+            fscr = self._alloc_ssa("vldfill")
+            self._emit(f"{fscr} = linalg.fill ins({pad} : {dtype}) outs({escr} : "
+                       f"tensor<{vl}x{dtype}>) -> tensor<{vl}x{dtype}>")
+            filled = self._alloc_ssa("vldfilled")
+            self._emit(f"{filled} = tensor.insert_slice {tsrc} into {fscr}[0] [{valid_ssa}] [1] : "
+                       f"tensor<?x{dtype}> into tensor<{vl}x{dtype}>")
+            result = self._alloc_ssa(hint or "vld")
+            c0 = self._const_int(0)
+            self._emit(f"{result} = vector.transfer_read {filled}[{c0}], {pad}"
+                       f" {{in_bounds = [true]}} : tensor<{vl}x{dtype}>, {vec_type}")
+            return result, vec_type
+        ranked_ssa, ranked_type = self._ranked_cast(ptr_ssa, ptr_type)
         # group=b (SPEC §6.2): 读 b×VL 连续 → transfer_read<b*VL> + shape_cast → vector<b×VL>.
         group = self._try_const_int(kwargs["group"]) if "group" in kwargs else None
         if group:
