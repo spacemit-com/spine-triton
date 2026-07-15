@@ -797,15 +797,34 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
                 valid_ssa, _ = self._gen_expr(valid_node)
             else:
                 valid_ssa = valid_ssa_active
+            # 运行期快路选择:满 tile(valid>=VLMAX)直接 transfer_read<VL>(与无 valid 快路等价),
+            # 只有真尾 tile(valid<VLMAX)才付 fill-0 慢路(reinterpret+fill+insert)。整除 shape 的
+            # K-tile 全是满 tile → 全走快路, 消除 vconfig(K-ki,1) 对每个 tile 强加 fill-0 的回归
+            # (512×512 曾 +60%)。valid 是运行期值, 编译期不知 ==VL, 故用 scf.if 分流。
+            c0 = self._const_int(0)
+            cvl_ = self._const_int(vl)
+            cond = self._alloc_ssa("vldfull")
+            self._emit(f"{cond} = arith.cmpi sge, {valid_ssa}, {cvl_} : index")
+            ranked_ssa, ranked_type = self._ranked_cast(ptr_ssa, ptr_type)
+            result = self._alloc_ssa(hint or "vld")
+            self._emit(f"{result} = scf.if {cond} -> ({vec_type}) {{")
+            self._indent += 2
+            # 快路:满 tile, off..off+VL 全在界内, 直接读扁平 ranked memref
+            fastv = self._alloc_ssa("vldfast")
+            self._emit(f"{fastv} = vector.transfer_read {ranked_ssa}[{off_ssa}], {pad}"
+                       f" {{in_bounds = [true]}} : {ranked_type}, {vec_type}")
+            self._emit(f"scf.yield {fastv} : {vec_type}")
+            self._indent -= 2
+            self._emit("} else {")
+            self._indent += 2
+            # 慢路:尾 tile, 只映射 valid 个真实元素 + fill 0 尾 lane
             sp = "#ptr.generic_space"
-            # 源: 从 off 起的动态 <?> view(size=valid), 只映射真实元素不越界
             src_mr = f"memref<?x{dtype}, strided<[1], offset: ?>, {sp}>"
             rsrc = self._alloc_ssa("vldsrc")
             self._emit(f"{rsrc} = memref.reinterpret_cast {ptr_ssa} to offset: [{off_ssa}], "
                        f"sizes: [{valid_ssa}], strides: [1] : {ptr_type} to {src_mr}")
             tsrc = self._alloc_ssa("vldtsrc")
             self._emit(f"{tsrc} = bufferization.to_tensor {rsrc} restrict : {src_mr} to tensor<?x{dtype}>")
-            # scratch<VL> fill 0 + insert 真实 valid 元素
             escr = self._alloc_ssa("vldescr")
             self._emit(f"{escr} = tensor.empty() : tensor<{vl}x{dtype}>")
             fscr = self._alloc_ssa("vldfill")
@@ -814,10 +833,12 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
             filled = self._alloc_ssa("vldfilled")
             self._emit(f"{filled} = tensor.insert_slice {tsrc} into {fscr}[0] [{valid_ssa}] [1] : "
                        f"tensor<?x{dtype}> into tensor<{vl}x{dtype}>")
-            result = self._alloc_ssa(hint or "vld")
-            c0 = self._const_int(0)
-            self._emit(f"{result} = vector.transfer_read {filled}[{c0}], {pad}"
+            slowv = self._alloc_ssa("vldslow")
+            self._emit(f"{slowv} = vector.transfer_read {filled}[{c0}], {pad}"
                        f" {{in_bounds = [true]}} : tensor<{vl}x{dtype}>, {vec_type}")
+            self._emit(f"scf.yield {slowv} : {vec_type}")
+            self._indent -= 2
+            self._emit("}")
             return result, vec_type
         ranked_ssa, ranked_type = self._ranked_cast(ptr_ssa, ptr_type)
         # group=b (SPEC §6.2): 读 b×VL 连续 → transfer_read<b*VL> + shape_cast → vector<b×VL>.
