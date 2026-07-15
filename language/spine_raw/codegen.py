@@ -199,6 +199,9 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         # used by vzero/vload/vmacc (fixed-length, no dynamic vsetvl this round).
         self._constexpr_ints: dict[str, int] = {}
         self._active_vl: int | None = None
+        # svector avl 收窄降级(§6.1):vconfig(avl,1) 请求收窄时, 存 valid=min(VLMAX,avl)
+        # 的 SSA;后续外部指针 vload 自动走 fill-0 pad。None = 不收窄(全 VLMAX 快路)。
+        self._active_valid: str | None = None
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -676,12 +679,33 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         # SPEC §6.1: vconfig(avl, lmul) -> VL = min(avl, VLMAX),
         # VLMAX = lmul * VLEN / SEW. SEW is derived from the dtype (§3.1), not a
         # parameter; the svector loop counts VL in f16 elements (base SEW=16).
-        # avl (runtime tail narrowing / true strip-mine) is deferred (SPEC §6.1),
-        # so VL is the fixed VLMAX for the requested LMUL this round.
+        #
+        # avl 真收窄(RVV 动态 vsetvli strip-mine)未落地(SPEC §6.1)。此处不删 vconfig 的
+        # avl 语义, 而是**降级**:avl 请求收窄到 <VLMAX 时, codegen 记录 valid=min(VLMAX,avl),
+        # 后续 vload 自动走 fill-0 pad(尾 lane 补 0), 数值等价于真收窄。avl=-1(哨兵)表示
+        # 不收窄, 全 VLMAX 直读(清除 _active_valid, 走快路)。vector 类型宽度始终固定 VLMAX。
         lmul = ast.literal_eval(node.args[1]) if len(node.args) > 1 else 1
         vl = _vlmax(int(lmul))
         self._constexpr_ints[target] = vl
         self._active_vl = vl
+        try:
+            avl_const = ast.literal_eval(node.args[0])   # 字面量(如 -1 / 64)
+        except Exception:
+            avl_const = None                             # 运行期表达式(如 K-ki)
+        if avl_const is not None and avl_const >= _vlmax(1):
+            # avl >= VLMAX(含常量满 tile):不收窄, 全 VLMAX 直读快路
+            self._active_valid = None
+        elif avl_const is not None and avl_const < 0:
+            # -1 哨兵:不收窄
+            self._active_valid = None
+        else:
+            # 收窄请求(运行期 avl 如 K-ki, 或常量 <VLMAX):降级为 valid=min(VLMAX, avl)
+            # + fill-0 pad。emit 一次 minsi, 后续同一 tile 的 vload 共用该 SSA。
+            avl_ssa, _ = self._gen_expr(node.args[0])
+            vlmax_ssa = self._const_int(vl)
+            valid_ssa = self._alloc_ssa("vcfgvalid")
+            self._emit(f"{valid_ssa} = arith.minsi {vlmax_ssa}, {avl_ssa} : index")
+            self._active_valid = valid_ssa
 
     def _require_vl(self) -> int:
         if self._active_vl is None:
@@ -763,10 +787,16 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         # 真实元素, 尾 [valid:VL) 需补 0。直接 transfer_read<VL> 会越界读脏(实测 in_bounds=true
         # 越界不补 0)。正解(probe_svpad_fill 已坐实): alloc scratch<VL> + linalg.fill 0 +
         # memref.copy 真实 valid 元素进 scratch[0:valid] → 读整除 <VL>, 尾 lane = fill 的 0。
+        # valid 来源:①显式 valid=(高优先, 兼容旧写法);②vconfig(avl,1) 降级设的
+        # _active_valid(默认路径——用户写 vconfig 收窄, codegen 自动补 0, 不必写 valid=)。
         valid_node = kwargs.get("valid")
-        if valid_node is not None:
+        valid_ssa_active = None if valid_node is not None else self._active_valid
+        if valid_node is not None or valid_ssa_active is not None:
             assert "group" not in kwargs, "vload valid= 暂不与 group= 组合"
-            valid_ssa, _ = self._gen_expr(valid_node)
+            if valid_node is not None:
+                valid_ssa, _ = self._gen_expr(valid_node)
+            else:
+                valid_ssa = valid_ssa_active
             sp = "#ptr.generic_space"
             # 源: 从 off 起的动态 <?> view(size=valid), 只映射真实元素不越界
             src_mr = f"memref<?x{dtype}, strided<[1], offset: ?>, {sp}>"

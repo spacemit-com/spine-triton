@@ -46,14 +46,13 @@ def mv_block_style2(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
         acc2 = tle.vzero(f32)
         acc3 = tle.vzero(f32)
         for ki in tle.range(0, K, nvl):
-            # K 尾:本 tile 真实元素数 valid = min(64, K-ki);vload valid= 走 fill-0 scratch,
-            # 尾 lane 补 0(PLAN_svector_pad 约束一)。K 补 0 对 vmacc/vreduce_sum 无害。
-            vld = tle.imin(nvl, K - ki)
-            va = tle.vload(A, ki, valid=vld)
-            vb0 = tle.vload(B, ni * K + ki, valid=vld)
-            vb1 = tle.vload(B, (ni + 1) * K + ki, valid=vld)
-            vb2 = tle.vload(B, (ni + 2) * K + ki, valid=vld)
-            vb3 = tle.vload(B, (ni + 3) * K + ki, valid=vld)
+            nvl = tle.vconfig(K - ki, 1)  # avl=K-ki:请求尾块收窄。avl 真收窄未落地时,
+            #   codegen 降级为 valid=min(VLMAX, K-ki) + fill-0 pad(尾 lane 补 0),数值等价。
+            va = tle.vload(A, ki)          # ← vload 自动按 vconfig 的 avl 补 0,无需写 valid=
+            vb0 = tle.vload(B, ni * K + ki)
+            vb1 = tle.vload(B, (ni + 1) * K + ki)
+            vb2 = tle.vload(B, (ni + 2) * K + ki)
+            vb3 = tle.vload(B, (ni + 3) * K + ki)
             acc0 = tle.vmacc(acc0, vb0, va)
             acc1 = tle.vmacc(acc1, vb1, va)
             acc2 = tle.vmacc(acc2, vb2, va)
