@@ -88,6 +88,22 @@ def _generate_launcher(constants, signature, smt_parallel_inside=False, kernel_n
                                   if ty != "constexpr")
     kernel_parameters += ", " if kernel_parameters else ""
 
+    # spert ABI scaffolding (Step 1/5): pack all user args + grid into a single
+    # struct, hand it to the runtime as functionArgs; a trampoline unpacks it
+    # and forwards ctx (arg0) + expanded args + num_programs(=grid) to kernel.
+    struct_fields = " ".join(
+        (f"void* arg{i};" if ty[0] == "*" else f"{_ty_to_cpp(ty)} arg{i};")
+        for i, ty in signature.items() if ty != "constexpr")
+    pack_assignments = " ".join(
+        f"_kargs.arg{i} = arg{i};" for i, ty in signature.items() if ty != "constexpr")
+    tramp_ptr_reconstruct = " ".join(
+        f"StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(_a->arg{i}), static_cast<char *>(_a->arg{i}), 0}};"
+        for i, ty in signature.items() if ty != "constexpr" and ty[0] == "*")
+    tramp_call_params = ", ".join(
+        (f"0, &ptr_arg{i}" if ty[0] == "*" else f"static_cast<{_ty_to_cpp(ty)}>(_a->arg{i})")
+        for i, ty in signature.items() if ty != "constexpr")
+    tramp_call_params += ", " if tramp_call_params else ""
+
     smt_parallel_inside_arg = "constexpr bool smt_parallel_inside = {};".format(
         "true" if smt_parallel_inside else "false")
 
@@ -110,33 +126,24 @@ def _generate_launcher(constants, signature, smt_parallel_inside=False, kernel_n
 #include "ExecutionEngine/CRunnerUtils.h"
 #include "ExecutionEngine/CRunnerUtils.cpp"
 
-namespace mlir {{
-namespace speir {{
-void *spineGetMultiStream(int64_t);
-
-template <int64_t rank>
-void spineMultiStreamDispatch(
-    void *multi_stream,
-    const std::function<void(const std::array<int64_t, rank> &)> &fn,
-    const std::array<int64_t, rank> &block_size);
-
-void spineStreamDispatch(
-    void *stream, const std::function<void(const std::array<int64_t, 3> &)> &fn,
-    const std::array<int64_t, 3> &grid_size);
-
-}} // namespace speir
-}}// namespace mlir
-
 extern "C" {{
-int64_t spine_get_stream_threads();
+// spert (spine-runtime) C ABI. The runtime drives the launch grid internally:
+// host calls dispatch once, spert spawns one tile per grid cell, fabricates a
+// per-tile Context (ctx) and calls the trampoline (i64 ctx, void* args).
 int64_t spine_require_stream();
 void spine_release_stream(int64_t);
+void spine_parallel_dispatch_3d(int64_t stream, void *fn, void *args,
+                                int64_t gridX, int64_t gridY, int64_t gridZ);
 {'''// Proton kernel-level profiling APIs
 void proton_enter_kernel(const char *kernel_name, int gridX, int gridY, int gridZ);
 void proton_exit_kernel(const char *kernel_name, int gridX, int gridY, int gridZ);''' if enable_proton_kernel_capture else ''}
 }}
 
-using kernel_ptr_t = void(*)({kernel_arg_decls} int, int, int, int, int, int);
+// spert kernel entry ABI (3a): ctx as arg0, user args fully expanded, and
+// num_programs (= launch grid, one i32 per axis) as the trailing args.
+// program_id is fetched inside the kernel via spine_grid(ctx, axis), so the
+// old 3 program_id i32 tail args are gone.
+using kernel_ptr_t = void(*)(int64_t, {kernel_arg_decls} int, int, int);
 
 
 typedef struct _DevicePtrInfo {{
@@ -182,45 +189,49 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
 
 {f'static constexpr const char* KERNEL_NAME = "{kernel_name}";' if enable_proton_kernel_capture else ''}
 
+// functionArgs payload: kernel pointer + all user args (raw dev ptr for
+// pointer args) + the launch grid (passed to the kernel as num_programs).
+typedef struct _SpineKernelArgs {{
+  kernel_ptr_t kernel_ptr;
+  {struct_fields}
+  int gridX;
+  int gridY;
+  int gridZ;
+}} SpineKernelArgs;
+
+// spert parallel-body trampoline (ABI = void(i64 ctx, void* functionArgs)).
+// The runtime fabricates ctx per tile and calls this; it unpacks the payload
+// and forwards ctx (arg0) + expanded user args + num_programs(=grid) to the
+// kernel. program_id is obtained inside the kernel via spine_grid(ctx).
+extern "C" void _spine_triton_trampoline(int64_t ctx, void *raw) {{
+  SpineKernelArgs *_a = static_cast<SpineKernelArgs *>(raw);
+  {tramp_ptr_reconstruct}
+  (*_a->kernel_ptr)(ctx, {tramp_call_params}
+                    _a->gridX, _a->gridY, _a->gridZ);
+}}
+
 static void _launch(int gridX, int gridY, int gridZ, int64_t stream, kernel_ptr_t kernel_ptr, {arg_decls}) {{
   {smt_parallel_inside_arg}
+  (void)smt_parallel_inside;
   if (gridX*gridY*gridZ <= 0) return;
   {'// Auto kernel capture: record kernel entry' if enable_proton_kernel_capture else ''}
   {'proton_enter_kernel(KERNEL_NAME, gridX, gridY, gridZ);' if enable_proton_kernel_capture else ''}
-  int64_t stream_threads = spine_get_stream_threads();
-  int64_t gridX_out = (gridX + stream_threads - 1) / stream_threads;
-  {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
-            for i, ty in signature.items() if i not in constants and ty[0] == "*")}
-    if constexpr (!smt_parallel_inside) {{
-        mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
-            int x_out = block[0];
-            int y_out = block[1];
-            int z_out = block[2];
-            int64_t current_stream = spine_require_stream();
-            mlir::speir::spineStreamDispatch(reinterpret_cast<void*>(current_stream),
-            [&] (const std::array<int64_t, 3> & cur_grid) {{
-                int x = cur_grid[0] + x_out * stream_threads;
-                if (x >= gridX) {{
-                        return;
-                }}
-                (*kernel_ptr)({kernel_parameters}
-                                     gridX, gridY, gridZ, x, y_out, z_out);
-            }},
-                {{stream_threads, 1, 1}});
 
-            spine_release_stream(current_stream);
-        }},
-             {{gridX_out, gridY, gridZ}});
-    }} else {{
-        mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
-      int x = block[0];
-      int y = block[1];
-      int z = block[2];
-      (*kernel_ptr)({kernel_parameters}
-                   gridX, gridY, gridZ, x, y, z);
-    }},
-       {{gridX, gridY, gridZ}});
-  }}
+  // Pack the payload once; spert drives the grid internally.
+  SpineKernelArgs _kargs;
+  _kargs.kernel_ptr = kernel_ptr;
+  {pack_assignments}
+  _kargs.gridX = gridX;
+  _kargs.gridY = gridY;
+  _kargs.gridZ = gridZ;
+
+  // spert three-phase dispatch: require -> dispatch(once) -> release.
+  int64_t _spine_stream = spine_require_stream();
+  spine_parallel_dispatch_3d(_spine_stream,
+                             reinterpret_cast<void *>(_spine_triton_trampoline),
+                             &_kargs, gridX, gridY, gridZ);
+  spine_release_stream(_spine_stream);
+
   {'// Auto kernel capture: record kernel exit' if enable_proton_kernel_capture else ''}
   {'proton_exit_kernel(KERNEL_NAME, gridX, gridY, gridZ);' if enable_proton_kernel_capture else ''}
   }}

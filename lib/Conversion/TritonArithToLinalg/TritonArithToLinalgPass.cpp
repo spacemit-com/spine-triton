@@ -47,12 +47,49 @@ class TritonArithToLinalgPass
       TritonArithToLinalgPass>::TritonArithToLinalgBase;
 
   static auto constexpr LAUNCH_GRID_RANK = getMaxEnumValForProgramIDDim() + 1;
+  // spert ABI: program_id is fetched at runtime via spine_grid(ctx, axis), so
+  // only num_programs (= launch grid size, one i32 per axis) is passed as a
+  // tail argument. The 3 program_id i32 tail args of the old ABI are dropped.
   static unsigned int constexpr TRITON_PROGRAM_INFO_ARG_COUNT =
-      LAUNCH_GRID_RANK * 2;
+      LAUNCH_GRID_RANK;
 
-  // Add additional I32 arguments to represent:
-  // - num_programs, 3 in total, one for each axis of the launch grid
-  // - program_id, 3 in total, one for each axis of the launch grid
+  // Prepend an i64 "ctx" argument (spert per-tile Context handle) as arg0.
+  // In the spert ABI every kernel receives this handle first; program_id and
+  // TCM allocation are obtained by calling runtime helpers with it. The entry
+  // ctx arg0 is produced here (spine-mlir-main never inserts it, it only reads
+  // funcOp.getArgument(0)).
+  static void addContextArg(triton::FuncOp func) {
+    OpBuilder b(func);
+    auto ctx = b.getContext();
+    auto i64Ty = b.getI64Type();
+
+    auto origFuncType = func.getFunctionType();
+    auto origInputTypes = origFuncType.getInputs();
+    SmallVector<Type> newInputTypes;
+    newInputTypes.push_back(i64Ty);
+    newInputTypes.append(origInputTypes.begin(), origInputTypes.end());
+
+    auto newFuncType =
+        b.getFunctionType(newInputTypes, origFuncType.getResults());
+    func.setFunctionType(newFuncType);
+
+    // Shift all existing arg attrs right by one so a ptr's tt.divisibility
+    // stays aligned with its (now +1) argument index. ReconcileLlvmPtrCastsPass
+    // reads ptr arg attrs by index; without this shift divisibility lands on
+    // the wrong argument. The ctx slot gets an empty attr dictionary.
+    if (func.getAllArgAttrs()) {
+      SmallVector<DictionaryAttr> argAttrs;
+      func.getAllArgAttrs(argAttrs);
+      argAttrs.insert(argAttrs.begin(), DictionaryAttr::get(ctx, {}));
+      func.setAllArgAttrs(argAttrs);
+    }
+
+    // Insert the block argument at position 0 of the entry block.
+    func.getBody().front().insertArgument(0u, i64Ty, func.getLoc());
+  }
+
+  // Add num_programs tail arguments (one i32 per launch grid axis). program_id
+  // is no longer passed as arguments; it is fetched via spine_grid(ctx, axis).
   static void addProgramInfo(triton::FuncOp func) {
     OpBuilder b(func);
 
@@ -200,6 +237,9 @@ public:
 
     if (pidsToFuncArgs) {
       for (auto func : getOperation().getOps<triton::FuncOp>()) {
+        // spert ABI: prepend i64 ctx arg0 (per-tile Context handle) and append
+        // num_programs tail args. program_id is fetched via spine_grid(ctx).
+        addContextArg(func);
         addProgramInfo(func);
       }
     }
