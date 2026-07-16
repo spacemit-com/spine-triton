@@ -27,8 +27,8 @@ import triton.language.extra.spine_raw as tle  # noqa: F401  (registers the back
 
 WARMUP, REPS = 20, 100
 
-# Reuse the mv kernels from the raw tests (repo-relative, no absolute paths).
-_TESTS = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "tests"))
+# Reuse the mv kernels from the raw tests (same dir as this script, no absolute paths).
+_TESTS = os.path.dirname(__file__)
 sv = SourceFileLoader("mv_sv", os.path.join(_TESTS, "test_raw_mv_svector.py")).load_module()
 cbm = SourceFileLoader("mv_cbm", os.path.join(_TESTS, "test_raw_mv_cbm.py")).load_module()
 
