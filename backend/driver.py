@@ -88,9 +88,11 @@ def _generate_launcher(constants, signature, smt_parallel_inside=False, kernel_n
                                   if ty != "constexpr")
     kernel_parameters += ", " if kernel_parameters else ""
 
-    # spert ABI scaffolding (Step 1/5): pack all user args + grid into a single
-    # struct, hand it to the runtime as functionArgs; a trampoline unpacks it
-    # and forwards ctx (arg0) + expanded args + num_programs(=grid) to kernel.
+    # spert ABI scaffolding: pack user args + grid into a single struct,
+    # hand it to the runtime as functionArgs. The trampoline unpacks args,
+    # calls spine_grid(ctx, axis) for each program_id, then calls the kernel
+    # with the original 6-i32 tail ABI (num_progs + pid) — no changes to the
+    # compiled kernel signature, spine-opt K3 mm/vpack patterns stay intact.
     struct_fields = " ".join(
         (f"void* arg{i};" if ty[0] == "*" else f"{_ty_to_cpp(ty)} arg{i};")
         for i, ty in signature.items() if ty != "constexpr")
@@ -134,16 +136,19 @@ int64_t spine_require_stream();
 void spine_release_stream(int64_t);
 void spine_parallel_dispatch_3d(int64_t stream, void *fn, void *args,
                                 int64_t gridX, int64_t gridY, int64_t gridZ);
+// Trampoline calls spine_grid(ctx, axis) to get program_id per tile.
+int64_t spine_grid(int64_t ctx, int64_t axis);
 {'''// Proton kernel-level profiling APIs
 void proton_enter_kernel(const char *kernel_name, int gridX, int gridY, int gridZ);
 void proton_exit_kernel(const char *kernel_name, int gridX, int gridY, int gridZ);''' if enable_proton_kernel_capture else ''}
 }}
 
-// spert kernel entry ABI (3a): ctx as arg0, user args fully expanded, and
-// num_programs (= launch grid, one i32 per axis) as the trailing args.
-// program_id is fetched inside the kernel via spine_grid(ctx, axis), so the
-// old 3 program_id i32 tail args are gone.
-using kernel_ptr_t = void(*)(int64_t, {kernel_arg_decls} int, int, int);
+// Kernel signature is UNCHANGED from the pre-spert ABI: user args fully
+// expanded, then 6 i32 tail args (num_programs_x/y/z, pid_x/y/z).
+// The trampoline bridges spert (ctx-based) → old ABI by calling
+// spine_grid(ctx, axis) for each pid, so spine-opt K3 mm/vpack sees
+// the same linalg IR it always expected.
+using kernel_ptr_t = void(*)({kernel_arg_decls} int, int, int, int, int, int);
 
 
 typedef struct _DevicePtrInfo {{
@@ -200,14 +205,18 @@ typedef struct _SpineKernelArgs {{
 }} SpineKernelArgs;
 
 // spert parallel-body trampoline (ABI = void(i64 ctx, void* functionArgs)).
-// The runtime fabricates ctx per tile and calls this; it unpacks the payload
-// and forwards ctx (arg0) + expanded user args + num_programs(=grid) to the
-// kernel. program_id is obtained inside the kernel via spine_grid(ctx).
+// spert fabricates ctx per tile and calls this; the trampoline calls
+// spine_grid(ctx, axis) for each pid and forwards to the kernel with the
+// original 6-i32 tail ABI (num_progs + pid), keeping spine-opt K3 patterns.
 extern "C" void _spine_triton_trampoline(int64_t ctx, void *raw) {{
   SpineKernelArgs *_a = static_cast<SpineKernelArgs *>(raw);
   {tramp_ptr_reconstruct}
-  (*_a->kernel_ptr)(ctx, {tramp_call_params}
-                    _a->gridX, _a->gridY, _a->gridZ);
+  int pid_x = (int)spine_grid(ctx, 0);
+  int pid_y = (int)spine_grid(ctx, 1);
+  int pid_z = (int)spine_grid(ctx, 2);
+  (*_a->kernel_ptr)({tramp_call_params}
+                    _a->gridX, _a->gridY, _a->gridZ,
+                    pid_x, pid_y, pid_z);
 }}
 
 static void _launch(int gridX, int gridY, int gridZ, int64_t stream, kernel_ptr_t kernel_ptr, {arg_decls}) {{

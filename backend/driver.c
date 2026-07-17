@@ -219,7 +219,14 @@ static PyObject *getStreamThreads(PyObject *self, PyObject *args) {
     g_get_num_cores_symbol_loaded = true;
   }
   if (g_spine_get_num_cores != NULL) {
-    return PyLong_FromLongLong(g_spine_get_num_cores());
+    /* spine_get_stream_threads() returned cluster_threads (= num_cores/2 on K3:
+     * 8 total AI cores, 4 per stream).  spine_get_num_cores() returns the
+     * total, so halving it gives the per-stream thread count.  This keeps
+     * num_threads in the linalg IR consistent with what spine-opt's vpack /
+     * mm tiling passes expect. */
+    int64_t cores = g_spine_get_num_cores();
+    int64_t threads = cores > 1 ? cores / 2 : cores;
+    return PyLong_FromLongLong(threads);
   }
   return PyLong_FromLongLong(4); /* K3 safe default */
 }
