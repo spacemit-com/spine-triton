@@ -231,7 +231,8 @@ def _llir_to_so(llir: str, metadata):
                 f"-L{runtime_lib_dir}",
                 "-shared",
                 f"-l{py_lib}",
-                "-lSpineTritonRuntime",
+                "-lSpeIRRuntimeLibs",
+                "-lspine_thread_shim",  # shim for spine_thread_malloc/free (old lowering ABI)
                 "-fPIC",
                 "-o",
                 so_path,

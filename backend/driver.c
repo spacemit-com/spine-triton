@@ -204,12 +204,24 @@ static PyObject *getStreamThreads(PyObject *self, PyObject *args) {
         RTLD_DEFAULT, "spine_get_stream_threads");
     g_get_stream_threads_symbol_loaded = true;
   }
-  if (g_spine_get_stream_threads == NULL) {
-    return PyLong_FromLongLong(0);
+  if (g_spine_get_stream_threads != NULL) {
+    int64_t num_threads = g_spine_get_stream_threads();
+    return PyLong_FromLongLong(num_threads);
   }
 
-  int64_t num_threads = g_spine_get_stream_threads();
-  return PyLong_FromLongLong(num_threads);
+  /* spine-mlir-main runtime removed spine_get_stream_threads; fall back to
+   * spine_get_num_cores (same dylib, loaded via RTLD_GLOBAL).  If that is
+   * also absent return a safe K3 default (4 threads/stream) so that
+   * num_threads > 0 in the IR and spine-opt validation passes. */
+  if (!g_get_num_cores_symbol_loaded) {
+    g_spine_get_num_cores =
+        (spine_get_num_cores_t)dlsym(RTLD_DEFAULT, "spine_get_num_cores");
+    g_get_num_cores_symbol_loaded = true;
+  }
+  if (g_spine_get_num_cores != NULL) {
+    return PyLong_FromLongLong(g_spine_get_num_cores());
+  }
+  return PyLong_FromLongLong(4); /* K3 safe default */
 }
 
 static PyMethodDef ModuleMethods[] = {

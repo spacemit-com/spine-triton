@@ -141,14 +141,14 @@ except Exception as e:
 
 try:
     triton_path = os.path.dirname(triton.__file__)
-    libtritonruntime_path = os.path.join(triton_path, "_C", "libSpineTritonRuntime.so")
+    libtritonruntime_path = os.path.join(triton_path, "_C", "libSpeIRRuntimeLibs.so")
     if os.path.isfile(libtritonruntime_path):
         libtritonruntime = CDLL(libtritonruntime_path, mode=RTLD_GLOBAL)
     else:
         spine_triton_opt_path = get_spine_triton_opt_path()
         if os.path.isfile(spine_triton_opt_path):
             spine_triton_lib_dir = os.path.join(os.path.dirname(spine_triton_opt_path), "triton/_C")
-            libtritonruntime_path = os.path.join(spine_triton_lib_dir, "libSpineTritonRuntime.so")
+            libtritonruntime_path = os.path.join(spine_triton_lib_dir, "libSpeIRRuntimeLibs.so")
             libtritonruntime = CDLL(libtritonruntime_path, mode=RTLD_GLOBAL)
 except Exception as e:
-    raise ImportError("can not find libtritonruntime. {}".format(e))
+    raise ImportError("can not find libtritonruntime (libSpeIRRuntimeLibs). {}".format(e))
