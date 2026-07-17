@@ -70,6 +70,7 @@ def _format_of(ty):
     }[ty]
 
 
+
 def _generate_launcher(constants, signature, smt_parallel_inside=False, kernel_name="unknown_kernel"):
     # Check if kernel-level proton capture is enabled at compile time
     enable_proton_kernel_capture = os.environ.get("PROTON_KERNEL_CAPTURE", "0") != "0"
@@ -79,32 +80,29 @@ def _generate_launcher(constants, signature, smt_parallel_inside=False, kernel_n
     format = "iiiKKOOOO" + args_format
     args_list = (", " + ", ".join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else "")
 
-    kernel_arg_decls = ", ".join(
-        _ty_to_cpp(ty) if ty[0] != "*" else "int64_t, void*" for i, ty in signature.items() if ty != "constexpr")
-    kernel_arg_decls += ", " if kernel_arg_decls else ""
+    # New spert::Stream::launch ABI: kernel first param is spert::Context*,
+    # followed by user args (ptr→StridedMemRefType*), then 3 i32 num_programs.
+    # No trampoline, no SpineKernelArgs — Stream::launch variadic template
+    # perfectly forwards all args.
+    kernel_arg_decls = "spert::Context* ctx"
+    if signature:
+        kernel_arg_decls += ", "
+        kernel_arg_decls += ", ".join(
+            _ty_to_cpp(ty) if ty[0] != "*" else "StridedMemRefType<char, 0>*"
+            for i, ty in signature.items() if ty != "constexpr")
+    kernel_arg_decls += ", int, int, int"  # num_programs x/y/z
 
-    kernel_parameters = ", ".join(f"static_cast<{_ty_to_cpp(ty)}>(arg{i})" if ty[0] != "*" else f"0, &ptr_arg{i}"
-                                  for i, ty in signature.items()
-                                  if ty != "constexpr")
-    kernel_parameters += ", " if kernel_parameters else ""
-
-    # spert ABI scaffolding: pack user args + grid into a single struct,
-    # hand it to the runtime as functionArgs. The trampoline unpacks args,
-    # calls spine_grid(ctx, axis) for each program_id, then calls the kernel
-    # with the original 6-i32 tail ABI (num_progs + pid) — no changes to the
-    # compiled kernel signature, spine-opt K3 mm/vpack patterns stay intact.
-    struct_fields = " ".join(
-        (f"void* arg{i};" if ty[0] == "*" else f"{_ty_to_cpp(ty)} arg{i};")
-        for i, ty in signature.items() if ty != "constexpr")
-    pack_assignments = " ".join(
-        f"_kargs.arg{i} = arg{i};" for i, ty in signature.items() if ty != "constexpr")
-    tramp_ptr_reconstruct = " ".join(
-        f"StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(_a->arg{i}), static_cast<char *>(_a->arg{i}), 0}};"
+    # _launch call params: &ptr_arg for pointers, casted scalars, then gridX/Y/Z
+    ptr_decls = "\n  ".join(
+        f"StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};"
         for i, ty in signature.items() if ty != "constexpr" and ty[0] == "*")
-    tramp_call_params = ", ".join(
-        (f"0, &ptr_arg{i}" if ty[0] == "*" else f"static_cast<{_ty_to_cpp(ty)}>(_a->arg{i})")
+
+    launch_args = ", ".join(
+        (f"&ptr_arg{i}" if ty[0] == "*" else f"static_cast<{_ty_to_cpp(ty)}>(arg{i})")
         for i, ty in signature.items() if ty != "constexpr")
-    tramp_call_params += ", " if tramp_call_params else ""
+    if launch_args:
+        launch_args += ", "
+    launch_args += "gridX, gridY, gridZ"
 
     smt_parallel_inside_arg = "constexpr bool smt_parallel_inside = {};".format(
         "true" if smt_parallel_inside else "false")
@@ -127,28 +125,18 @@ def _generate_launcher(constants, signature, smt_parallel_inside=False, kernel_n
 #include <string.h>
 #include "ExecutionEngine/CRunnerUtils.h"
 #include "ExecutionEngine/CRunnerUtils.cpp"
+#include "spert.hpp"
 
-extern "C" {{
-// spert (spine-runtime) C ABI. The runtime drives the launch grid internally:
-// host calls dispatch once, spert spawns one tile per grid cell, fabricates a
-// per-tile Context (ctx) and calls the trampoline (i64 ctx, void* args).
-int64_t spine_require_stream();
-void spine_release_stream(int64_t);
-void spine_parallel_dispatch_3d(int64_t stream, void *fn, void *args,
-                                int64_t gridX, int64_t gridY, int64_t gridZ);
-// Trampoline calls spine_grid(ctx, axis) to get program_id per tile.
-int64_t spine_grid(int64_t ctx, int64_t axis);
-{'''// Proton kernel-level profiling APIs
+{'''extern "C" {{
+// Proton kernel-level profiling APIs
 void proton_enter_kernel(const char *kernel_name, int gridX, int gridY, int gridZ);
-void proton_exit_kernel(const char *kernel_name, int gridX, int gridY, int gridZ);''' if enable_proton_kernel_capture else ''}
-}}
+void proton_exit_kernel(const char *kernel_name, int gridX, int gridY, int gridZ);
+}}''' if enable_proton_kernel_capture else ''}
 
-// Kernel signature is UNCHANGED from the pre-spert ABI: user args fully
-// expanded, then 6 i32 tail args (num_programs_x/y/z, pid_x/y/z).
-// The trampoline bridges spert (ctx-based) → old ABI by calling
-// spine_grid(ctx, axis) for each pid, so spine-opt K3 mm/vpack sees
-// the same linalg IR it always expected.
-using kernel_ptr_t = void(*)({kernel_arg_decls} int, int, int, int, int, int);
+// New spert::Stream::launch ABI: kernel first param is spert::Context*,
+// followed by user args (pointers as StridedMemRefType*), then 3 i32 num_programs.
+// Kernel internally calls spine_grid(ctx, axis) to get program_id (lowering emits it).
+using kernel_ptr_t = void(*)({kernel_arg_decls});
 
 
 typedef struct _DevicePtrInfo {{
@@ -169,7 +157,7 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
     return ptr_info;
   }}
   PyObject *ptr = PyObject_GetAttrString(obj, "data_ptr");
-  if(ptr){{
+  if (ptr) {{
     PyObject *empty_tuple = PyTuple_New(0);
     PyObject *ret = PyObject_Call(ptr, empty_tuple, NULL);
     Py_DECREF(empty_tuple);
@@ -180,81 +168,51 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
       return ptr_info;
     }}
     ptr_info.dev_ptr = (void*) PyLong_AsLongLong(ret);
-    if(!ptr_info.dev_ptr) {{
+    if (!PyErr_Occurred()) {{
       return ptr_info;
     }}
-    Py_DECREF(ret);  // Thanks ChatGPT!
-    return ptr_info;
+    PyErr_Clear();
   }}
   PyErr_SetString(PyExc_TypeError, "Pointer argument must be either uint64 or have data_ptr method");
   ptr_info.valid = false;
   return ptr_info;
 }}
 
+constexpr const char* KERNEL_NAME = "{kernel_name}";
 
-{f'static constexpr const char* KERNEL_NAME = "{kernel_name}";' if enable_proton_kernel_capture else ''}
-
-// functionArgs payload: kernel pointer + all user args (raw dev ptr for
-// pointer args) + the launch grid (passed to the kernel as num_programs).
-typedef struct _SpineKernelArgs {{
-  kernel_ptr_t kernel_ptr;
-  {struct_fields}
-  int gridX;
-  int gridY;
-  int gridZ;
-}} SpineKernelArgs;
-
-// spert parallel-body trampoline (ABI = void(i64 ctx, void* functionArgs)).
-// spert fabricates ctx per tile and calls this; the trampoline calls
-// spine_grid(ctx, axis) for each pid and forwards to the kernel with the
-// original 6-i32 tail ABI (num_progs + pid), keeping spine-opt K3 patterns.
-extern "C" void _spine_triton_trampoline(int64_t ctx, void *raw) {{
-  SpineKernelArgs *_a = static_cast<SpineKernelArgs *>(raw);
-  {tramp_ptr_reconstruct}
-  int pid_x = (int)spine_grid(ctx, 0);
-  int pid_y = (int)spine_grid(ctx, 1);
-  int pid_z = (int)spine_grid(ctx, 2);
-  (*_a->kernel_ptr)({tramp_call_params}
-                    _a->gridX, _a->gridY, _a->gridZ,
-                    pid_x, pid_y, pid_z);
-}}
-
-static void _launch(int gridX, int gridY, int gridZ, int64_t stream, kernel_ptr_t kernel_ptr, {arg_decls}) {{
+static void _launch(int gridX, int gridY, int gridZ, kernel_ptr_t kernel_ptr, {arg_decls}) {{
   {smt_parallel_inside_arg}
   (void)smt_parallel_inside;
   if (gridX*gridY*gridZ <= 0) return;
   {'// Auto kernel capture: record kernel entry' if enable_proton_kernel_capture else ''}
   {'proton_enter_kernel(KERNEL_NAME, gridX, gridY, gridZ);' if enable_proton_kernel_capture else ''}
 
-  // Pack the payload once; spert drives the grid internally.
-  SpineKernelArgs _kargs;
-  _kargs.kernel_ptr = kernel_ptr;
-  {pack_assignments}
-  _kargs.gridX = gridX;
-  _kargs.gridY = gridY;
-  _kargs.gridZ = gridZ;
+  // Reconstruct StridedMemRefType for pointer args
+  {ptr_decls}
 
-  // spert three-phase dispatch: require -> dispatch(once) -> release.
-  int64_t _spine_stream = spine_require_stream();
-  spine_parallel_dispatch_3d(_spine_stream,
-                             reinterpret_cast<void *>(_spine_triton_trampoline),
-                             &_kargs, gridX, gridY, gridZ);
-  spine_release_stream(_spine_stream);
+  // spert::Stream::launch: variadic template directly forwards all args to kernel.
+  // Kernel signature: void(spert::Context*, user_args..., num_programs_x/y/z).
+  spert::Stream stream;
+  auto fut = stream.launch(spert::Grid{{static_cast<uint32_t>(gridX),
+                                        static_cast<uint32_t>(gridY),
+                                        static_cast<uint32_t>(gridZ)}},
+                           kernel_ptr, {launch_args});
+  fut.sync();
 
   {'// Auto kernel capture: record kernel exit' if enable_proton_kernel_capture else ''}
   {'proton_exit_kernel(KERNEL_NAME, gridX, gridY, gridZ);' if enable_proton_kernel_capture else ''}
-  }}
+}}
 
 static PyObject* launch(PyObject* self, PyObject* args) {{
   int gridX, gridY, gridZ;
   PyObject *launch_enter_hook = NULL;
   PyObject *launch_exit_hook = NULL;
-  PyObject *kernel_metadata = NULL;
   PyObject *launch_metadata = NULL;
+  PyObject *kernel_metadata = NULL;
+  PyObject *_function = NULL;
   uint64_t _stream;
-  uint64_t _function;
-  {' '.join([f"{_extracted_type(ty)} _arg{i}; " for i, ty in signature.items()])}
-  if(!PyArg_ParseTuple(args, \"{format}\", &gridX, &gridY, &gridZ, &_stream, &_function,
+  {", ".join([f"PyObject* _arg{i}" for i, ty in signature.items()])}
+  if (!PyArg_ParseTuple(args, \"{format}\", &gridX, &gridY, &gridZ, &_stream, &_function,
                                            &kernel_metadata, &launch_metadata,
                                            &launch_enter_hook, &launch_exit_hook {args_list})) {{
     return NULL;
@@ -262,37 +220,29 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
 
   kernel_ptr_t kernel_ptr = reinterpret_cast<kernel_ptr_t>(_function);
 
-  // [CPULauncher-specific]: We don't need the metadata below but just put them
-  // here anyway to be consistent with others.
-  // This will make updating the driver easier in the future.
-
-  //  int num_warps, num_ctas, shared_memory, clusterDimX, clusterDimY, clusterDimZ;
-  //  if (!PyArg_ParseTuple(kernel_metadata, \"iiiiii\", &num_warps, &num_ctas, &shared_memory, &clusterDimX, &clusterDimY, &clusterDimZ)) {{
-  //    PyErr_SetString(PyExc_TypeError, "kernel_metadata must be a tuple");
-  //    return NULL;
-  //  }}
-
   // extract launch metadata
   if (launch_enter_hook != Py_None){{
-    PyObject* args = Py_BuildValue("(O)", launch_metadata);
+    PyObject* args = PyTuple_Pack(1, launch_metadata);
     PyObject* ret = PyObject_CallObject(launch_enter_hook, args);
     Py_DECREF(args);
     if (!ret)
       return NULL;
+    Py_DECREF(ret);
   }}
 
   // raise exception asap
-  {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
-  _launch(gridX, gridY, gridZ, _stream, kernel_ptr, {', '.join(f"ptr_info{i}.dev_ptr" if ty[0] == "*" else f"_arg{i}"for i, ty in signature.items())});
+  {"".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])}
+  _launch(gridX, gridY, gridZ, kernel_ptr, {"".join([f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}" for i, ty in signature.items()])});
   if (PyErr_Occurred()) {{
     return NULL;
   }}
   if(launch_exit_hook != Py_None){{
-    PyObject* args = Py_BuildValue("(O)", launch_metadata);
+    PyObject* args = PyTuple_Pack(1, launch_metadata);
     PyObject* ret = PyObject_CallObject(launch_exit_hook, args);
     Py_DECREF(args);
     if (!ret)
       return NULL;
+    Py_DECREF(ret);
   }}
 
   // return None
@@ -307,7 +257,7 @@ static PyMethodDef ModuleMethods[] = {{
 
 static struct PyModuleDef ModuleDef = {{
   PyModuleDef_HEAD_INIT,
-  \"__spine_triton_kernel_launcher\",
+  "__spine_triton_kernel_launcher",
   NULL, //documentation
   -1, //size
   ModuleMethods
@@ -323,8 +273,6 @@ PyMODINIT_FUNC PyInit___spine_triton_kernel_launcher(void) {{
 }}
 """
 
-
-def compile_module(src, name, kernel_name=None):
     py_version = sys.version_info
     cpu_arch = get_cpu_arch()
     py_include_dir = os.path.join(
