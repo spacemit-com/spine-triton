@@ -235,8 +235,9 @@ def _llir_to_so(llir: str, metadata):
                 f"-L{runtime_lib_dir}",
                 "-shared",
                 f"-l{py_lib}",
-                "-lSpeIRRuntimeLibs",
-                "-lspine_thread_shim",  # shim for spine_thread_malloc/free (old lowering ABI)
+                "-lSpineTritonRuntime",  # spine-triton's own runtime: spine_assert, spine_print_unranked_memref, proton, etc.
+                "-lSpeIRRuntimeLibs",    # spine-mlir-main spert wrapper: spine_grid, spine_parallel_dispatch_Nd, spine_require_stream, etc.
+                "-lspine_thread_shim",   # shim for spine_thread_malloc/free (old lowering ABI, new runtime uses spine_thread_tcm_malloc)
                 "-fPIC",
                 "-o",
                 so_path,
