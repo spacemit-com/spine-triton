@@ -159,6 +159,10 @@ def _llir_to_so(llir: str, metadata):
             mattr_list = ["64bit", "a", "b", "c", "d", "f", "i", "m", "v", "zfh", "zvfh", "zicbop", "zicbom", "zicboz"]
             if ai_cpu_arch in {"spacemit-a200", "spacemit-a200m"}:
                 mattr_list.extend(["xsmtvsfu", "zmatrix"])
+            elif ai_cpu_arch in {"spacemit-a100", "spacemit-x100", "spacemit-x60", "spacemit-a60"}:
+                # a100 (0xA064, K3) needs xsmtvdotii so llc can select the
+                # smt.vpack.vv intrinsic emitted by mmt4d lowering (mm/matmul).
+                mattr_list.append("xsmtvdotii")
 
             llc_flags.extend(["--march=riscv64", "--mattr=" + ",".join(mattr_list)])
 
