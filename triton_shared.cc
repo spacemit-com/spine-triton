@@ -698,6 +698,13 @@ void init_triton_spine_raw_ir(py::module &&m) {
            [](TritonOpBuilder &self, Value source, Type resultType) -> Value {
              return self.create<vector::ShapeCastOp>(resultType, source).getResult();
            })
+      .def("create_vector_step",
+           [](TritonOpBuilder &self, Type resultType) -> Value {
+             // vector.step : vector<Nxindex> → [0, 1, .., N-1] (iota).
+             // Used for index-tracking reductions (argmax/argmin).
+             return self.create<vector::StepOp>(cast<VectorType>(resultType));
+           },
+           py::arg("result_type"))
 
   // ========================================================================
   // Vector dialect - Load/Store

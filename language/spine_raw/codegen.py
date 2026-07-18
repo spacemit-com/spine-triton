@@ -81,7 +81,7 @@ _SPINE_RAW_BUILTIN_NAMES = {
     "range", "proton_mark", "vconfig", "vzero", "vload", "vmacc",
     "vreduce_sum", "vreduce_max", "vreduce_min", "vreduce_mul",
     "vstore", "alloc", "pack", "vmadot",
-    "vpack", "vbroadcast", "vshape", "spread", "imin", "vmin", "vmax", "sqrt", "rsqrt", "vexp", "vlog", "vscalar", "abs", "cast", "select"
+    "vpack", "vbroadcast", "vshape", "spread", "imin", "vmin", "vmax", "sqrt", "rsqrt", "vexp", "vlog", "vscalar", "viota", "abs", "cast", "select"
 }
 
 # Element-type classification for §6.4 elementwise dispatch.
@@ -601,6 +601,7 @@ class SpineMLIRBuilderCodegen:
         if _is_spine_raw_attr(node.func, "vexp", b):  return self._gen_unary_math(node, "exp")
         if _is_spine_raw_attr(node.func, "vlog", b):  return self._gen_unary_math(node, "log")
         if _is_spine_raw_attr(node.func, "vscalar", b): return self._gen_vscalar(node)
+        if _is_spine_raw_attr(node.func, "viota", b): return self._gen_viota(node)
         if _is_spine_raw_attr(node.func, "abs", b):   return self._gen_abs(node)
         if _is_spine_raw_attr(node.func, "cast", b):  return self._gen_cast(node)
         if _is_spine_raw_attr(node.func, "select", b): return self._gen_select(node)
@@ -731,12 +732,34 @@ class SpineMLIRBuilderCodegen:
 
     def _gen_cast(self, node: ast.Call) -> tuple:
         vv, vt = self._gen_expr(node.args[0])
+        # Scalar cast (e.g. cast(i, f32) where i is a scalar index) — used by
+        # index-tracking reductions to combine loop counters with float lanes.
+        if not vt.startswith("vector<"):
+            dst_elem = _resolve_dtype(node.args[1], vt)
+            if dst_elem == vt:
+                return vv, vt
+            if vt == "index" and _is_float_elem(dst_elem):
+                return self._scalar_index_to_float(vv, dst_elem), dst_elem
+            raise NotImplementedError(f"scalar cast {vt!r} → {dst_elem!r} not supported")
+        # Element token: _vec_elem_last handles rank-N (vector<16x32xf32>→f32);
+        # fall back to index detection since _vec_elem_last's regex omits index.
         src_elem = _vec_elem_last(vt)
+        if src_elem is None:
+            src_elem = "index" if vt.endswith("xindex>") else _vec_elem(vt)
         dst_elem = _resolve_dtype(node.args[1], src_elem)
         if dst_elem == src_elem:
             return vv, vt
-        dst_type_str = vt[:vt.rfind("x") + 1] + dst_elem + ">"
+        # Rebuild the vector type by swapping only the trailing element token
+        # (can't rfind("x") because "index" itself contains an 'x').
+        prefix = vt[:vt.rfind("x" + src_elem)] + "x"
+        dst_type_str = prefix + dst_elem + ">"
         dst_T = self._t(dst_type_str)
+        # index-element vector → float: index has no bit width for extf/sitofp
+        # directly; go index → i64 → float (mirrors scalar path).
+        if src_elem == "index" and _is_float_elem(dst_elem):
+            i64_vt = prefix + "i64>"
+            i64_v = self._b.create_arith_index_cast(vv, self._t(i64_vt))
+            return self._b.create_arith_sitofp(i64_v, dst_T), dst_type_str
         sf, df = _is_float_elem(src_elem), _is_float_elem(dst_elem)
         if sf and df:
             fn = self._b.create_arith_extf if _elem_bits(dst_elem) > _elem_bits(src_elem) else self._b.create_arith_truncf
@@ -899,6 +922,15 @@ class SpineMLIRBuilderCodegen:
         dtype = _resolve_dtype(kwargs.get("dtype"), "f32")
         ranked_v, _ = self._ranked_cast(ptr_v, ptr_t)
         return self._b.create_memref_load(ranked_v, [idx_v]), dtype
+
+    def _gen_viota(self, node: ast.Call) -> tuple:
+        """viota() → vector<VLxindex> = [0, 1, .., VL-1] (vector.step).
+
+        Index vector for index-tracking reductions (argmax/argmin).
+        """
+        vl = self._require_vl()
+        vt = f"vector<{vl}xindex>"
+        return self._b.create_vector_step(self._t(vt)), vt
 
     # ------------------------------------------------------------------
     # vstore

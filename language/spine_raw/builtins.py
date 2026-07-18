@@ -83,6 +83,7 @@ rsqrt = _SpineRawBuiltin("rsqrt")  # rsqrt(a) → 1/√a → math.rsqrt
 vexp = _SpineRawBuiltin("vexp")  # vexp(a)  → eˣ  → math.exp  (vector or scalar)
 vlog = _SpineRawBuiltin("vlog")  # vlog(a)  → ln(a) → math.log (vector or scalar)
 vscalar = _SpineRawBuiltin("vscalar")  # vscalar(ptr, idx, dtype=f32) → scalar load from ptr[idx]
+viota = _SpineRawBuiltin("viota")  # viota() → vector<VLxindex> [0,1,..,VL-1] (vector.step), for argmax index tracking
 abs = _SpineRawBuiltin("abs")  # abs(a) → |a| → math.absf / absi  # noqa: A001 (shadows builtin intentionally)
 cast = _SpineRawBuiltin("cast")  # cast(a, dtype) → 类型转换 → arith.extf/truncf/sitofp/fptosi/extsi/trunci
 select = _SpineRawBuiltin("select")  # select(m, a, b) → a if m else b → arith.select (§6.8 回退)
