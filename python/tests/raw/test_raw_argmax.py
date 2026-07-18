@@ -72,3 +72,51 @@ def test_argmax_1d(N):
     argmax_1d_host[(1,)](X, out, N)
     ref = int(torch.argmax(X))
     assert int(round(out[0].item())) == ref, f"got {out[0].item()}, want {ref}"
+
+
+# ---------------------------------------------------------------------------
+# argmin — mirror of argmax (vmin + strict-less mask; tie-break = first index)
+# ---------------------------------------------------------------------------
+@tle.raw_kernel
+def argmin_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
+    nvl = tle.vconfig(-1, 1)
+    Nfloor = (N // nvl) * nvl
+    lane = tle.viota()
+
+    best_val = tle.vload(X, 0, dtype=f32)
+    best_idx = lane
+    for i in tle.range(0, Nfloor, nvl):
+        vx = tle.vload(X, i, dtype=f32)
+        idx = lane + tle.cast(i, f32)
+        lt = vx < best_val
+        best_val = tle.select(lt, vx, best_val)
+        best_idx = tle.select(lt, idx, best_idx)
+    for i in tle.range(Nfloor, N, nvl):
+        nvl_t = tle.vconfig(N - i, 1)
+        tx = tle.vload(X, i, dtype=f32, fill=1e38)   # pad lanes: +INF so never the min
+        tidx = lane + tle.cast(i, f32)
+        lt2 = tx < best_val
+        best_val = tle.select(lt2, tx, best_val)
+        best_idx = tle.select(lt2, tidx, best_idx)
+
+    gmin = tle.vreduce_min(best_val)
+    is_min = best_val <= gmin
+    big = tle.vzero(f32) + INF_IDX
+    masked = tle.select(is_min, best_idx, big)
+    argmin = tle.vreduce_min(masked)
+    tle.vstore(out, 0, argmin)
+
+
+@triton.jit
+def argmin_1d_host(X, out, N):
+    _sr_call(argmin_1d_kernel, outputs=[], inputs=[X, out, N])
+
+
+@pytest.mark.parametrize("N", [64, 128, 256, 100, 200])
+def test_argmin_1d(N):
+    torch.manual_seed(43)
+    X = torch.randn(N, dtype=torch.float32)
+    out = torch.zeros(1, dtype=torch.float32)
+    argmin_1d_host[(1,)](X, out, N)
+    ref = int(torch.argmin(X))
+    assert int(round(out[0].item())) == ref, f"got {out[0].item()}, want {ref}"
