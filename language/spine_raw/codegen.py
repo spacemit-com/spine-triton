@@ -81,7 +81,7 @@ _SPINE_RAW_BUILTIN_NAMES = {
     "range", "proton_mark", "vconfig", "vzero", "vload", "vmacc",
     "vreduce_sum", "vreduce_max", "vreduce_min", "vreduce_mul",
     "vstore", "alloc", "pack", "vmadot",
-    "vpack", "vbroadcast", "vshape", "spread", "imin", "vmin", "vmax", "sqrt", "rsqrt", "vexp", "vlog", "abs", "cast", "select"
+    "vpack", "vbroadcast", "vshape", "spread", "imin", "vmin", "vmax", "sqrt", "rsqrt", "vexp", "vlog", "vscalar", "abs", "cast", "select"
 }
 
 # Element-type classification for §6.4 elementwise dispatch.
@@ -600,6 +600,7 @@ class SpineMLIRBuilderCodegen:
         if _is_spine_raw_attr(node.func, "rsqrt", b): return self._gen_unary_math(node, "rsqrt")
         if _is_spine_raw_attr(node.func, "vexp", b):  return self._gen_unary_math(node, "exp")
         if _is_spine_raw_attr(node.func, "vlog", b):  return self._gen_unary_math(node, "log")
+        if _is_spine_raw_attr(node.func, "vscalar", b): return self._gen_vscalar(node)
         if _is_spine_raw_attr(node.func, "abs", b):   return self._gen_abs(node)
         if _is_spine_raw_attr(node.func, "cast", b):  return self._gen_cast(node)
         if _is_spine_raw_attr(node.func, "select", b): return self._gen_select(node)
@@ -881,6 +882,23 @@ class SpineMLIRBuilderCodegen:
             out_t = f"vector<{group}x{vl}x{dtype}>"
             return self._b.create_vector_shape_cast(flat_v, self._t(out_t)), out_t
         return self._b.create_vector_transfer_read(self._t(vt), ranked_v, [off_v], pad, [True]), vt
+
+    # ------------------------------------------------------------------
+    # vscalar — scalar load from a pointer at a dynamic index
+    # ------------------------------------------------------------------
+
+    def _gen_vscalar(self, node: ast.Call) -> tuple:
+        """vscalar(ptr, idx, dtype=f32) → scalar element load from ptr[idx].
+
+        Useful for gather-like access (e.g. cross_entropy: logits[target]).
+        Uses _ranked_cast + memref.load — no C++ changes required.
+        """
+        kwargs = {kw.arg: kw.value for kw in node.keywords}
+        ptr_v, ptr_t = self._gen_expr(node.args[0])
+        idx_v, _ = self._gen_expr(node.args[1])
+        dtype = _resolve_dtype(kwargs.get("dtype"), "f32")
+        ranked_v, _ = self._ranked_cast(ptr_v, ptr_t)
+        return self._b.create_memref_load(ranked_v, [idx_v]), dtype
 
     # ------------------------------------------------------------------
     # vstore
