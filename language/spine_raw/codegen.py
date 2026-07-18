@@ -81,7 +81,7 @@ _SPINE_RAW_BUILTIN_NAMES = {
     "range", "proton_mark", "vconfig", "vzero", "vload", "vmacc",
     "vreduce_sum", "vreduce_max", "vreduce_min", "vreduce_mul",
     "vstore", "alloc", "pack", "vmadot",
-    "vpack", "vbroadcast", "vshape", "spread", "imin", "vmin", "vmax", "sqrt", "rsqrt", "abs", "cast", "select"
+    "vpack", "vbroadcast", "vshape", "spread", "imin", "vmin", "vmax", "sqrt", "rsqrt", "vexp", "vlog", "abs", "cast", "select"
 }
 
 # Element-type classification for §6.4 elementwise dispatch.
@@ -537,7 +537,10 @@ class SpineMLIRBuilderCodegen:
 
     def _gen_unaryop(self, node: ast.UnaryOp) -> tuple:
         vv, vt = self._gen_expr(node.operand)
+        # Scalar negation (e.g. -1e38 as fill= argument, or -mean in a formula)
         if not vt.startswith("vector<"):
+            if isinstance(node.op, ast.USub) and _is_float_elem(vt):
+                return self._b.create_arith_negf(vv), vt
             raise NotImplementedError(f"unary on non-vector {vt}")
         elem = _vec_elem(vt)
         if isinstance(node.op, ast.USub):
@@ -595,6 +598,8 @@ class SpineMLIRBuilderCodegen:
                 return self._gen_vminmax(node, nm)
         if _is_spine_raw_attr(node.func, "sqrt", b):  return self._gen_unary_math(node, "sqrt")
         if _is_spine_raw_attr(node.func, "rsqrt", b): return self._gen_unary_math(node, "rsqrt")
+        if _is_spine_raw_attr(node.func, "vexp", b):  return self._gen_unary_math(node, "exp")
+        if _is_spine_raw_attr(node.func, "vlog", b):  return self._gen_unary_math(node, "log")
         if _is_spine_raw_attr(node.func, "abs", b):   return self._gen_abs(node)
         if _is_spine_raw_attr(node.func, "cast", b):  return self._gen_cast(node)
         if _is_spine_raw_attr(node.func, "select", b): return self._gen_select(node)
@@ -819,7 +824,14 @@ class SpineMLIRBuilderCodegen:
         dtype = _resolve_dtype(kwargs.get("dtype"), "f16")
         vl = self._require_vl()
         vt = f"vector<{vl}x{dtype}>"
-        pad = self._const_float(0.0, dtype)
+        # fill= kwarg: value for padding of tail tiles (default 0.0).
+        # Softmax exp-accumulation needs fill=-1e38 so exp(fill-xmax)≈0.
+        fill_node = kwargs.get("fill")
+        if fill_node is not None:
+            fill_v, _ = self._gen_expr(fill_node)
+            pad = fill_v
+        else:
+            pad = self._const_float(0.0, dtype)
 
         # Packed cube tensor from vpack(memref)
         group_kw = kwargs.get("group")

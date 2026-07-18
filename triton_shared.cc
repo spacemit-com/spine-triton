@@ -655,6 +655,22 @@ void init_triton_spine_raw_ir(py::module &&m) {
            [](TritonOpBuilder &self, Value operand) -> Value {
              return self.create<math::RsqrtOp>(operand).getResult();
            })
+      .def("create_math_exp",
+           [](TritonOpBuilder &self, Value operand) -> Value {
+             return self.create<math::ExpOp>(operand).getResult();
+           })
+      .def("create_math_exp2",
+           [](TritonOpBuilder &self, Value operand) -> Value {
+             return self.create<math::Exp2Op>(operand).getResult();
+           })
+      .def("create_math_log",
+           [](TritonOpBuilder &self, Value operand) -> Value {
+             return self.create<math::LogOp>(operand).getResult();
+           })
+      .def("create_math_log2",
+           [](TritonOpBuilder &self, Value operand) -> Value {
+             return self.create<math::Log2Op>(operand).getResult();
+           })
       .def("create_math_absf",
            [](TritonOpBuilder &self, Value operand) -> Value {
              return self.create<math::AbsFOp>(operand).getResult();
