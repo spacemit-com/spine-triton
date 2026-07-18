@@ -14,7 +14,7 @@ from .types import In, InOut, mem, index
 from .runtime import spine_raw, SpineLinalgJITFunction
 from .call_registry import call
 from .builtins import proton_mark
-from .builtins import vconfig, vzero, vload, vmacc, vreduce_sum, vstore, alloc, pack, vpack, vmadot, vshape, vbroadcast, spread
+from .builtins import vconfig, vzero, vload, vmacc, vreduce_sum, vreduce_max, vreduce_min, vreduce_mul, vstore, alloc, pack, vpack, vmadot, vshape, vbroadcast, spread
 from .builtins import vmin, vmax, sqrt, rsqrt, abs, cast, select  # §6.4 elementwise
 from .builtins import f16, f32, bf16
 from .builtins import mma_cube
@@ -39,6 +39,9 @@ __all__ = [
     "vload",
     "vmacc",
     "vreduce_sum",
+    "vreduce_max",
+    "vreduce_min",
+    "vreduce_mul",
     "vstore",
     "alloc",
     "pack",

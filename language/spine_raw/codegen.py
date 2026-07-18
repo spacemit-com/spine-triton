@@ -78,7 +78,9 @@ def _memref_elem(mlir_type: str) -> str:
 
 
 _SPINE_RAW_BUILTIN_NAMES = {
-    "range", "proton_mark", "vconfig", "vzero", "vload", "vmacc", "vreduce_sum", "vstore", "alloc", "pack", "vmadot",
+    "range", "proton_mark", "vconfig", "vzero", "vload", "vmacc",
+    "vreduce_sum", "vreduce_max", "vreduce_min", "vreduce_mul",
+    "vstore", "alloc", "pack", "vmadot",
     "vpack", "vbroadcast", "vshape", "spread", "imin", "vmin", "vmax", "sqrt", "rsqrt", "abs", "cast", "select"
 }
 
@@ -575,6 +577,9 @@ class SpineMLIRBuilderCodegen:
         if _is_spine_raw_attr(node.func, "vload", b):      return self._gen_vload(node)
         if _is_spine_raw_attr(node.func, "vmacc", b):      return self._gen_vmacc(node)
         if _is_spine_raw_attr(node.func, "vreduce_sum", b): return self._gen_vreduce_sum(node)
+        if _is_spine_raw_attr(node.func, "vreduce_max", b): return self._gen_vreduce_max(node)
+        if _is_spine_raw_attr(node.func, "vreduce_min", b): return self._gen_vreduce_min(node)
+        if _is_spine_raw_attr(node.func, "vreduce_mul", b): return self._gen_vreduce_mul(node)
         if _is_spine_raw_attr(node.func, "vmadot", b):     return self._gen_vmadot(node)
         if _is_spine_raw_attr(node.func, "vpack", b):      return self._gen_vpack(node)
         if _is_spine_raw_attr(node.func, "vshape", b):     return self._gen_vshape(node)
@@ -648,6 +653,25 @@ class SpineMLIRBuilderCodegen:
         v_v, v_t = self._gen_expr(node.args[0])
         elem = _vec_elem(v_t)
         return self._b.create_vector_reduction("add", v_v), elem
+
+    def _gen_vreduce_max(self, node: ast.Call) -> tuple:
+        v_v, v_t = self._gen_expr(node.args[0])
+        elem = _vec_elem(v_t)
+        if not _is_float_elem(elem):
+            raise NotImplementedError(f"vreduce_max on integer element {elem!r} not yet wired (add maxsi to binding)")
+        return self._b.create_vector_reduction("maxf", v_v), elem
+
+    def _gen_vreduce_min(self, node: ast.Call) -> tuple:
+        v_v, v_t = self._gen_expr(node.args[0])
+        elem = _vec_elem(v_t)
+        if not _is_float_elem(elem):
+            raise NotImplementedError(f"vreduce_min on integer element {elem!r} not yet wired (add minsi to binding)")
+        return self._b.create_vector_reduction("minf", v_v), elem
+
+    def _gen_vreduce_mul(self, node: ast.Call) -> tuple:
+        v_v, v_t = self._gen_expr(node.args[0])
+        elem = _vec_elem(v_t)
+        return self._b.create_vector_reduction("mul", v_v), elem
 
     # ------------------------------------------------------------------
     # vmadot / vminmax / unary math / abs / cast / select
