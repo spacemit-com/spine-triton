@@ -33,7 +33,7 @@ INF_IDX = 1.0e30
 def argmax_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
     nvl = tle.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
-    lane = tle.cast(tle.viota(), f32)          # [0,1,..,VL-1] as f32
+    lane = tle.viota()                          # [0,1,..,VL-1] as f32
 
     best_val = tle.vload(X, 0, dtype=f32)
     best_idx = lane                             # indices 0..VL-1 for first tile
@@ -64,13 +64,6 @@ def argmax_1d_host(X, out, N):
     _sr_call(argmax_1d_kernel, outputs=[], inputs=[X, out, N])
 
 
-@pytest.mark.xfail(reason="argmax needs viota (vector.step) for index tracking, but "
-                          "spine-mlir ConvertToScalableVector.cc does not handle "
-                          "vector::StepOp — it only converts Extract/Insert/Reduction/"
-                          "ShapeCast/Splat/TransferRead/Write. So vector.step<64xindex> "
-                          "fails 'Fail to convert to scalable vector' at spine-opt. "
-                          "Unblocking requires adding StepOp to that pass (spine-mlir change).",
-                   strict=True)
 @pytest.mark.parametrize("N", [64, 128, 256, 100, 200])
 def test_argmax_1d(N):
     torch.manual_seed(42)

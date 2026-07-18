@@ -924,13 +924,30 @@ class SpineMLIRBuilderCodegen:
         return self._b.create_memref_load(ranked_v, [idx_v]), dtype
 
     def _gen_viota(self, node: ast.Call) -> tuple:
-        """viota() → vector<VLxindex> = [0, 1, .., VL-1] (vector.step).
+        """viota() → vector<VLxf32> = [0.0, 1.0, .., VL-1.0].
 
-        Index vector for index-tracking reductions (argmax/argmin).
+        Index vector for index-tracking reductions (argmax/argmin), as f32 so it
+        composes with float lanes and float reductions.
+
+        Built via a scratch memref filled by a scalar loop, then transfer_read —
+        NOT vector.step: spine-mlir ConvertToScalableVector doesn't handle StepOp
+        (fails 'Fail to convert to scalable vector'), but it does handle
+        memref.store / scf.for / transfer_read (the _gen_spread path, K3-proven).
         """
         vl = self._require_vl()
-        vt = f"vector<{vl}xindex>"
-        return self._b.create_vector_step(self._t(vt)), vt
+        vt = f"vector<{vl}xf32>"
+        scr = self._b.create_memref_alloc(self._t(f"memref<{vl}xf32>"), None, 64)
+        c0, c1, cvl = self._const_int(0), self._const_int(1), self._const_int(vl)
+
+        def fill_body(b, iv, _):
+            i64 = b.create_arith_index_cast(iv, self._t("i64"))
+            fv = b.create_arith_sitofp(i64, self._tf("f32"))
+            b.create_memref_store(fv, scr, [iv])
+            return []
+
+        self._b.create_scf_for(c0, cvl, c1, [], fill_body)
+        pad = self._const_float(0.0, "f32")
+        return self._b.create_vector_transfer_read(self._t(vt), scr, [c0], pad, [True]), vt
 
     # ------------------------------------------------------------------
     # vstore
