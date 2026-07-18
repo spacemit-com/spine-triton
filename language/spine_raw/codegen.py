@@ -263,6 +263,33 @@ class SpineMLIRBuilderCodegen:
             return self._broadcast_to(lv, _vec_elem(rt), rt), rv, rt
         return lv, rv, None
 
+    def _scalar_index_to_float(self, v, ftype: str):
+        """index → ftype scalar: index_cast to i64, then sitofp. `index` is not
+        an integer type in MLIR so sitofp can't take it directly."""
+        i64_v = self._b.create_arith_index_cast(v, self._t("i64"))
+        return self._b.create_arith_sitofp(i64_v, self._tf(ftype))
+
+    def _promote_scalar_pair(self, lv, lt: str, rv, rt: str):
+        """Promote a pair of scalar operands to a common type, returning
+        (lv, rv, result_type_str). Handles index↔float mixes (mean = sum / N)
+        by lifting index to the float side; identical types pass through."""
+        if lt == rt:
+            return lv, rv, lt
+        l_f, r_f = _is_float_elem(lt), _is_float_elem(rt)
+        if l_f and rt == "index":
+            return lv, self._scalar_index_to_float(rv, lt), lt
+        if r_f and lt == "index":
+            return self._scalar_index_to_float(lv, rt), rv, rt
+        if l_f and r_f:
+            # differing float widths: widen the narrower to the wider
+            wide = lt if _elem_bits(lt) >= _elem_bits(rt) else rt
+            if lt != wide:
+                lv = self._b.create_arith_extf(lv, self._tf(wide))
+            if rt != wide:
+                rv = self._b.create_arith_extf(rv, self._tf(wide))
+            return lv, rv, wide
+        raise NotImplementedError(f"scalar promote between {lt!r} and {rt!r}")
+
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -391,6 +418,13 @@ class SpineMLIRBuilderCodegen:
 
         prev_loop_iter = self._loop_iter_args
         self._loop_iter_args = set(reassigned)
+        # vconfig inside the body sets _active_vl/_active_valid; _active_valid can
+        # be a region-internal SSA (arith.minsi on N-i). Snapshot and restore so a
+        # tail-loop vconfig doesn't leak that value into sibling loops → otherwise
+        # a later vload references an SSA from a dead sibling region ('operand does
+        # not dominate ... neither in a parent nor in a child region').
+        saved_active_vl = self._active_vl
+        saved_active_valid = self._active_valid
 
         def for_body(b, iv, region_iter_args):
             # Rebind iter_args to their region block args
@@ -413,6 +447,9 @@ class SpineMLIRBuilderCodegen:
 
         result_vals = self._b.create_scf_for(lb, ub, step, ia_vals, for_body)
         self._loop_iter_args = prev_loop_iter
+        # Restore active vconfig state clobbered inside the body.
+        self._active_vl = saved_active_vl
+        self._active_valid = saved_active_valid
 
         # Bind results back to the iter_arg names
         for d, rv in zip(ia_data, result_vals):
@@ -466,6 +503,22 @@ class SpineMLIRBuilderCodegen:
                 raise NotImplementedError(f"BinOp {op.__name__} on index")
             fn = getattr(self._b, f"create_arith_{opname}")
             return fn(lv, rv), "index"
+        # Scalar arithmetic (neither operand a vector). Covers reduce-then-scale
+        # (mean = vreduce_sum(v) / N): promote index→f32 so a f32 scalar and an
+        # index (e.g. row count N) can divide/multiply. _match_operands only
+        # broadcasts scalars into vectors, so scalar×scalar must be handled here.
+        if not lt.startswith("vector<") and not rt.startswith("vector<"):
+            lv, rv, st = self._promote_scalar_pair(lv, lt, rv, rt)
+            is_f = _is_float_elem(st)
+            arith = _BINOP_ARITH.get(op)
+            if arith is None:
+                raise NotImplementedError(f"Operator {op.__name__} not in _BINOP_ARITH")
+            opname = arith[0] if is_f else arith[1]
+            if opname is None:
+                raise NotImplementedError(
+                    f"Operator {op.__name__} not defined for scalar {'float' if is_f else 'int'}")
+            fn = getattr(self._b, f"create_arith_{opname}")
+            return fn(lv, rv), st
         lv, rv, vt = self._match_operands(lv, lt, rv, rt)
         if vt is None:
             raise NotImplementedError(f"BinOp between {lt!r} and {rt!r}")
@@ -821,10 +874,30 @@ class SpineMLIRBuilderCodegen:
             return
         assert not isinstance(idx_node, ast.Tuple)
         idx_v, _ = self._gen_expr(idx_node)
-        store_v, store_t = self._ranked_cast(ptr_v, ptr_t)
         if val_t.startswith("vector<"):
-            self._b.create_vector_transfer_write(val_v, store_v, [idx_v], [True])
+            vn = _vec_n(val_t)
+            elem = _vec_elem(val_t)
+            sp = "#ptr.generic_space"
+            c0 = self._const_int(0)
+            if self._active_valid is None:
+                # Full-tile path: static memref<VLxT, strided<[1], offset:?>>.
+                # Dynamic memref<?xT> causes VL to be clamped by descriptor size
+                # → only lane0 written. Static size bypasses clamping.
+                m1t = f"memref<{vn}x{elem}, strided<[1], offset: ?>, {sp}>"
+                r1 = self._b.create_memref_reinterpret_cast_mixed(
+                    self._t(m1t), ptr_v, [idx_v], [vn], [1])
+                self._b.create_vector_transfer_write(val_v, r1, [c0], [True])
+            else:
+                # Tail-tile path: only _active_valid < VL elements are valid.
+                # Use dynamic memref<?xT> with size=valid + in_bounds=[false]
+                # so transfer_write generates a masked store respecting the bound.
+                valid_v = self._active_valid
+                m1t = f"memref<?x{elem}, strided<[?], offset: ?>, {sp}>"
+                r1 = self._b.create_memref_reinterpret_cast(
+                    self._t(m1t), ptr_v, [idx_v], [valid_v], [self._const_int(1)])
+                self._b.create_vector_transfer_write(val_v, r1, [c0], [False])
         else:
+            store_v, store_t = self._ranked_cast(ptr_v, ptr_t)
             self._b.create_memref_store(val_v, store_v, [idx_v])
 
     # ------------------------------------------------------------------
