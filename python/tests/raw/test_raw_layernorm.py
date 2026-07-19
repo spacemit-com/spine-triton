@@ -42,18 +42,16 @@ def layernorm_1d_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), N: tle.ind
         acc1 = acc1 + ta
     mean = tle.vreduce_sum(acc1) / N          # f32 scalar
 
-    # ── 趟2: sum((x - mean)²) ─────────────────────────────────────────────
+    # ── 趟2: sum(x²) — use E[x²]-mean² to avoid (0-mean)² inflation from padding ─────
     acc2 = tle.vzero(f32)
     for i in tle.range(0, Nfloor, nvl):
         vb = tle.cast(tle.vload(X, i), f32)
-        db = vb - mean                         # vec - scalar → broadcast
-        acc2 = acc2 + db * db
+        acc2 = acc2 + vb * vb
     for i in tle.range(Nfloor, N, nvl):
         nvl_t2 = tle.vconfig(N - i, 1)
-        tb = tle.cast(tle.vload(X, i), f32)
-        dc = tb - mean
-        acc2 = acc2 + dc * dc
-    var = tle.vreduce_sum(acc2) / N           # f32 scalar
+        tb = tle.cast(tle.vload(X, i), f32)   # fill=0: 0²=0, no inflation
+        acc2 = acc2 + tb * tb
+    var = tle.vreduce_sum(acc2) / N - mean * mean   # E[x²] - mean² = Var(x)
     scale = tle.rsqrt(var + EPS)              # f32 scalar (f32 + f32 literal)
 
     # ── 趟3: (x - mean) * scale ───────────────────────────────────────────

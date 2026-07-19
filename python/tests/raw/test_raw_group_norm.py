@@ -43,18 +43,17 @@ def group_norm_kernel(
         acc1 = acc1 + ta
     mean = tle.vreduce_sum(acc1) / C
 
-    # 趟2: sum((x - mean)²)
+    # 趟2: sum(x²) — use E[x²]-mean² to compute variance.
+    # Avoids (0-mean)²=mean² inflation from fill-0 padded lanes (0²=0 contributes nothing).
     acc2 = tle.vzero(f32)
     for i in tle.range(0, Cfloor, nvl):
         vb = tle.cast(tle.vload(X, base + i), f32)
-        db = vb - mean
-        acc2 = acc2 + db * db
+        acc2 = acc2 + vb * vb
     for i in tle.range(Cfloor, C, nvl):
         nvl_t2 = tle.vconfig(C - i, 1)
-        tb = tle.cast(tle.vload(X, base + i), f32)
-        dc = tb - mean
-        acc2 = acc2 + dc * dc
-    var = tle.vreduce_sum(acc2) / C
+        tb = tle.cast(tle.vload(X, base + i), f32)   # fill=0: 0²=0, no inflation
+        acc2 = acc2 + tb * tb
+    var = tle.vreduce_sum(acc2) / C - mean * mean     # E[x²] - mean² = Var(x)
     scale = tle.rsqrt(var + EPS)
 
     # 趟3: (x - mean) * scale
