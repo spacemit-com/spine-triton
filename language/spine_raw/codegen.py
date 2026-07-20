@@ -876,12 +876,13 @@ class SpineMLIRBuilderCodegen:
             idx_vs = [self._gen_expr(e)[0] for e in idx_node.elts]
             return self._b.create_vector_transfer_read(self._t(vt), ptr_v, idx_vs, pad, [True]), vt
 
-        # External unranked pointer with valid= or _active_valid fill-0 path
-        valid_node = kwargs.get("valid")
-        valid_v_active = None if valid_node is not None else self._active_valid
-        if valid_node is not None or valid_v_active is not None:
+        # External unranked pointer, tail path: _active_valid (set by a narrowing
+        # vconfig) bounds the read to valid elements + fill-pads the rest.
+        # vconfig is the single source of truth for effective length; vload only
+        # reads + fills.
+        valid_v = self._active_valid
+        if valid_v is not None:
             assert "group" not in kwargs
-            valid_v = self._gen_expr(valid_node)[0] if valid_node is not None else valid_v_active
             off_v, _ = self._gen_expr(idx_node)
             sp = "#ptr.generic_space"
             src_mr_t = f"memref<?x{dtype}, strided<[?], offset: ?>, {sp}>"
