@@ -42,7 +42,7 @@ def ew_add(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.i
         vx = tle.vload(X, i, dtype=f32)
         vy = tle.vload(Y, i, dtype=f32)
         acc = acc + (vx + vy)
-    tle.vstore(S, 0, tle.vreduce_sum(acc))
+    tle.sstore(S, 0, tle.vreduce_sum(acc))
 
 
 @tle.raw_kernel
@@ -53,7 +53,7 @@ def ew_mul(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.i
         vx = tle.vload(X, i, dtype=f32)
         vy = tle.vload(Y, i, dtype=f32)
         acc = acc + (vx * vy)
-    tle.vstore(S, 0, tle.vreduce_sum(acc))
+    tle.sstore(S, 0, tle.vreduce_sum(acc))
 
 
 @tle.raw_kernel
@@ -64,7 +64,7 @@ def ew_sub(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.i
         vx = tle.vload(X, i, dtype=f32)
         vy = tle.vload(Y, i, dtype=f32)
         acc = acc + (vx - vy)
-    tle.vstore(S, 0, tle.vreduce_sum(acc))
+    tle.sstore(S, 0, tle.vreduce_sum(acc))
 
 
 @tle.raw_kernel
@@ -75,7 +75,7 @@ def ew_div(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.i
         vx = tle.vload(X, i, dtype=f32)
         vy = tle.vload(Y, i, dtype=f32)
         acc = acc + (vx / vy)
-    tle.vstore(S, 0, tle.vreduce_sum(acc))
+    tle.sstore(S, 0, tle.vreduce_sum(acc))
 
 
 @tle.raw_kernel
@@ -85,7 +85,7 @@ def ew_neg(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.i
     for i in tle.range(0, N, nvl):
         vx = tle.vload(X, i, dtype=f32)
         acc = acc + (-vx)
-    tle.vstore(S, 0, tle.vreduce_sum(acc))
+    tle.sstore(S, 0, tle.vreduce_sum(acc))
 
 
 @tle.raw_kernel
@@ -96,7 +96,7 @@ def ew_vmin(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.
         vx = tle.vload(X, i, dtype=f32)
         vy = tle.vload(Y, i, dtype=f32)
         acc = acc + tle.vmin(vx, vy)
-    tle.vstore(S, 0, tle.vreduce_sum(acc))
+    tle.sstore(S, 0, tle.vreduce_sum(acc))
 
 
 @tle.raw_kernel
@@ -107,7 +107,7 @@ def ew_vmax(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.
         vx = tle.vload(X, i, dtype=f32)
         vy = tle.vload(Y, i, dtype=f32)
         acc = acc + tle.vmax(vx, vy)
-    tle.vstore(S, 0, tle.vreduce_sum(acc))
+    tle.sstore(S, 0, tle.vreduce_sum(acc))
 
 
 @tle.raw_kernel
@@ -117,7 +117,7 @@ def ew_sqrt(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.
     for i in tle.range(0, N, nvl):
         vx = tle.vload(X, i, dtype=f32)
         acc = acc + tle.sqrt(vx)
-    tle.vstore(S, 0, tle.vreduce_sum(acc))
+    tle.sstore(S, 0, tle.vreduce_sum(acc))
 
 
 @tle.raw_kernel
@@ -127,7 +127,7 @@ def ew_abs(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.i
     for i in tle.range(0, N, nvl):
         vx = tle.vload(X, i, dtype=f32)
         acc = acc + tle.abs(vx)
-    tle.vstore(S, 0, tle.vreduce_sum(acc))
+    tle.sstore(S, 0, tle.vreduce_sum(acc))
 
 
 @tle.raw_kernel
@@ -140,7 +140,7 @@ def ew_select(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tl
         vy = tle.vload(Y, i, dtype=f32)
         m = vx > vy
         acc = acc + tle.select(m, vx, vy)
-    tle.vstore(S, 0, tle.vreduce_sum(acc))
+    tle.sstore(S, 0, tle.vreduce_sum(acc))
 
 
 def _make_host(raw_kernel):

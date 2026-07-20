@@ -81,7 +81,7 @@ _SPINE_RAW_BUILTIN_NAMES = {
     "range", "proton_mark", "vconfig", "vzero", "vload", "vmacc",
     "vreduce_sum", "vreduce_max", "vreduce_min", "vreduce_mul",
     "vstore", "alloc", "pack", "vmadot",
-    "vpack", "vbroadcast", "vshape", "spread", "imin", "vmin", "vmax", "sqrt", "rsqrt", "vexp", "vlog", "vscalar", "viota", "abs", "cast", "select"
+    "vpack", "vbroadcast", "vshape", "spread", "imin", "vmin", "vmax", "sqrt", "rsqrt", "vexp", "vlog", "sload", "sstore", "viota", "abs", "cast", "select"
 }
 
 # Element-type classification for §6.4 elementwise dispatch.
@@ -463,6 +463,8 @@ class SpineMLIRBuilderCodegen:
             pass  # skip profiling marks in builder path
         elif _is_spine_raw_attr(node.func, "vstore", self._aliases):
             self._gen_vstore(node)
+        elif _is_spine_raw_attr(node.func, "sstore", self._aliases):
+            self._gen_sstore(node)
         elif _is_spine_raw_attr(node.func, "pack", self._aliases):
             self._gen_pack(node)
         else:
@@ -600,7 +602,7 @@ class SpineMLIRBuilderCodegen:
         if _is_spine_raw_attr(node.func, "rsqrt", b): return self._gen_unary_math(node, "rsqrt")
         if _is_spine_raw_attr(node.func, "vexp", b):  return self._gen_unary_math(node, "exp")
         if _is_spine_raw_attr(node.func, "vlog", b):  return self._gen_unary_math(node, "log")
-        if _is_spine_raw_attr(node.func, "vscalar", b): return self._gen_vscalar(node)
+        if _is_spine_raw_attr(node.func, "sload", b): return self._gen_sload(node)
         if _is_spine_raw_attr(node.func, "viota", b): return self._gen_viota(node)
         if _is_spine_raw_attr(node.func, "abs", b):   return self._gen_abs(node)
         if _is_spine_raw_attr(node.func, "cast", b):  return self._gen_cast(node)
@@ -908,14 +910,15 @@ class SpineMLIRBuilderCodegen:
         return self._b.create_vector_transfer_read(self._t(vt), ranked_v, [off_v], pad, [True]), vt
 
     # ------------------------------------------------------------------
-    # vscalar — scalar load from a pointer at a dynamic index
+    # sload — scalar load from a pointer at a dynamic index
     # ------------------------------------------------------------------
 
-    def _gen_vscalar(self, node: ast.Call) -> tuple:
-        """vscalar(ptr, idx, dtype=f32) → scalar element load from ptr[idx].
+    def _gen_sload(self, node: ast.Call) -> tuple:
+        """sload(ptr, idx, dtype=f32) → scalar element load from ptr[idx].
 
-        Useful for gather-like access (e.g. cross_entropy: logits[target]).
-        Uses _ranked_cast + memref.load — no C++ changes required.
+        s-prefix = scalar op (does not touch VL). Useful for gather-like access
+        (e.g. cross_entropy: logits[target]). Uses _ranked_cast + memref.load —
+        no C++ changes required.
         """
         kwargs = {kw.arg: kw.value for kw in node.keywords}
         ptr_v, ptr_t = self._gen_expr(node.args[0])
@@ -978,31 +981,54 @@ class SpineMLIRBuilderCodegen:
             return
         assert not isinstance(idx_node, ast.Tuple)
         idx_v, _ = self._gen_expr(idx_node)
-        if val_t.startswith("vector<"):
-            vn = _vec_n(val_t)
-            elem = _vec_elem(val_t)
-            sp = "#ptr.generic_space"
-            c0 = self._const_int(0)
-            if self._active_valid is None:
-                # Full-tile path: static memref<VLxT, strided<[1], offset:?>>.
-                # Dynamic memref<?xT> causes VL to be clamped by descriptor size
-                # → only lane0 written. Static size bypasses clamping.
-                m1t = f"memref<{vn}x{elem}, strided<[1], offset: ?>, {sp}>"
-                r1 = self._b.create_memref_reinterpret_cast_mixed(
-                    self._t(m1t), ptr_v, [idx_v], [vn], [1])
-                self._b.create_vector_transfer_write(val_v, r1, [c0], [True])
-            else:
-                # Tail-tile path: only _active_valid < VL elements are valid.
-                # Use dynamic memref<?xT> with size=valid + in_bounds=[false]
-                # so transfer_write generates a masked store respecting the bound.
-                valid_v = self._active_valid
-                m1t = f"memref<?x{elem}, strided<[?], offset: ?>, {sp}>"
-                r1 = self._b.create_memref_reinterpret_cast(
-                    self._t(m1t), ptr_v, [idx_v], [valid_v], [self._const_int(1)])
-                self._b.create_vector_transfer_write(val_v, r1, [c0], [False])
+        if not val_t.startswith("vector<"):
+            raise TypeError(
+                f"vstore expects a vector value (width = VL), got scalar '{val_t}'. "
+                f"Use sstore(ptr, idx, scalar) for a single scalar write."
+            )
+        vn = _vec_n(val_t)
+        elem = _vec_elem(val_t)
+        sp = "#ptr.generic_space"
+        c0 = self._const_int(0)
+        if self._active_valid is None:
+            # Full-tile path: static memref<VLxT, strided<[1], offset:?>>.
+            # Dynamic memref<?xT> causes VL to be clamped by descriptor size
+            # → only lane0 written. Static size bypasses clamping.
+            m1t = f"memref<{vn}x{elem}, strided<[1], offset: ?>, {sp}>"
+            r1 = self._b.create_memref_reinterpret_cast_mixed(
+                self._t(m1t), ptr_v, [idx_v], [vn], [1])
+            self._b.create_vector_transfer_write(val_v, r1, [c0], [True])
         else:
-            store_v, store_t = self._ranked_cast(ptr_v, ptr_t)
-            self._b.create_memref_store(val_v, store_v, [idx_v])
+            # Tail-tile path: only _active_valid < VL elements are valid.
+            # Use dynamic memref<?xT> with size=valid + in_bounds=[false]
+            # so transfer_write generates a masked store respecting the bound.
+            valid_v = self._active_valid
+            m1t = f"memref<?x{elem}, strided<[?], offset: ?>, {sp}>"
+            r1 = self._b.create_memref_reinterpret_cast(
+                self._t(m1t), ptr_v, [idx_v], [valid_v], [self._const_int(1)])
+            self._b.create_vector_transfer_write(val_v, r1, [c0], [False])
+
+    # ------------------------------------------------------------------
+    # sstore — scalar store to a pointer at a dynamic index
+    # ------------------------------------------------------------------
+
+    def _gen_sstore(self, node: ast.Call):
+        """sstore(ptr, idx, scalar) → memref.store of a single scalar at ptr[idx].
+
+        s-prefix = scalar op (does not touch VL). The scalar counterpart of
+        vstore; used for reduction results (vreduce_*), sload results, and
+        scalar constants/arithmetic. Uses _ranked_cast + memref.store.
+        """
+        ptr_v, ptr_t = self._gen_expr(node.args[0])
+        idx_v, _ = self._gen_expr(node.args[1])
+        val_v, val_t = self._gen_expr(node.args[2])
+        if val_t.startswith("vector<"):
+            raise TypeError(
+                f"sstore expects a scalar value, got vector '{val_t}'. "
+                f"Use vstore(ptr, idx, vec) for a VL-wide vector write."
+            )
+        store_v, _ = self._ranked_cast(ptr_v, ptr_t)
+        self._b.create_memref_store(val_v, store_v, [idx_v])
 
     # ------------------------------------------------------------------
     # vpack

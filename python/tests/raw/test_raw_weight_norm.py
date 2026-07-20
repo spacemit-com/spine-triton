@@ -44,7 +44,7 @@ def weight_norm_kernel(
     g = tle.sqrt(tle.vreduce_sum(acc_sq))   # L2 norm (scalar)
     inv_g = tle.rsqrt(tle.vreduce_sum(acc_sq))   # 1/g
 
-    tle.vstore(g_out, row, g)
+    tle.sstore(g_out, row, g)
 
     # Normalize and write W_norm
     for i in tle.range(0, Nfloor, nvl):

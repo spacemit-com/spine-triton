@@ -56,7 +56,7 @@ def argmax_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index)
     big = tle.vzero(f32) + INF_IDX
     masked = tle.select(is_max, best_idx, big)  # keep idx where max, else +INF
     argmax = tle.vreduce_min(masked)            # smallest index with max value
-    tle.vstore(out, 0, argmax)
+    tle.sstore(out, 0, argmax)
 
 
 @triton.jit
@@ -104,7 +104,7 @@ def argmin_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index)
     big = tle.vzero(f32) + INF_IDX
     masked = tle.select(is_min, best_idx, big)
     argmin = tle.vreduce_min(masked)
-    tle.vstore(out, 0, argmin)
+    tle.sstore(out, 0, argmin)
 
 
 @triton.jit

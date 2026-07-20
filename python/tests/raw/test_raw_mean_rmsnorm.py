@@ -33,7 +33,7 @@ def mean_1d_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), N: tle.index):
         tx = tle.cast(tle.vload(X, i), f32)
         acc = acc + tx
     s = tle.vreduce_sum(acc)
-    tle.vstore(out, 0, s / N)      # ← L0: f32 scalar / index
+    tle.sstore(out, 0, s / N)      # ← L0: f32 scalar / index
 
 
 @triton.jit

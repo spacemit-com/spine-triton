@@ -74,10 +74,10 @@ def mv_block_style2(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
             acc1 = tle.vmacc(acc1, tb1, ta)
             acc2 = tle.vmacc(acc2, tb2, ta)
             acc3 = tle.vmacc(acc3, tb3, ta)
-        tle.vstore(C, ni, tle.vreduce_sum(acc0))
-        tle.vstore(C, ni + 1, tle.vreduce_sum(acc1))
-        tle.vstore(C, ni + 2, tle.vreduce_sum(acc2))
-        tle.vstore(C, ni + 3, tle.vreduce_sum(acc3))
+        tle.sstore(C, ni, tle.vreduce_sum(acc0))
+        tle.sstore(C, ni + 1, tle.vreduce_sum(acc1))
+        tle.sstore(C, ni + 2, tle.vreduce_sum(acc2))
+        tle.sstore(C, ni + 3, tle.vreduce_sum(acc3))
 
 
 @triton.jit(do_not_specialize=["K", "N"])
@@ -132,10 +132,10 @@ def mv_block_style3(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
             acc1 = tle.vmacc(acc1, tb1, ta)
             acc2 = tle.vmacc(acc2, tb2, ta)
             acc3 = tle.vmacc(acc3, tb3, ta)
-        tle.vstore(C, ni, tle.vreduce_sum(acc0))
-        tle.vstore(C, ni + 1, tle.vreduce_sum(acc1))
-        tle.vstore(C, ni + 2, tle.vreduce_sum(acc2))
-        tle.vstore(C, ni + 3, tle.vreduce_sum(acc3))
+        tle.sstore(C, ni, tle.vreduce_sum(acc0))
+        tle.sstore(C, ni + 1, tle.vreduce_sum(acc1))
+        tle.sstore(C, ni + 2, tle.vreduce_sum(acc2))
+        tle.sstore(C, ni + 3, tle.vreduce_sum(acc3))
 
 
 @triton.jit(do_not_specialize=["K", "N"])

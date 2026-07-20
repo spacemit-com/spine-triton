@@ -33,7 +33,7 @@ def block_sum_kernel(X: tle.mem(f32), block_sums: tle.mem(f32, out=True),
     nvl = tle.vconfig(-1, 1)
     base = p * nvl
     vx = tle.vload(X, base, dtype=f32)
-    tle.vstore(block_sums, p, tle.vreduce_sum(vx))
+    tle.sstore(block_sums, p, tle.vreduce_sum(vx))
 
 @triton.jit
 def block_sum_host(X, block_sums, N, P):
@@ -49,8 +49,8 @@ def prefix_offset_kernel(block_sums: tle.mem(f32), offsets: tle.mem(f32, out=Tru
     nvl = tle.vconfig(-1, 1)
     acc = tle.vreduce_sum(tle.vzero(f32))   # 0.0 — exclusive: offsets[p] = sum(0..p-1)
     for i in tle.range(0, P, 1):
-        tle.vstore(offsets, i, acc)          # write BEFORE adding
-        s = tle.vscalar(block_sums, i, dtype=f32)
+        tle.sstore(offsets, i, acc)          # write BEFORE adding
+        s = tle.sload(block_sums, i, dtype=f32)
         acc = acc + s
 
 @triton.jit
@@ -65,12 +65,12 @@ def apply_prefix_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True),
                         N: tle.index, p: tle.index):
     nvl = tle.vconfig(-1, 1)
     base = p * nvl
-    offset = tle.vscalar(offsets, p, dtype=f32)
+    offset = tle.sload(offsets, p, dtype=f32)
     acc = tle.vreduce_sum(tle.vzero(f32))   # 0.0 scalar
     for j in tle.range(0, nvl, 1):
-        xi = tle.vscalar(X, base + j, dtype=f32)
+        xi = tle.sload(X, base + j, dtype=f32)
         acc = acc + xi
-        tle.vstore(out, base + j, acc + offset)
+        tle.sstore(out, base + j, acc + offset)
 
 @triton.jit
 def apply_prefix_host(X, out, offsets, N, P):

@@ -66,7 +66,7 @@ vreduce_sum = _SpineRawBuiltin("vreduce_sum")  # vreduce_sum(vec) → scalar
 vreduce_max = _SpineRawBuiltin("vreduce_max")  # vreduce_max(vec) → scalar  (vector.reduction<maxf/maxsi>)
 vreduce_min = _SpineRawBuiltin("vreduce_min")  # vreduce_min(vec) → scalar  (vector.reduction<minf/minsi>)
 vreduce_mul = _SpineRawBuiltin("vreduce_mul")  # vreduce_mul(vec) → scalar  (vector.reduction<mul>)
-vstore = _SpineRawBuiltin("vstore")  # vstore(ptr, idx_tuple, scalar | vec) → memref.store / transfer_write
+vstore = _SpineRawBuiltin("vstore")  # vstore(ptr, idx, vec) → transfer_write (vector only, width = VL; use sstore for scalars)
 alloc = _SpineRawBuiltin("alloc")  # alloc(shape_tuple, dtype) → memref.alloc
 pack = _SpineRawBuiltin("pack")  # pack(src, src_idx, dst, dst_shape) → pack rows (写法3)
 vpack = _SpineRawBuiltin("vpack")  # vpack(v, group_len) → vector_ext.group_interleave → 多条 smt.vpack.vv (cube 交织, vector<b×N>→<(b/2)×2N>)
@@ -82,7 +82,8 @@ sqrt = _SpineRawBuiltin("sqrt")  # sqrt(a) → √a → math.sqrt
 rsqrt = _SpineRawBuiltin("rsqrt")  # rsqrt(a) → 1/√a → math.rsqrt
 vexp = _SpineRawBuiltin("vexp")  # vexp(a)  → eˣ  → math.exp  (vector or scalar)
 vlog = _SpineRawBuiltin("vlog")  # vlog(a)  → ln(a) → math.log (vector or scalar)
-vscalar = _SpineRawBuiltin("vscalar")  # vscalar(ptr, idx, dtype=f32) → scalar load from ptr[idx]
+sload = _SpineRawBuiltin("sload")  # sload(ptr, idx, dtype=f32) → scalar load from ptr[idx] (s-prefix = scalar, no VL)
+sstore = _SpineRawBuiltin("sstore")  # sstore(ptr, idx, scalar) → scalar store to ptr[idx] (s-prefix = scalar, no VL)
 viota = _SpineRawBuiltin("viota")  # viota() → vector<VLxindex> [0,1,..,VL-1] (vector.step), for argmax index tracking
 abs = _SpineRawBuiltin("abs")  # abs(a) → |a| → math.absf / absi  # noqa: A001 (shadows builtin intentionally)
 cast = _SpineRawBuiltin("cast")  # cast(a, dtype) → 类型转换 → arith.extf/truncf/sitofp/fptosi/extsi/trunci

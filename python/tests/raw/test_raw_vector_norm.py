@@ -5,7 +5,7 @@
   linf_norm(x) = max(|x|)
   normalize(x) = x / l2_norm(x)
 
-All reuse existing primitives (vreduce_sum/max, abs, sqrt, rsqrt, vscalar).
+All reuse existing primitives (vreduce_sum/max, abs, sqrt, rsqrt, sload).
 No new codegen — pure kernel composition.
 """
 import torch
@@ -36,7 +36,7 @@ def l2_norm_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
         nvl_t = tle.vconfig(N - i, 1)
         tx = tle.vload(X, i, dtype=f32)
         acc = acc + tx * tx
-    tle.vstore(out, 0, tle.sqrt(tle.vreduce_sum(acc)))
+    tle.sstore(out, 0, tle.sqrt(tle.vreduce_sum(acc)))
 
 
 @triton.jit
@@ -59,7 +59,7 @@ def l1_norm_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
         nvl_t = tle.vconfig(N - i, 1)
         tx = tle.vload(X, i, dtype=f32)
         acc = acc + tle.abs(tx)
-    tle.vstore(out, 0, tle.vreduce_sum(acc))
+    tle.sstore(out, 0, tle.vreduce_sum(acc))
 
 
 @triton.jit
@@ -82,7 +82,7 @@ def linf_norm_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index)
         nvl_t = tle.vconfig(N - i, 1)
         tx = tle.vload(X, i, dtype=f32)
         acc = tle.vmax(acc, tle.abs(tx))
-    tle.vstore(out, 0, tle.vreduce_max(acc))
+    tle.sstore(out, 0, tle.vreduce_max(acc))
 
 
 @triton.jit

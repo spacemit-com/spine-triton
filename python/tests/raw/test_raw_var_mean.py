@@ -51,8 +51,8 @@ def var_mean_1d_kernel(
     ex2  = tle.vreduce_sum(acc_sq)  / N        # E[x²]
     var  = ex2 - mean * mean                   # Var(x) = E[x²] - mean²
 
-    tle.vstore(var_out,  0, var)
-    tle.vstore(mean_out, 0, mean)
+    tle.sstore(var_out,  0, var)
+    tle.sstore(mean_out, 0, mean)
 
 
 @triton.jit

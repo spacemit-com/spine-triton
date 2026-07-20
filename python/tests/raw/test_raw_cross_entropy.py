@@ -3,7 +3,7 @@
 kernel: loss = -log_softmax[target]
              = log(sum(exp(x - max))) + max - x[target]
 
-Uses: vreduce_max + vexp + vreduce_sum + vlog + vscalar (all available primitives).
+Uses: vreduce_max + vexp + vreduce_sum + vlog + sload (all available primitives).
 Single scalar output — no output vector materialization.
 """
 import torch
@@ -49,9 +49,9 @@ def cross_entropy_1d_kernel(
     denom = tle.vreduce_sum(acc_sum)
 
     # ── 单元素提取 + 计算 loss ─────────────────────────────────────────────
-    xt = tle.vscalar(X, target, dtype=f32)   # vscalar: scalar load at dynamic idx
+    xt = tle.sload(X, target, dtype=f32)   # sload: scalar load at dynamic idx
     loss = tle.vlog(denom) + xmax - xt       # = -log_softmax[target]
-    tle.vstore(out, 0, loss)
+    tle.sstore(out, 0, loss)
 
 
 @triton.jit

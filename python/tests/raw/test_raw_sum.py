@@ -50,7 +50,7 @@ def sum_1d_kernel(
         acc = acc + tx_f32
 
     # Reduce and store
-    tle.vstore(out, 0, tle.vreduce_sum(acc))
+    tle.sstore(out, 0, tle.vreduce_sum(acc))
 
 
 @triton.jit  # Remove do_not_specialize to allow different N values
@@ -104,7 +104,7 @@ def sum_2d_dim1_kernel(
         tx_f32 = tle.cast(tx, f32)
         acc = acc + tx_f32
 
-    tle.vstore(out, row_idx, tle.vreduce_sum(acc))
+    tle.sstore(out, row_idx, tle.vreduce_sum(acc))
 
 
 @triton.jit  # Remove do_not_specialize to allow different M, N values

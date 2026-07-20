@@ -48,8 +48,8 @@ def max_dim1_kernel(
     big = tle.vzero(f32) + INF_IDX
     masked = tle.select(is_max, best_idx, big)
     argmax = tle.vreduce_min(masked)
-    tle.vstore(vals, row, gmax)
-    tle.vstore(idxs, row, argmax)
+    tle.sstore(vals, row, gmax)
+    tle.sstore(idxs, row, argmax)
 
 
 @triton.jit
@@ -106,8 +106,8 @@ def min_dim1_kernel(
     big = tle.vzero(f32) + INF_IDX
     masked = tle.select(is_min, best_idx, big)
     argmin = tle.vreduce_min(masked)
-    tle.vstore(vals, row, gmin)
-    tle.vstore(idxs, row, argmin)
+    tle.sstore(vals, row, gmin)
+    tle.sstore(idxs, row, argmin)
 
 
 @triton.jit

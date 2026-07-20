@@ -32,7 +32,7 @@ def mean_dim1_kernel(
         nvl_t = tle.vconfig(N - i, 1)
         tx = tle.vload(X, base + i, dtype=f32)
         acc = acc + tx
-    tle.vstore(out, row, tle.vreduce_sum(acc) / N)
+    tle.sstore(out, row, tle.vreduce_sum(acc) / N)
 
 
 @triton.jit
