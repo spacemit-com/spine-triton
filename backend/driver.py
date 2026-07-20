@@ -273,6 +273,8 @@ PyMODINIT_FUNC PyInit___spine_triton_kernel_launcher(void) {{
 }}
 """
 
+
+def compile_module(src, name, kernel_name=None):
     py_version = sys.version_info
     cpu_arch = get_cpu_arch()
     py_include_dir = os.path.join(
