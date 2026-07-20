@@ -81,24 +81,26 @@ def _generate_launcher(constants, signature, smt_parallel_inside=False, kernel_n
     args_list = (", " + ", ".join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else "")
 
     # New spert::Stream::launch ABI: kernel first param is spert::Context*,
-    # followed by user args (ptr→StridedMemRefType*), then 3 i32 num_programs.
-    # No trampoline, no SpineKernelArgs — Stream::launch variadic template
-    # perfectly forwards all args.
+    # followed by user args, then 3 i32 num_programs. IMPORTANT: an unranked
+    # memref (`*xTy`) lowers to TWO ABI params — (int64_t rank, void* descriptor)
+    # — so each pointer arg must be declared/passed as `int64_t, void*` and
+    # `0, &ptr_argN`, exactly like the pre-spert kernel_ptr_t. Stream::launch
+    # variadic-forwards them; the rank int64 + descriptor ptr reach the kernel.
     kernel_arg_decls = "spert::Context* ctx"
     if signature:
         kernel_arg_decls += ", "
         kernel_arg_decls += ", ".join(
-            _ty_to_cpp(ty) if ty[0] != "*" else "StridedMemRefType<char, 0>*"
+            _ty_to_cpp(ty) if ty[0] != "*" else "int64_t, void*"
             for i, ty in signature.items() if ty != "constexpr")
     kernel_arg_decls += ", int, int, int"  # num_programs x/y/z
 
-    # _launch call params: &ptr_arg for pointers, casted scalars, then gridX/Y/Z
+    # _launch call params: (0, &ptr_arg) for pointers, casted scalars, then grid
     ptr_decls = "\n  ".join(
         f"StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};"
         for i, ty in signature.items() if ty != "constexpr" and ty[0] == "*")
 
     launch_args = ", ".join(
-        (f"&ptr_arg{i}" if ty[0] == "*" else f"static_cast<{_ty_to_cpp(ty)}>(arg{i})")
+        (f"static_cast<int64_t>(0), &ptr_arg{i}" if ty[0] == "*" else f"static_cast<{_ty_to_cpp(ty)}>(arg{i})")
         for i, ty in signature.items() if ty != "constexpr")
     if launch_args:
         launch_args += ", "
