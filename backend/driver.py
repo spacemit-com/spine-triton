@@ -211,7 +211,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   PyObject *kernel_metadata = NULL;
   PyObject *_function = NULL;
   uint64_t _stream;
-  {", ".join([f"PyObject* _arg{i}" for i, ty in signature.items()])}
+  {" ".join([f"{_extracted_type(ty)} _arg{i};" for i, ty in signature.items()])}
   if (!PyArg_ParseTuple(args, \"{format}\", &gridX, &gridY, &gridZ, &_stream, &_function,
                                            &kernel_metadata, &launch_metadata,
                                            &launch_enter_hook, &launch_exit_hook {args_list})) {{
@@ -232,7 +232,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
 
   // raise exception asap
   {"".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])}
-  _launch(gridX, gridY, gridZ, kernel_ptr, {"".join([f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}" for i, ty in signature.items()])});
+  _launch(gridX, gridY, gridZ, kernel_ptr, {", ".join([f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}" for i, ty in signature.items()])});
   if (PyErr_Occurred()) {{
     return NULL;
   }}
