@@ -71,7 +71,7 @@ def _format_of(ty):
 
 
 
-def _generate_launcher(constants, signature, smt_parallel_inside=False, kernel_name="unknown_kernel"):
+def _generate_launcher(constants, signature, kernel_name="unknown_kernel"):
     # Check if kernel-level proton capture is enabled at compile time
     enable_proton_kernel_capture = os.environ.get("PROTON_KERNEL_CAPTURE", "0") != "0"
 
@@ -105,9 +105,6 @@ def _generate_launcher(constants, signature, smt_parallel_inside=False, kernel_n
     if launch_args:
         launch_args += ", "
     launch_args += "gridX, gridY, gridZ"
-
-    smt_parallel_inside_arg = "constexpr bool smt_parallel_inside = {};".format(
-        "true" if smt_parallel_inside else "false")
 
     return f"""
 #include <assert.h>
@@ -183,8 +180,6 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
 constexpr const char* KERNEL_NAME = "{kernel_name}";
 
 static void _launch(int gridX, int gridY, int gridZ, kernel_ptr_t kernel_ptr, {arg_decls}) {{
-  {smt_parallel_inside_arg}
-  (void)smt_parallel_inside;
   if (gridX*gridY*gridZ <= 0) return;
   {'// Auto kernel capture: record kernel entry' if enable_proton_kernel_capture else ''}
   {'proton_enter_kernel(KERNEL_NAME, gridX, gridY, gridZ);' if enable_proton_kernel_capture else ''}
@@ -409,10 +404,9 @@ class CPULauncher(object):
 
         constants = {cst_key(key): value for key, value in constants.items()}
         signature = {cst_key(key): value for key, value in src.signature.items()}
-        smt_parallel_inside = metadata.smt_parallel_inside
         # Get kernel name for auto proton capture
         kernel_name = src.fn.__name__ if hasattr(src, 'fn') and hasattr(src.fn, '__name__') else "unknown_kernel"
-        launcher_src = _generate_launcher(constants, signature, smt_parallel_inside, kernel_name)
+        launcher_src = _generate_launcher(constants, signature, kernel_name)
         mod = compile_module(launcher_src, "__spine_triton_kernel_launcher", kernel_name=kernel_name)
         self.launch = mod.launch
 

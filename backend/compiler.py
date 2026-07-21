@@ -29,7 +29,6 @@ from . import (
 def _ttir_to_linalgdir(mod, metadata):
     # Get Triton-MLIR as string
     ttir_code = str(mod)
-    metadata["smt_parallel_inside"] = ("bind_sub_block = true" in ttir_code)
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, "tt.mlir")
         dst_path = os.path.join(tmpdir, "linalg.mlir")
@@ -63,7 +62,7 @@ def _spine_mlir_linalgdir_to_llir_ref(linalgdir: str, metadata):
 
         pipeline_option_str = get_spine_mlir_opt_options()
         if pipeline_option_str == "":
-            pipeline_option_str = "enable-always-tls={}".format("0" if metadata["smt_parallel_inside"] else "1")
+            pipeline_option_str = "enable-always-tls=1"
 
         cmd_str = '{} {} --spine-triton-e2e-ref-pipeline="{}" -o {}'.format(spine_mlir_path, linalg_path,
                                                                             pipeline_option_str, llmlir_path)
@@ -89,8 +88,7 @@ def _spine_mlir_linalgdir_to_llir(linalgdir: str, metadata):
 
         pipeline_option_str = get_spine_mlir_opt_options()
         if pipeline_option_str == "":
-            pipeline_option_str = "enable-always-tls={} enable-fuse-group=false".format(
-                "0" if metadata["smt_parallel_inside"] else "1")
+            pipeline_option_str = "enable-always-tls=1 enable-fuse-group=false"
 
         cmd_str = '{} {} --spine-triton-e2e-pipeline="{}" -o {}'.format(spine_mlir_path, linalg_path,
                                                                         pipeline_option_str, llmlir_path)

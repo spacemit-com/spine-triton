@@ -64,4 +64,31 @@ def XSMTAsync_MBarrierWaitOp : XSMTAsync_Op<"mbarrier_wait", [
   );
 }
 
+def XSMTAsync_GridOp : XSMTAsync_Op<"grid", [Pure]> {
+  let summary = "Get the program_id of the current tile along an axis";
+  let description = [{
+    Returns the program_id (tile index) of the currently executing tile along
+    the given launch-grid `axis` (an i64 operand: 0, 1, or 2) as an i64.
+
+    This op is intentionally ctx-free at the linalg level: the spert per-tile
+    Context handle is NOT threaded here. spine-mlir lowers this op to a
+    `spine_grid(ctx, axis)` runtime call, supplying the ctx it prepends as
+    kernel arg0 itself.
+
+    ABI must match spine-mlir-main's midend xsmt_async.grid (axis as an i64
+    operand, generic textual form) so the dumped linalg IR round-trips through
+    spine-opt:
+    ```mlir
+    %id = "xsmt_async.grid"(%axis) : (i64) -> i64
+    ```
+  }];
+
+  let arguments = (ins I64:$axis);
+  let results = (outs I64:$id);
+
+  let builders = [
+    OpBuilder<(ins "Value":$axis)>
+  ];
+}
+
 #endif // XSMTASYNC_OPS

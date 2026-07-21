@@ -11,6 +11,8 @@
 #include "triton-shared/Conversion/TritonArithToLinalg/TritonArithToLinalg.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
+#include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
 #include "triton-shared/Utils/Utils.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -53,43 +55,9 @@ class TritonArithToLinalgPass
   static unsigned int constexpr TRITON_PROGRAM_INFO_ARG_COUNT =
       LAUNCH_GRID_RANK;
 
-  // Prepend an i64 "ctx" argument (spert per-tile Context handle) as arg0.
-  // In the spert ABI every kernel receives this handle first; program_id and
-  // TCM allocation are obtained by calling runtime helpers with it. The entry
-  // ctx arg0 is produced here (spine-mlir-main never inserts it, it only reads
-  // funcOp.getArgument(0)).
-  static void addContextArg(triton::FuncOp func) {
-    OpBuilder b(func);
-    auto ctx = b.getContext();
-    auto i64Ty = b.getI64Type();
-
-    auto origFuncType = func.getFunctionType();
-    auto origInputTypes = origFuncType.getInputs();
-    SmallVector<Type> newInputTypes;
-    newInputTypes.push_back(i64Ty);
-    newInputTypes.append(origInputTypes.begin(), origInputTypes.end());
-
-    auto newFuncType =
-        b.getFunctionType(newInputTypes, origFuncType.getResults());
-    func.setFunctionType(newFuncType);
-
-    // Shift all existing arg attrs right by one so a ptr's tt.divisibility
-    // stays aligned with its (now +1) argument index. ReconcileLlvmPtrCastsPass
-    // reads ptr arg attrs by index; without this shift divisibility lands on
-    // the wrong argument. The ctx slot gets an empty attr dictionary.
-    if (func.getAllArgAttrs()) {
-      SmallVector<DictionaryAttr> argAttrs;
-      func.getAllArgAttrs(argAttrs);
-      argAttrs.insert(argAttrs.begin(), DictionaryAttr::get(ctx, {}));
-      func.setAllArgAttrs(argAttrs);
-    }
-
-    // Insert the block argument at position 0 of the entry block.
-    func.getBody().front().insertArgument(0u, i64Ty, func.getLoc());
-  }
-
   // Add num_programs tail arguments (one i32 per launch grid axis). program_id
-  // is no longer passed as arguments; it is fetched via spine_grid(ctx, axis).
+  // is no longer passed as arguments; it is emitted as a ctx-free
+  // xsmt.program_id op (lowered to spine_grid(ctx, axis) by spine-mlir).
   static void addProgramInfo(triton::FuncOp func) {
     OpBuilder b(func);
 
@@ -137,7 +105,8 @@ public:
                 linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
                 tensor::TensorDialect, bufferization::BufferizationDialect,
                 triton::TritonDialect, ttx::TritonTilingExtDialect,
-                tts::TritonStructuredDialect, mlir::LLVM::LLVMDialect>();
+                tts::TritonStructuredDialect, xsmt::XSMTDialect,
+                xsmt_async::XSMTAsyncDialect, mlir::LLVM::LLVMDialect>();
   }
 
   void runOnOperation() override {
@@ -159,7 +128,8 @@ public:
         linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
         cf::ControlFlowDialect, tensor::TensorDialect,
         bufferization::BufferizationDialect, memref::MemRefDialect,
-        ttx::TritonTilingExtDialect, tts::TritonStructuredDialect>();
+        ttx::TritonTilingExtDialect, tts::TritonStructuredDialect,
+        xsmt::XSMTDialect, xsmt_async::XSMTAsyncDialect>();
 
     target.addLegalOp<ModuleOp>();
 
@@ -237,9 +207,10 @@ public:
 
     if (pidsToFuncArgs) {
       for (auto func : getOperation().getOps<triton::FuncOp>()) {
-        // spert ABI: prepend i64 ctx arg0 (per-tile Context handle) and append
-        // num_programs tail args. program_id is fetched via spine_grid(ctx).
-        addContextArg(func);
+        // spert ABI: append num_programs tail args (one i32 per axis). We no
+        // longer prepend an i64 ctx arg0 here — spine-mlir prepends the per-tile
+        // Context handle as arg0 itself. program_id is emitted as a ctx-free
+        // xsmt.program_id op (lowered to spine_grid(ctx, axis) by spine-mlir).
         addProgramInfo(func);
       }
     }
@@ -276,6 +247,11 @@ public:
             func::FuncOp::create(builder, func.getLoc(), name, type);
         funcFunc.setAllArgAttrs(argAttrs);
         funcFunc.setAllResultAttrs(resAttrs);
+        // spert ABI: mark the kernel as requiring the per-tile runtime Context.
+        // spine-mlir's SpeRTtoLLVM (getRuntimeContext) gates ctx-arg0 handling
+        // on this attribute; the backend supplies/binds the ctx accordingly so
+        // xsmt_async.grid -> spert.grid -> spine_grid(ctx, axis) can resolve.
+        funcFunc->setAttr("__require_context__", builder.getUnitAttr());
 
         auto &funcFuncBody = funcFunc.getBody();
         auto &funcBody = func.getBody();

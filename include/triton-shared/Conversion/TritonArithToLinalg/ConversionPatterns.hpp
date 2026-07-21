@@ -18,6 +18,9 @@
 #include "triton-shared/Utils/Utils.h"
 
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
+#include "triton-shared/Dialect/XSMT/IR/XSMTOps.h"
+#include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
+#include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -959,46 +962,23 @@ struct MakeRangeConverter : public OpConversionPattern<triton::MakeRangeOp> {
   }
 };
 
-// Declare the external spert runtime symbol `spine_grid(i64 ctx, i64 axis)
-// -> i64`, which returns the program_id of the current tile along `axis`.
-// ctx is the per-tile Context handle passed as kernel arg0.
-static LLVM::LLVMFuncOp getOrAddSpineGridDecl(ConversionPatternRewriter &rewriter,
-                                              ModuleOp moduleOp) {
-  StringRef funcName = "spine_grid";
-  if (auto existing = moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
-    return existing;
-
-  auto ctx = rewriter.getContext();
-  auto i64Type = IntegerType::get(ctx, 64);
-  auto funcType = LLVM::LLVMFunctionType::get(i64Type, {i64Type, i64Type},
-                                              /*isVarArg=*/false);
-
-  OpBuilder::InsertionGuard guard(rewriter);
-  rewriter.setInsertionPointToStart(moduleOp.getBody());
-  auto fn = LLVM::LLVMFuncOp::create(rewriter, UnknownLoc::get(ctx), funcName,
-                                     funcType);
-  fn.setLinkage(LLVM::Linkage::External);
-  return fn;
-}
-
-// Emit `spine_grid(ctx, axis)` and truncate the i64 result to i32 (Triton
-// program_id / num_programs are i32). ctx = func arg0 (the spert Context
-// handle prepended by addContextArg in TritonArithToLinalgPass).
-static Value emitSpineGridPid(ConversionPatternRewriter &rewriter, Location loc,
-                              ModuleOp moduleOp, FunctionOpInterface func,
-                              uint32_t axis) {
+// Emit `xsmt_async.grid <axis> : i64` and truncate the i64 result to i32
+// (Triton program_id / num_programs are i32). This op is ctx-free at the
+// linalg level: spine-mlir lowers it to `spine_grid(ctx, axis)`, supplying
+// the per-tile Context handle it prepends as kernel arg0 itself. We no longer
+// read a ctx arg0 or emit spine_grid here.
+static Value emitProgramId(ConversionPatternRewriter &rewriter, Location loc,
+                           ModuleOp moduleOp, FunctionOpInterface func,
+                           uint32_t axis) {
   auto ctxCtx = rewriter.getContext();
   auto i64Type = IntegerType::get(ctxCtx, 64);
   auto i32Type = IntegerType::get(ctxCtx, 32);
 
-  Value ctxArg = func.getArgument(0);
+  // axis is an i64 operand (matches spine-mlir-main midend xsmt_async.grid).
   Value axisVal = arith::ConstantOp::create(
       rewriter, loc, i64Type, rewriter.getI64IntegerAttr(axis));
-
-  auto gridFn = getOrAddSpineGridDecl(rewriter, moduleOp);
-  auto call = LLVM::CallOp::create(rewriter, loc, gridFn,
-                                   ValueRange{ctxArg, axisVal});
-  Value pid64 = call.getResult();
+  auto pidOp = xsmt_async::GridOp::create(rewriter, loc, axisVal);
+  Value pid64 = pidOp.getId();
   return arith::TruncIOp::create(rewriter, loc, i32Type, pid64);
 }
 
@@ -1014,9 +994,9 @@ struct AssertConverter : public OpConversionPattern<triton::AssertOp> {
     auto func = op->getParentOfType<FunctionOpInterface>();
 
     // 1. Program IDs via spert runtime: spine_grid(ctx, axis). ctx = arg0.
-    Value pid0 = emitSpineGridPid(rewriter, loc, moduleOp, func, 0);
-    Value pid1 = emitSpineGridPid(rewriter, loc, moduleOp, func, 1);
-    Value pid2 = emitSpineGridPid(rewriter, loc, moduleOp, func, 2);
+    Value pid0 = emitProgramId(rewriter, loc, moduleOp, func, 0);
+    Value pid1 = emitProgramId(rewriter, loc, moduleOp, func, 1);
+    Value pid2 = emitProgramId(rewriter, loc, moduleOp, func, 2);
 
     // 2. Reduce tensor condition to scalar i1 via AND reduction
     Value condVal = op.getCondition();
@@ -2423,7 +2403,7 @@ public:
     // spert ABI: program_id is fetched at runtime via spine_grid(ctx, axis),
     // ctx being the per-tile Context handle passed as kernel arg0. This
     // replaces reading a host-computed i32 tail argument.
-    Value id = emitSpineGridPid(rewriter, op.getLoc(), moduleOp, func, axis);
+    Value id = emitProgramId(rewriter, op.getLoc(), moduleOp, func, axis);
 
     rewriter.replaceOp(op, id);
     return success();
@@ -3708,9 +3688,9 @@ struct PrintOpConverter : public OpConversionPattern<triton::PrintOp> {
     auto func = op->getParentOfType<FunctionOpInterface>();
 
     // Program IDs via spert runtime: spine_grid(ctx, axis). ctx = arg0.
-    Value pid0 = emitSpineGridPid(rewriter, loc, moduleOp, func, 0);
-    Value pid1 = emitSpineGridPid(rewriter, loc, moduleOp, func, 1);
-    Value pid2 = emitSpineGridPid(rewriter, loc, moduleOp, func, 2);
+    Value pid0 = emitProgramId(rewriter, loc, moduleOp, func, 0);
+    Value pid1 = emitProgramId(rewriter, loc, moduleOp, func, 1);
+    Value pid2 = emitProgramId(rewriter, loc, moduleOp, func, 2);
 
     StringRef prefix = op.getPrefix();
     bool hex = op.getHex();
