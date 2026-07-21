@@ -975,8 +975,8 @@ static Value emitProgramId(ConversionPatternRewriter &rewriter, Location loc,
   auto i32Type = IntegerType::get(ctxCtx, 32);
 
   // axis is an i64 operand (matches spine-mlir-main midend xsmt_async.grid).
-  Value axisVal = arith::ConstantOp::create(
-      rewriter, loc, i64Type, rewriter.getI64IntegerAttr(axis));
+  Value axisVal = arith::ConstantOp::create(rewriter, loc, i64Type,
+                                            rewriter.getI64IntegerAttr(axis));
   auto pidOp = xsmt_async::GridOp::create(rewriter, loc, axisVal);
   Value pid64 = pidOp.getId();
   return arith::TruncIOp::create(rewriter, loc, i32Type, pid64);

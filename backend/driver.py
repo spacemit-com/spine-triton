@@ -70,7 +70,6 @@ def _format_of(ty):
     }[ty]
 
 
-
 def _generate_launcher(constants, signature, kernel_name="unknown_kernel"):
     # Check if kernel-level proton capture is enabled at compile time
     enable_proton_kernel_capture = os.environ.get("PROTON_KERNEL_CAPTURE", "0") != "0"
@@ -90,18 +89,19 @@ def _generate_launcher(constants, signature, kernel_name="unknown_kernel"):
     if signature:
         kernel_arg_decls += ", "
         kernel_arg_decls += ", ".join(
-            _ty_to_cpp(ty) if ty[0] != "*" else "int64_t, void*"
-            for i, ty in signature.items() if ty != "constexpr")
+            _ty_to_cpp(ty) if ty[0] != "*" else "int64_t, void*" for i, ty in signature.items() if ty != "constexpr")
     kernel_arg_decls += ", int, int, int"  # num_programs x/y/z
 
     # _launch call params: (0, &ptr_arg) for pointers, casted scalars, then grid
     ptr_decls = "\n  ".join(
         f"StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};"
-        for i, ty in signature.items() if ty != "constexpr" and ty[0] == "*")
+        for i, ty in signature.items()
+        if ty != "constexpr" and ty[0] == "*")
 
     launch_args = ", ".join(
         (f"static_cast<int64_t>(0), &ptr_arg{i}" if ty[0] == "*" else f"static_cast<{_ty_to_cpp(ty)}>(arg{i})")
-        for i, ty in signature.items() if ty != "constexpr")
+        for i, ty in signature.items()
+        if ty != "constexpr")
     if launch_args:
         launch_args += ", "
     launch_args += "gridX, gridY, gridZ"

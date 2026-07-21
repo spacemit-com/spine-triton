@@ -208,9 +208,10 @@ public:
     if (pidsToFuncArgs) {
       for (auto func : getOperation().getOps<triton::FuncOp>()) {
         // spert ABI: append num_programs tail args (one i32 per axis). We no
-        // longer prepend an i64 ctx arg0 here — spine-mlir prepends the per-tile
-        // Context handle as arg0 itself. program_id is emitted as a ctx-free
-        // xsmt.program_id op (lowered to spine_grid(ctx, axis) by spine-mlir).
+        // longer prepend an i64 ctx arg0 here — spine-mlir prepends the
+        // per-tile Context handle as arg0 itself. program_id is emitted as a
+        // ctx-free xsmt.program_id op (lowered to spine_grid(ctx, axis) by
+        // spine-mlir).
         addProgramInfo(func);
       }
     }
