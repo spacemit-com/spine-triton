@@ -113,6 +113,8 @@ build-rpc-runtime:
     - 92_12_host
   variables:
     GIT_SUBMODULE_STRATEGY: recursive
+    # CI runner 无权访问 ai/Arch/spine-runtime.git，排除该嵌套子模块避免递归拉取失败
+    GIT_SUBMODULE_PATHS: ':(exclude)third_party/spine-mlir/thirdparty/spine-runtime'
     CROSS_TOOLCHAIN_PATH: $DEFAULT_RISCV_ROOT_PATH
   script:
     - |
@@ -145,6 +147,8 @@ build-x86:
     - 92_12_host
   variables:
     GIT_SUBMODULE_STRATEGY: recursive
+    # CI runner 无权访问 ai/Arch/spine-runtime.git，排除该嵌套子模块避免递归拉取失败
+    GIT_SUBMODULE_PATHS: ':(exclude)third_party/spine-mlir/thirdparty/spine-runtime'
     MAX_JOBS: "16"
     TRITON_PARALLEL_LINK_JOBS: "2"
   before_script:
@@ -205,6 +209,9 @@ test-spine-triton-integration:
   tags:
     - 92_12_host
   variables:
+    GIT_SUBMODULE_STRATEGY: recursive
+    # CI runner 无权访问 ai/Arch/spine-runtime.git，排除该嵌套子模块避免递归拉取失败
+    GIT_SUBMODULE_PATHS: ':(exclude)third_party/spine-mlir/thirdparty/spine-runtime'
     CROSS_TOOLCHAIN_PATH: $DEFAULT_RISCV_ROOT_PATH
     QEMU_PATH: /home/share/nfs_share/ci-node-compiler-env/jdsk-qemu-static-0.0.9_s2/qemu-riscv64-static
     QEMU_SYSROOT: /home/share/nfs_share/ci-node-compiler-env/spacemit-toolchain-linux-glibc-x86_64-v1.2.4/sysroot
