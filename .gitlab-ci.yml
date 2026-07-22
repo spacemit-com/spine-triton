@@ -233,7 +233,7 @@ test-spine-triton-integration:
       export PYTHONPATH=$ST_DIR/build-x86_64:$PYTHONPATH
       export SPINE_TRITON_CROSS_TOOLCHAIN=$CROSS_TOOLCHAIN_PATH
       export SPINE_TRITON_TARGET_ARCH=riscv64
-      export SPACEMIT_EP_QEMU_SET_CORE_ARCH="0xF000"
+      export SPACEMIT_EP_QEMU_SET_CORE_ARCH="0xA064"
       export SPINE_TRITON_RPC_HOST=localhost
       export SPINE_TRITON_RPC_PORT=$RPC_PORT
       export SPINE_TRITON_DUMP_PATH=$CI_PROJECT_DIR/rpc_ir_dump
