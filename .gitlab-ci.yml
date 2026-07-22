@@ -78,19 +78,21 @@ build-spine-mlir:
   tags:
     - 92_12_host
   variables:
-    GIT_SUBMODULE_STRATEGY: recursive
+    GIT_SUBMODULE_STRATEGY: normal
     MAX_JOBS: "16"
   script:
     - |
       set -e
       cd third_party/spine-mlir
-      git submodule update --init --recursive
+      # spine-runtime submodule (thirdparty/spine-runtime) 只在 SPEIR_BUILD_RUNTIME=ON 时需要
+      # CI runner 无权访问 ai/Arch/spine-runtime.git，故禁用 runtime 构建
       LLVM_COMMIT_ID="$(tr -d '[:space:]' < LLVM_VERSION)"
       LLVM_INSTALL_PATH=/home/share/nfs_share/llvm-pre-build/llvm-${LLVM_COMMIT_ID}-release-x86
       echo "LLVM_INSTALL_PATH: ${LLVM_INSTALL_PATH}"
       cmake --preset release \
         -DCMAKE_MAKE_PROGRAM="ninja" \
-        -DLLVM_INSTALL_PATH="${LLVM_INSTALL_PATH}"
+        -DLLVM_INSTALL_PATH="${LLVM_INSTALL_PATH}" \
+        -DSPEIR_BUILD_RUNTIME=OFF
       cmake --build --preset release --target install -j${MAX_JOBS}
   artifacts:
     name: spine-mlir-x86-$CI_COMMIT_SHORT_SHA
