@@ -2,3 +2,11 @@
 	path = triton
 	url = https://github.com/triton-lang/triton.git
 	branch = 6cc4505027d7b39fe18a44a7f89085b8babb7400
+[submodule "third_party/spine-mlir"]
+	path = third_party/spine-mlir
+	url = https://gitlab.dc.com:8443/ai/AICompiler/spine-mlir.git
+	branch = main
+[submodule "third_party/spine-triton-rpc-runtime"]
+	path = third_party/spine-triton-rpc-runtime
+	url = https://gitlab.dc.com:8443/ai/AICompiler/spine-triton-rpc-runtime.git
+	branch = master

@@ -16,7 +16,6 @@ include:
 
 
 stages:
-  - trigger-deps
   - build
   - test
 
@@ -68,40 +67,12 @@ lint:
     - python -m pre_commit run --all-files --show-diff-on-failure --color always
 
 
-trigger-spine-mlir:
-  stage: trigger-deps
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_PIPELINE_SOURCE == "web"
-  trigger:
-    project: ai/AICompiler/spine-mlir
-    branch: main
-    strategy: depend
-
-
-trigger-rpc-runtime:
-  stage: trigger-deps
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_PIPELINE_SOURCE == "web"
-    - if: $CI_PIPELINE_SOURCE == "pipeline"
-  trigger:
-    project: ai/AICompiler/spine-triton-rpc-runtime
-    branch: master
-    strategy: depend
-
 
 build-x86:
   extends: .x86-host-ci-env
   stage: build
   needs:
     - job: lint
-      optional: true
-    - job: trigger-spine-mlir
-      optional: true
-    - job: trigger-rpc-runtime
       optional: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
