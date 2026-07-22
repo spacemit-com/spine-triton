@@ -76,7 +76,7 @@ trigger-spine-mlir:
     - if: $CI_PIPELINE_SOURCE == "web"
   trigger:
     project: ai/AICompiler/spine-mlir
-    branch: for-kxy-ame-0.5b
+    branch: main
     strategy: depend
 
 
