@@ -67,6 +67,64 @@ lint:
     - python -m pre_commit run --all-files --show-diff-on-failure --color always
 
 
+build-spine-mlir:
+  extends: .x86-host-ci-env
+  stage: build
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_PIPELINE_SOURCE == "pipeline"
+  tags:
+    - 92_12_host
+  variables:
+    GIT_SUBMODULE_STRATEGY: recursive
+    MAX_JOBS: "16"
+  script:
+    - |
+      set -e
+      cd third_party/spine-mlir
+      git submodule update --init --recursive
+      LLVM_COMMIT_ID="$(tr -d '[:space:]' < LLVM_VERSION)"
+      LLVM_INSTALL_PATH=/home/share/nfs_share/llvm-pre-build/llvm-${LLVM_COMMIT_ID}-release-x86
+      echo "LLVM_INSTALL_PATH: ${LLVM_INSTALL_PATH}"
+      cmake --preset release \
+        -DCMAKE_MAKE_PROGRAM="ninja" \
+        -DLLVM_INSTALL_PATH="${LLVM_INSTALL_PATH}"
+      cmake --build --preset release --target install -j${MAX_JOBS}
+  artifacts:
+    name: spine-mlir-x86-$CI_COMMIT_SHORT_SHA
+    paths:
+      - third_party/spine-mlir/build/release/
+    expire_in: 7 days
+
+
+build-rpc-runtime:
+  extends: .x86-host-ci-env
+  stage: build
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_PIPELINE_SOURCE == "pipeline"
+  tags:
+    - 92_12_host
+  variables:
+    GIT_SUBMODULE_STRATEGY: recursive
+    CROSS_TOOLCHAIN_PATH: $DEFAULT_RISCV_ROOT_PATH
+  script:
+    - |
+      set -e
+      cd third_party/spine-triton-rpc-runtime
+      bash scripts/build_riscv64.sh
+      echo "spine-rpc-server built:"
+      file build/riscv64/spine-rpc-server
+  artifacts:
+    name: rpc-runtime-riscv64-$CI_COMMIT_SHORT_SHA
+    paths:
+      - third_party/spine-triton-rpc-runtime/build/riscv64/
+    expire_in: 7 days
+
 
 build-x86:
   extends: .x86-host-ci-env
@@ -74,6 +132,8 @@ build-x86:
   needs:
     - job: lint
       optional: true
+    - job: build-spine-mlir
+      artifacts: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
@@ -97,11 +157,9 @@ build-x86:
       LLVM_DIR=/home/share/nfs_share/llvm-pre-build/llvm-${LLVM_COMMIT_ID}-20260529-release-x86
       echo "LLVM_DIR: $LLVM_DIR"
 
-      SPEIR_BASE=/home/share/nfs_share/ci-builds/ai/AICompiler/spine-mlir
-      SPEIR_PIPELINE_DIR=$(ls -d ${SPEIR_BASE}/[0-9]* 2>/dev/null | sort -t/ -k8 -n | tail -1)
-      SPEIR_DIR=${SPEIR_PIPELINE_DIR}/build-x86
-      if [ -z "$SPEIR_PIPELINE_DIR" ] || [ ! -d "$SPEIR_DIR" ]; then
-        echo "ERROR: no SPEIR build found in ${SPEIR_BASE}"
+      SPEIR_DIR="${CI_PROJECT_DIR}/third_party/spine-mlir/build/release"
+      if [ ! -d "$SPEIR_DIR" ]; then
+        echo "ERROR: spine-mlir artifact not found at ${SPEIR_DIR}"
         exit 1
       fi
       echo "SPEIR_DIR: $SPEIR_DIR"
@@ -140,6 +198,8 @@ test-spine-triton-integration:
   needs:
     - job: build-x86
       artifacts: false
+    - job: build-rpc-runtime
+      artifacts: true
   tags:
     - 92_12_host
   variables:
@@ -161,15 +221,11 @@ test-spine-triton-integration:
       fi
       echo "spine-triton build dir: $ST_DIR"
 
-      RPC_BASE=/home/share/nfs_share/ci-builds/ai/AICompiler/spine-triton-rpc-runtime
-      RPC_PIPE=$(for d in $(ls -d ${RPC_BASE}/[0-9]* 2>/dev/null | sort -t/ -k9 -n -r); do
-                   [ -f "$d/build-riscv64/spine-rpc-server" ] && echo "$d" && break
-                 done)
-      if [ -z "$RPC_PIPE" ]; then
-        echo "ERROR: no rpc-runtime build (with spine-rpc-server) found in ${RPC_BASE}"
+      RPC_DIR="${CI_PROJECT_DIR}/third_party/spine-triton-rpc-runtime/build/riscv64"
+      if [ ! -f "$RPC_DIR/spine-rpc-server" ]; then
+        echo "ERROR: spine-rpc-server not found at ${RPC_DIR}/spine-rpc-server"
         exit 1
       fi
-      RPC_DIR=$RPC_PIPE/build-riscv64
       echo "rpc-runtime build dir: $RPC_DIR"
 
       source /home/gitlab-runner/.triton/bin/activate
