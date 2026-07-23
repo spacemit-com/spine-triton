@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 SpacemiT. All rights reserved.
 # SPDX-License-Identifier: MIT
-"""Mode-1 text emitter: @spine_raw AST → top-level `llvm.func` module TEXT.
+"""LLVM-direct text emitter: @spine_raw AST → top-level `llvm.func` module TEXT.
 
 Unlike SpineMLIRBuilderCodegen (which emits ops via the C++ builder API into a
 `tle.dsl_region` that later inlines into a *func.func* — where LLVM ops trip
 BufferDeallocation's "unknown memory side effects"), this backend produces a
 standalone module whose body is a single top-level `llvm.func`. Pure llvm.func
-is a no-op for BufferDeallocation/ConvertToScalableVector, so it feeds straight
-into `spine-opt --spine-triton-e2e-pipeline` → mlir-translate → llc(riscv64).
+is a no-op for BufferDeallocation/ConvertToScalableVector, so it bypasses
+spine-opt entirely and feeds straight into mlir-translate → llc(riscv64).
 
 ABI (matches build/.../driver.py `_launch`): each memref param is passed as
 `(i64 rank, !llvm.ptr descriptor)`; scalars by value; then 6 trailing i32 =
@@ -32,7 +32,7 @@ from .codegen import _parse_signature
 _DESC = "!llvm.struct<(ptr, ptr, i64)>"
 
 
-class Mode1TextCodegen:
+class LLVMDirectTextCodegen:
     """Walk a @spine_raw fn and emit a top-level `llvm.func` module as text."""
 
     def __init__(self) -> None:
@@ -74,7 +74,7 @@ class Mode1TextCodegen:
         import re
         m = re.search(r'memref<\*x([a-z0-9]+)', mlir_type)
         if not m:
-            raise ValueError(f"mode-1: bad memref type {mlir_type!r}")
+            raise ValueError(f"llvm-direct: bad memref type {mlir_type!r}")
         return m.group(1)
 
     # ------------------------------------------------------------------
@@ -142,7 +142,7 @@ class Mode1TextCodegen:
         elif isinstance(node, (ast.Return, ast.Pass)):
             pass
         else:
-            raise NotImplementedError(f"mode-1: unsupported stmt {ast.dump(node)}")
+            raise NotImplementedError(f"llvm-direct: unsupported stmt {ast.dump(node)}")
 
     def _gen_for(self, node: ast.For) -> None:
         """`for k in tle.range(lb[, ub, step]):` → llvm.br/cond_br loop.
@@ -215,9 +215,9 @@ class Mode1TextCodegen:
             rv, _ = self._gen_expr(node.right)
             opn = {ast.Mult: "mul", ast.Add: "add", ast.Sub: "sub"}.get(type(node.op))
             if opn is None:
-                raise NotImplementedError(f"mode-1: unsupported binop {type(node.op).__name__}")
+                raise NotImplementedError(f"llvm-direct: unsupported binop {type(node.op).__name__}")
             return self._def(f"llvm.{opn} {lv}, {rv} : i64", "i64"), "i64"
-        raise NotImplementedError(f"mode-1: unsupported expr {ast.dump(node)}")
+        raise NotImplementedError(f"llvm-direct: unsupported expr {ast.dump(node)}")
 
     def _const_i64(self, n: int) -> str:
         return self._def(f"llvm.mlir.constant({n} : i64) : i64", "i64")
@@ -232,7 +232,7 @@ class Mode1TextCodegen:
         fname = node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
         h = getattr(self, f"_p_{fname}", None)
         if h is None:
-            raise NotImplementedError(f"mode-1: unsupported primitive {fname!r}")
+            raise NotImplementedError(f"llvm-direct: unsupported primitive {fname!r}")
         return h(node)
 
     # ---- primitive handlers ------------------------------------------
@@ -267,7 +267,7 @@ class Mode1TextCodegen:
         return self._def(rhs, "!llvm.ptr"), "!llvm.ptr"
 
     def _p_llvm_size(self, node):
-        """llvm_size(mem[, dim]) — UNSUPPORTED in the mode-1 driver ABI.
+        """llvm_size(mem[, dim]) — UNSUPPORTED in the llvm-direct driver ABI.
 
         The driver passes memrefs as rank-0 StridedMemRefType descriptors
         {allocated, aligned, offset} with no sizes/strides. There is no dim
@@ -275,7 +275,7 @@ class Mode1TextCodegen:
         (e.g. K: tle.index) and use that for loop bounds instead.
         """
         raise NotImplementedError(
-            "mode-1: llvm_size is unavailable — the driver ABI passes rank-0 "
+            "llvm-direct: llvm_size is unavailable — the driver ABI passes rank-0 "
             "memref descriptors with no shape. Pass sizes as scalar params "
             "(e.g. K: tle.index) and use them for loop bounds.")
 
@@ -309,6 +309,6 @@ class Mode1TextCodegen:
         return self._def(call, rt), rt
 
 
-def emit_mode1_module(fn) -> str:
+def emit_llvm_direct_module(fn) -> str:
     """Convenience: build a fresh codegen and return the module text."""
-    return Mode1TextCodegen().emit_module(fn)
+    return LLVMDirectTextCodegen().emit_module(fn)

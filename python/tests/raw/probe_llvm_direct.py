@@ -1,4 +1,4 @@
-"""Mode-1 probe: full call_intrinsic LLVM-dialect kernel. Dump TTIR to inspect
+"""LLVM-direct probe: full call_intrinsic LLVM-dialect kernel. Dump TTIR to inspect
 structure (does tle.dsl_region carry the LLVM ops correctly?)."""
 import os, torch, triton
 import triton.language as tl
@@ -11,7 +11,7 @@ f16 = tle.f16
 
 
 @tle.raw_kernel
-def mode1_copy(X: tle.mem(f16), out: tle.mem(f16, out=True), N: tle.index):
+def llvm_direct_copy(X: tle.mem(f16), out: tle.mem(f16, out=True), N: tle.index):
     vl = tle.llvm_const(8, "i64")
     pt = tle.llvm_poison("vector<[8]xf16>")
     bx = tle.llvm_base_ptr(X)
@@ -21,15 +21,15 @@ def mode1_copy(X: tle.mem(f16), out: tle.mem(f16, out=True), N: tle.index):
 
 
 @triton.jit
-def mode1_copy_host(X, out, N):
-    _sr_call(mode1_copy, outputs=[], inputs=[X, out, N])
+def llvm_direct_copy_host(X, out, N):
+    _sr_call(llvm_direct_copy, outputs=[], inputs=[X, out, N])
 
 
 if __name__ == "__main__":
     X = torch.arange(8, dtype=torch.float16)
     out = torch.zeros(8, dtype=torch.float16)
     try:
-        mode1_copy_host[(1,)](X, out, 8)
+        llvm_direct_copy_host[(1,)](X, out, 8)
         print("COMPILED OK")
         print("out:", out)
     except Exception as e:

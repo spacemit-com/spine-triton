@@ -82,7 +82,7 @@ _SPINE_RAW_BUILTIN_NAMES = {
     "vreduce_sum", "vreduce_max", "vreduce_min", "vreduce_mul",
     "vstore", "alloc", "pack", "vmadot",
     "vpack", "vbroadcast", "vshape", "spread", "imin", "vmin", "vmax", "sqrt", "rsqrt", "vexp", "vlog", "sload", "sstore", "viota", "abs", "cast", "select",
-    # Mode-1 LLVM-dialect primitives (call_intrinsic full-channel kernels)
+    # LLVM-direct LLVM-dialect primitives (call_intrinsic full-channel kernels)
     "call_intrinsic", "llvm_poison", "llvm_const", "llvm_base_ptr", "llvm_gep", "llvm_size",
 }
 
@@ -938,7 +938,7 @@ class SpineMLIRBuilderCodegen:
         return self._b.create_memref_load(ranked_v, [idx_v]), dtype
 
     # ------------------------------------------------------------------
-    # LLVM-dialect mode-1 primitives (full call_intrinsic kernel)
+    # LLVM-dialect llvm-direct primitives (full call_intrinsic kernel)
     # ------------------------------------------------------------------
 
     def _gen_call_intrinsic(self, node: ast.Call) -> tuple:

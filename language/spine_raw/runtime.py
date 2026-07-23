@@ -25,17 +25,17 @@ class SpineLinalgJITFunction:
         self._fn = fn
         self._body_builder_cache = None   # (param_type_strs, body_builder) | None
         self.__triton_builtin__ = True
-        # Mode-1: mark functions using only llvm_* primitives for direct llvm.func emission
-        self._mode1 = self._detect_mode1(fn)
+        # LLVM-direct: mark functions using only llvm_* primitives for direct llvm.func emission
+        self._llvm_direct = self._detect_llvm_direct(fn)
 
-    def _detect_mode1(self, fn: Callable) -> bool:
-        """Detect if fn uses only mode-1 (llvm_*) primitives by scanning its source."""
+    def _detect_llvm_direct(self, fn: Callable) -> bool:
+        """Detect if fn uses only llvm-direct (llvm_*) primitives by scanning its source."""
         import ast
         import inspect
         try:
             src = inspect.getsource(fn)
             tree = ast.parse(src)
-            # Scan for calls to tle.llvm_* or sr.llvm_* (mode-1 markers)
+            # Scan for calls to tle.llvm_* or sr.llvm_* (llvm-direct markers)
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call):
                     if isinstance(node.func, ast.Attribute):

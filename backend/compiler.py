@@ -128,10 +128,10 @@ def _spine_mlir_linalgdir_to_llir(linalgdir: str, metadata):
         return Path(llir_path).read_text()
 
 
-def _mode1_llvm_to_llir(llvm_module_text: str, metadata):
-    """Mode-1 bypass: llvm.func module → LLVM IR (skip spine-opt, only mlir-translate)."""
+def _llvm_direct_to_llir(llvm_module_text: str, metadata):
+    """LLVM-direct bypass: llvm.func module → LLVM IR (skip spine-opt, only mlir-translate)."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        llmlir_path = os.path.join(tmpdir, "mode1.mlir")
+        llmlir_path = os.path.join(tmpdir, "llvm_direct.mlir")
         llir_path = os.path.join(tmpdir, ".ll")
         Path(llmlir_path).write_text(llvm_module_text)
         mlir_translate_path = get_llvm_bin_path("mlir-translate")
@@ -352,18 +352,18 @@ class CPUBackend(BaseBackend):
         mod.set_attr("tt.arch_id", builder.get_string_attr(arch_id))
         mod.set_attr("tt.force_vector_interleave", builder.get_int32_attr(force_vector_interleave))
 
-        # Mode-1: pick up a pending llvm.func module text stashed by
+        # LLVM-direct: pick up a pending llvm.func module text stashed by
         # spine_raw.call() during make_ir (process-global handoff — see
-        # call_registry.take_pending_mode1_module). None for non-mode-1 kernels.
-        _mode1_text, _mode1_name = None, None
+        # call_registry.take_pending_llvm_direct_module). None for non-llvm-direct kernels.
+        _llvm_direct_text, _llvm_direct_name = None, None
         try:
-            from triton.language.extra.spine_raw.call_registry import take_pending_mode1_module
-            _mode1_text, _mode1_name = take_pending_mode1_module()
-            if _mode1_text:
-                metadata["mode1_llvm_module"] = _mode1_text
-                # Mode-1 bypasses _ttir_to_linalgdir, which normally seeds
+            from triton.language.extra.spine_raw.call_registry import take_pending_llvm_direct_module
+            _llvm_direct_text, _llvm_direct_name = take_pending_llvm_direct_module()
+            if _llvm_direct_text:
+                metadata["llvm_direct_module"] = _llvm_direct_text
+                # LLVM-direct bypasses _ttir_to_linalgdir, which normally seeds
                 # smt_parallel_inside (read by the launcher + pipeline option).
-                # Mode-1 kernels are single-program (no bind_sub_block), so False.
+                # LLVM-direct kernels are single-program (no bind_sub_block), so False.
                 metadata["smt_parallel_inside"] = False
         except Exception:
             pass
@@ -371,20 +371,20 @@ class CPUBackend(BaseBackend):
         tt_pattern = r"tt\.func\s+public\s+@(\w+)\s*\("
         kernel_name = extract_kernel_name(tt_pattern, str(mod))
         metadata["name"] = kernel_name
-        # Mode-1: the binary exports the emitted llvm.func's symbol (the raw
+        # LLVM-direct: the binary exports the emitted llvm.func's symbol (the raw
         # kernel name), not the @triton.jit host wrapper. The launcher looks up
         # metadata["name"] as the symbol, so override it to the emitted name.
-        if _mode1_text and _mode1_name:
-            metadata["name"] = _mode1_name
+        if _llvm_direct_text and _llvm_direct_name:
+            metadata["name"] = _llvm_direct_name
         return mod
 
     def add_stages(self, stages, options, language):
         stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
 
         def _linalgdir_stage(src, metadata):
-            # Mode-1 bypass: if metadata has pre-emitted llvm.func module, return it
-            if "mode1_llvm_module" in metadata:
-                return metadata["mode1_llvm_module"]
+            # LLVM-direct bypass: if metadata has pre-emitted llvm.func module, return it
+            if "llvm_direct_module" in metadata:
+                return metadata["llvm_direct_module"]
             return _optimize_linalgdir(_ttir_to_linalgdir(src, metadata))
 
         stages["linalgdir"] = _linalgdir_stage
@@ -392,9 +392,9 @@ class CPUBackend(BaseBackend):
         use_ref_pipeline = int(os.getenv("SPINE_TRITON_USE_REF_PIPELINE", "0")) > 0
 
         def _llir_stage(src, metadata):
-            # Mode-1 bypass: skip spine-opt, only mlir-translate
-            if "mode1_llvm_module" in metadata:
-                return _optimize_llir(_mode1_llvm_to_llir(src, metadata))
+            # LLVM-direct bypass: skip spine-opt, only mlir-translate
+            if "llvm_direct_module" in metadata:
+                return _optimize_llir(_llvm_direct_to_llir(src, metadata))
             # Normal path
             if not use_ref_pipeline:
                 return _optimize_llir(_spine_mlir_linalgdir_to_llir(src, metadata))

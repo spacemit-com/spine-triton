@@ -89,7 +89,7 @@ abs = _SpineRawBuiltin("abs")  # abs(a) → |a| → math.absf / absi  # noqa: A0
 cast = _SpineRawBuiltin("cast")  # cast(a, dtype) → 类型转换 → arith.extf/truncf/sitofp/fptosi/extsi/trunci
 select = _SpineRawBuiltin("select")  # select(m, a, b) → a if m else b → arith.select (§6.8 回退)
 
-# ── LLVM-dialect mode-1 primitives (full call_intrinsic kernel, all scalable) ──
+# ── LLVM-dialect llvm-direct primitives (full call_intrinsic kernel, all scalable) ──
 call_intrinsic = _SpineRawBuiltin("call_intrinsic")  # call_intrinsic(name, [ops], result_type=T) → llvm.call_intrinsic / dotted llvm op
 llvm_poison = _SpineRawBuiltin("llvm_poison")  # llvm_poison(T) → llvm.mlir.poison : T (vle passthru)
 llvm_const = _SpineRawBuiltin("llvm_const")  # llvm_const(v, T) → llvm.mlir.constant (scalar or dense splat)

@@ -1036,7 +1036,7 @@ void init_triton_spine_raw_ir(py::module &&m) {
            "Create an unregistered/generic-form op (e.g. vector_ext.*)")
 
   // ========================================================================
-  // Generic op builder with text-parsed attributes — for LLVM-dialect mode-1
+  // Generic op builder with text-parsed attributes — for LLVM-dialect llvm-direct
   // kernels (call_intrinsic / mlir.constant / extractvalue / getelementptr).
   // Each attr value is an MLIR attribute in text form, parsed via
   // parseAttribute, so string / dense / array / type attrs are all covered by
@@ -1066,7 +1066,7 @@ void init_triton_spine_raw_ir(py::module &&m) {
            },
            py::arg("op_name"), py::arg("operands"), py::arg("text_attrs"),
            py::arg("result_types"),
-           "Create an op with text-parsed attributes (LLVM dialect mode-1)");
+           "Create an op with text-parsed attributes (LLVM dialect llvm-direct)");
 }
 
 void init_triton_spine_triton(py::module &&m) {

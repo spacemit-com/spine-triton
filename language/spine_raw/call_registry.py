@@ -24,22 +24,22 @@ def _to_handle(v, builder, param_type_str: str):
     raise TypeError(f"spine_raw.call: cannot convert constexpr {val!r} (type {param_type_str!r}) to IR handle")
 
 
-# Mode-1 handoff: the @triton.jit body (which calls call()) runs during
+# LLVM-direct handoff: the @triton.jit body (which calls call()) runs during
 # make_ir, strictly before the "ttir" stage's make_ttir reads it. Triton
 # compiles one kernel at a time, so a process-global holder is a safe, C++-free
 # channel from call() → make_ttir (avoids binding get_module/set_attr, which
 # don't exist in this libtriton API and would need a full riscv64 rebuild).
-_PENDING_MODE1_MODULE: dict[str, str] = {}
+_PENDING_LLVM_DIRECT_MODULE: dict[str, str] = {}
 
 
-def take_pending_mode1_module(kernel_name: str = None):
-    """make_ttir calls this to retrieve + clear a pending mode-1 module.
+def take_pending_llvm_direct_module(kernel_name: str = None):
+    """make_ttir calls this to retrieve + clear a pending llvm-direct module.
 
     Returns (module_text, emitted_symbol_name), or (None, None) if the
-    just-compiled kernel was not a mode-1 kernel.
+    just-compiled kernel was not a llvm-direct kernel.
     """
-    text = _PENDING_MODE1_MODULE.pop("text", None)
-    name = _PENDING_MODE1_MODULE.pop("name", None)
+    text = _PENDING_LLVM_DIRECT_MODULE.pop("text", None)
+    name = _PENDING_LLVM_DIRECT_MODULE.pop("name", None)
     return text, name
 
 
@@ -49,7 +49,7 @@ def call(fn, outputs=None, inputs=None, _semantic=None):
     Uses create_tle_dsl_region_direct — body_builder builds ops via C++ builder API
     with no MLIR text round trip.
 
-    Mode-1 bypass: if fn has _mode1=True, emit llvm.func module text and pass it
+    LLVM-direct bypass: if fn has _llvm_direct=True, emit llvm.func module text and pass it
     via module attr to metadata (compiler.py reads it in make_ttir).
 
     When _semantic is None (interpreter mode / outside JIT) the call is a no-op.
@@ -59,21 +59,21 @@ def call(fn, outputs=None, inputs=None, _semantic=None):
     if inputs is None:
         inputs = []
 
-    # Mode-1 bypass: detect and emit
-    if getattr(fn, '_mode1', False):
-        from .mode1_text import emit_mode1_module
-        # emit_mode1_module needs the raw Python function, not the JIT wrapper
+    # LLVM-direct bypass: detect and emit
+    if getattr(fn, '_llvm_direct', False):
+        from .llvm_direct_text import emit_llvm_direct_module
+        # emit_llvm_direct_module needs the raw Python function, not the JIT wrapper
         raw_fn = fn._fn if hasattr(fn, '_fn') else fn
-        llvm_module_text = emit_mode1_module(raw_fn)
+        llvm_module_text = emit_llvm_direct_module(raw_fn)
         # Stash for make_ttir via the process-global holder (no C++ module attr:
         # get_module/set_attr aren't bound in this libtriton API). This runs
         # inside make_ir, before the ttir stage reads it — same-process, same
         # single-kernel compile, so the handoff is safe.
-        _PENDING_MODE1_MODULE["text"] = llvm_module_text
+        _PENDING_LLVM_DIRECT_MODULE["text"] = llvm_module_text
         # The emitted llvm.func is named after the raw kernel (raw_fn), NOT the
         # @triton.jit host wrapper. The launcher looks up metadata["name"] as the
         # binary symbol, so make_ttir must override name to the emitted symbol.
-        _PENDING_MODE1_MODULE["name"] = raw_fn.__name__
+        _PENDING_LLVM_DIRECT_MODULE["name"] = raw_fn.__name__
         return  # skip dsl_region emission
 
     # Normal path

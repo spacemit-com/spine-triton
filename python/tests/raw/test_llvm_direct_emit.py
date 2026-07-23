@@ -1,4 +1,4 @@
-"""Mode-1 text-emitter end-to-end (x86, no K3, no rebuild):
+"""LLVM-direct text-emitter end-to-end (x86, no K3, no rebuild):
    @spine_raw copy kernel -> llvm.func module text
      -> spine-opt --spine-triton-e2e-pipeline  (x86)
      -> mlir-translate --mlir-to-llvmir        (x86)
@@ -14,7 +14,7 @@ import sys
 # import emitter straight from the source tree copy
 _SR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "language")
 sys.path.insert(0, os.path.abspath(_SR))
-from spine_raw.mode1_text import emit_mode1_module          # noqa: E402
+from spine_raw.llvm_direct_text import emit_llvm_direct_module          # noqa: E402
 from spine_raw import types as _t                            # noqa: E402
 
 f16 = "f16"
@@ -23,14 +23,14 @@ mem = _t.mem
 index = _t.index
 
 
-# ---- a minimal mode-1 copy kernel written with llvm_* primitives ----
-def mode1_copy(X: mem(f16), out: mem(f16, out=True), N: index):
+# ---- a minimal llvm-direct copy kernel written with llvm_* primitives ----
+def llvm_direct_copy(X: mem(f16), out: mem(f16, out=True), N: index):
     vl = None      # placeholders so python doesn't choke; real values via primitives
     # NOTE: body is walked as AST, not executed.
 
 
 _KSRC = '''
-def mode1_copy(X, out, N):
+def llvm_direct_copy(X, out, N):
     vl = tle.llvm_const(8, "i64")
     pt = tle.llvm_poison("vector<[8]xf16>")
     bx = tle.llvm_base_ptr(X)
@@ -42,7 +42,7 @@ def mode1_copy(X, out, N):
 # ---- mv with a K loop: accumulate vfmacc over K-tiles, store one f32 tile ----
 # single-program, single-row-tile: acc = sum_k vle(A+k*VL) fma vle(B+k*VL); store acc
 _KSRC_MV = '''
-def mode1_mv(A, B, C, K):
+def llvm_direct_mv(A, B, C, K):
     vl = tle.llvm_const(8, "i64")
     acc = tle.llvm_const("0.000000e+00", "vector<[8]xf32>")
     zero = tle.llvm_const(0, "i64")
@@ -61,7 +61,7 @@ def mode1_mv(A, B, C, K):
 
 # ---- dot-product with loop: sum_k A[k]*B[k], single scalar result ----
 _KSRC_DOT = '''
-def mode1_dot(A, B, C, N):
+def llvm_direct_dot(A, B, C, N):
     vl = tle.llvm_const(8, "i64")
     acc = tle.llvm_const("0.000000e+00", "vector<[8]xf32>")
     zero = tle.llvm_const(0, "i64")
@@ -92,16 +92,16 @@ def _build_fn(name, src, anns):
     exec(code, g)
     fn = g[name]
     fn.__annotations__ = anns
-    fn._mode1_src = src
+    fn._llvm_direct_src = src
     return fn
 
 
 def _emit(fn):
     import inspect
     _orig = inspect.getsource
-    inspect.getsource = lambda f: fn._mode1_src if f is fn else _orig(f)
+    inspect.getsource = lambda f: fn._llvm_direct_src if f is fn else _orig(f)
     try:
-        return emit_mode1_module(fn)
+        return emit_llvm_direct_module(fn)
     finally:
         inspect.getsource = _orig
 
@@ -114,7 +114,7 @@ def _check(name, src, anns):
     print(mod)
 
     import tempfile
-    d = tempfile.mkdtemp(prefix="mode1_")
+    d = tempfile.mkdtemp(prefix="llvm_direct_")
     inp = os.path.join(d, "in.mlir")
     o1 = os.path.join(d, "out.mlir")
     o2 = os.path.join(d, "out.ll")
@@ -148,11 +148,11 @@ def _check(name, src, anns):
 
 
 def main():
-    _check("mode1_copy", _KSRC,
+    _check("llvm_direct_copy", _KSRC,
            {"X": mem(f16), "out": mem(f16, out=True), "N": index})
-    _check("mode1_mv", _KSRC_MV,
+    _check("llvm_direct_mv", _KSRC_MV,
            {"A": mem("f32"), "B": mem("f32"), "C": mem("f32", out=True), "K": index})
-    _check("mode1_dot", _KSRC_DOT,
+    _check("llvm_direct_dot", _KSRC_DOT,
            {"A": mem("f32"), "B": mem("f32"), "C": mem("f32", out=True), "N": index})
     print("\nALL PASS (3 kernels: copy/mv/dot)")
 

@@ -1,4 +1,4 @@
-"""Mode-1 end-to-end on K3: matrix-vector multiply with K-loop.
+"""LLVM-direct end-to-end on K3: matrix-vector multiply with K-loop.
 
 Validates: for-loop, iter-arg accumulator, llvm_size, llvm_fadd/fmul, llvm_gep.
 Compute: C[i] = sum_k A[i*K + k] * B[k]  (simplified: single row, K tiles)
@@ -16,8 +16,8 @@ f32 = "f32"
 
 
 @tle.raw_kernel
-def mode1_mv_k3(A: tle.mem(f32), B: tle.mem(f32), C: tle.mem(f32, out=True), K: tle.index):
-    """Mode-1 MV with K-loop: C = sum_k A[k] * B[k] (element-wise, then reduce).
+def llvm_direct_mv_k3(A: tle.mem(f32), B: tle.mem(f32), C: tle.mem(f32, out=True), K: tle.index):
+    """LLVM-direct MV with K-loop: C = sum_k A[k] * B[k] (element-wise, then reduce).
 
     Simplified: treat A/B as 1D vectors of length K, accumulate into vector C.
     Real MV would tile across rows, but this validates loop+accumulator.
@@ -27,7 +27,7 @@ def mode1_mv_k3(A: tle.mem(f32), B: tle.mem(f32), C: tle.mem(f32, out=True), K: 
     zero = tle.llvm_const(0, "i64")
 
     # Loop bound comes from the scalar K param (driver ABI passes rank-0 memref
-    # descriptors with no shape, so llvm_size is unavailable in mode-1).
+    # descriptors with no shape, so llvm_size is unavailable in llvm-direct).
     for k in tle.range(zero, K, vl):
         pa = tle.llvm_poison("vector<[8]xf32>")
         pb = tle.llvm_poison("vector<[8]xf32>")
@@ -44,8 +44,8 @@ def mode1_mv_k3(A: tle.mem(f32), B: tle.mem(f32), C: tle.mem(f32, out=True), K: 
 
 
 @triton.jit
-def mode1_mv_k3_host(A, B, C, K):
-    _sr_call(mode1_mv_k3, outputs=[], inputs=[A, B, C, K])
+def llvm_direct_mv_k3_host(A, B, C, K):
+    _sr_call(llvm_direct_mv_k3, outputs=[], inputs=[A, B, C, K])
 
 
 def main():
@@ -59,9 +59,9 @@ def main():
     for i in range(8):
         C_ref[i] = (A[i::8] * B[i::8]).sum()
 
-    print(f"=== Mode-1 MV with K-loop (K={K}) ===")
+    print(f"=== LLVM-direct MV with K-loop (K={K}) ===")
     try:
-        mode1_mv_k3_host[(1,)](A, B, C, K)
+        llvm_direct_mv_k3_host[(1,)](A, B, C, K)
         print("COMPILED OK")
         print("C (first 8):", C[:8])
         print("C_ref:      ", C_ref[:8])
