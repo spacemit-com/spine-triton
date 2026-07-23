@@ -62,6 +62,8 @@ A raw kernel is you making four choices explicitly (SPEC §2):
   raw kernel says *how* to compute that slice on the vector unit.
 
 ### Lowering chain (what happens after you write it)
+
+**Default path** (high-level primitives: `vload`/`vstore`/`vmacc`/...):
 ```
 @tle.raw_kernel Python
   → AST walk (codegen.py, builder API)   # no MLIR text
@@ -70,9 +72,20 @@ A raw kernel is you making four choices explicitly (SPEC §2):
   → --spine-triton-e2e-pipeline (spine-opt)  # → scalable vectors → LLVM
   → llc → .o → .so                        # RVV machine code
 ```
+
+**LLVM-direct path** (`llvm_*` / `call_intrinsic` only, detected automatically):
+```
+@tle.raw_kernel Python
+  → AST walk (llvm_direct_text.py)       # text emitter, no builder
+  → top-level llvm.func module (text)
+  → mlir-translate --mlir-to-llvmir      # skip spine-opt, only translate
+  → llc → .o → .so                        # RVV machine code
+```
+
 Two consequences you'll hit: (1) only some vector ops survive spine-mlir's
 `ConvertToScalableVector` (§7); (2) x86 llc can't expand `vector.reduction`, so
-reduction-using kernels are **K3-only** for numerical verification.
+reduction-using kernels are **K3-only** for numerical verification. The
+LLVM-direct path bypasses both limits but requires you to manage LLVM-level details (§8).
 
 ---
 
@@ -429,3 +442,91 @@ you need a new MLIR op. Steps:
 `ConvertToScalableVector` (only Extract/Insert/Reduction/ShapeCast/Splat/
 TransferRead/Write are converted). If not (e.g. `vector.step`), build it from
 `memref.alloc` + `scf.for` + `transfer_read` instead — see `viota`.
+
+---
+
+## 8. LLVM-direct primitives: `call_intrinsic` and the bypass path
+
+### What and why
+
+The **LLVM-direct path** is a second compilation route for kernels that use *only* LLVM-level primitives (`llvm_*` / `call_intrinsic`). Instead of emitting `tle.dsl_region` → linalg → spine-opt, these kernels emit a standalone top-level `llvm.func` module as **text**, bypassing triton-to-linalg and spine-opt entirely. The path goes: emit `llvm.func` → `mlir-translate` → `llc(riscv64)`.
+
+**Why a second path?** LLVM ops inside a `func.func` body trip BufferDeallocation's "unknown memory side effects" error. The default path wraps your kernel body in a `func.func` (via `tle.dsl_region`), so LLVM ops can't survive there. The LLVM-direct bypass solves this by producing a *top-level* `llvm.func`, which is a no-op to BufferDeallocation / ConvertToScalableVector.
+
+**When to use it:**
+- You need a specific RVV intrinsic not wrapped by the high-level primitives (e.g. `llvm.riscv.vfwmacc`, special vsetvli sequences)
+- You're prototyping new hardware instructions before writing a high-level wrapper
+- You want full control over the LLVM IR (no linalg abstractions)
+
+**Tradeoffs:**
+- ✅ Zero libtriton rebuild (pure Python emitter)
+- ✅ Direct LLVM IR control
+- ❌ Lower level: you manage loop structure, iter-args, SSA yourself
+- ❌ No automatic scalable-vector conversion (you write `vector<[8]xf32>` explicitly)
+- ❌ Driver ABI passes rank-0 memref descriptors — `llvm_size` is unavailable, pass shapes as scalar params
+
+### The primitives
+
+| Primitive | Signature | Notes |
+|-----------|-----------|-------|
+| `call_intrinsic(name, args, result_type)` | Call an LLVM intrinsic | `name` = full intrinsic (e.g. `"llvm.riscv.vle"`), `args` = list of SSA values, `result_type` = MLIR type string or `"()"` for void. Returns the result SSA value. |
+| `llvm_const(value, mlir_type)` | Emit a constant | `llvm_const(8, "i64")` = scalar int; `llvm_const("0.0", "vector<[8]xf32>")` = zero scalable vector splat. |
+| `llvm_poison(mlir_type)` | Emit poison (uninitialized) | RVV load intrinsics require a "merge" operand (the old register value); poison = "don't care". |
+| `llvm_base_ptr(mem)` | Extract data pointer from memref descriptor | Loads the rank-0 `{allocated, aligned, offset}` descriptor and returns `extractvalue[1]` (the aligned data pointer). |
+| `llvm_gep(ptr, offset, elem_type)` | Pointer arithmetic | `llvm.getelementptr %ptr[%offset] : (!llvm.ptr, i64) -> !llvm.ptr, elem_type`. |
+| `llvm_fadd(a, b)` | Vector FP add | `llvm.fadd %a, %b : vector<[8]xf32>`. Also `llvm_fmul`. |
+| `llvm_size(mem, dim)` | ❌ **unavailable** | The driver ABI passes rank-0 descriptors with no shape. Pass dimensions as scalar `index` params instead. |
+
+### Example: MV with vle/vse
+
+```python
+import triton.language.extra.spine_raw as tle
+from triton.language.extra.spine_raw import call as _sr_call
+
+@tle.raw_kernel
+def llvm_direct_mv(A: tle.mem("f32"), B: tle.mem("f32"),
+                   C: tle.mem("f32", out=True), K: tle.index):
+    vl = tle.llvm_const(8, "i64")
+    acc = tle.llvm_const("0.000000e+00", "vector<[8]xf32>")
+    zero = tle.llvm_const(0, "i64")
+    # Loop bound comes from the scalar K param (llvm_size unavailable in LLVM-direct ABI)
+    for k in tle.range(zero, K, vl):
+        pa = tle.llvm_poison("vector<[8]xf32>")
+        pb = tle.llvm_poison("vector<[8]xf32>")
+        ga = tle.llvm_gep(tle.llvm_base_ptr(A), k, "f32")
+        gb = tle.llvm_gep(tle.llvm_base_ptr(B), k, "f32")
+        va = tle.call_intrinsic("llvm.riscv.vle", [pa, ga, vl], result_type="vector<[8]xf32>")
+        vb = tle.call_intrinsic("llvm.riscv.vle", [pb, gb, vl], result_type="vector<[8]xf32>")
+        prod = tle.llvm_fmul(va, vb)
+        acc = tle.llvm_fadd(acc, prod)
+    gc = tle.llvm_base_ptr(C)
+    tle.call_intrinsic("llvm.riscv.vse", [acc, gc, vl], result_type="()")
+
+@triton.jit
+def llvm_direct_mv_host(A, B, C, K):
+    _sr_call(llvm_direct_mv, outputs=[], inputs=[A, B, C, K])
+
+# Launch
+A = torch.arange(64, dtype=torch.float32)
+B = torch.ones(64, dtype=torch.float32)
+C = torch.zeros(8, dtype=torch.float32)
+llvm_direct_mv_host[(1,)](A, B, C, 64)
+```
+
+**What happens:**
+1. `runtime.py: _detect_llvm_direct` scans the AST for `llvm_*` / `call_intrinsic` → marks `fn._llvm_direct = True`
+2. `call_registry.py: call()` detects the flag → calls `emit_llvm_direct_module(fn)` (text emitter) → stashes the `llvm.func` text in a process-global `_PENDING_LLVM_DIRECT_MODULE` dict
+3. `compiler.py: make_ttir` retrieves it → stashes in `metadata["llvm_direct_module"]`
+4. `compiler.py: _linalgdir_stage` detects the metadata key → returns the `llvm.func` text as-is (no triton-to-linalg)
+5. `compiler.py: _llir_stage` detects the key → calls `_llvm_direct_to_llir` (only `mlir-translate`, skips `spine-opt`)
+6. `so` stage is unchanged (llc → .o → .so)
+
+**Critical: driver ABI for LLVM-direct kernels**
+
+The driver (`backend/driver.py:192`) passes each memref as a **rank-0** `StridedMemRefType<char,0>` = `{allocated_ptr, aligned_ptr, offset}`. There are NO `sizes`/`strides` arrays. The data pointer is `extractvalue[1]` (aligned). `llvm_size` is unavailable → pass all dimensions as scalar `index` params and use them for loop bounds.
+
+**Tests:** `python/tests/raw/test_llvm_direct_k3.py` (K3 numerical validation), `test_llvm_direct_emit.py` (x86→riscv64 .o chain). See commit `c599275` (initial) and `01ef396` (rename mode-1→llvm-direct).
+
+---
+
+## 9. Debugging & IR inspection
