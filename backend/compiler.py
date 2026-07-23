@@ -128,6 +128,18 @@ def _spine_mlir_linalgdir_to_llir(linalgdir: str, metadata):
         return Path(llir_path).read_text()
 
 
+def _mode1_llvm_to_llir(llvm_module_text: str, metadata):
+    """Mode-1 bypass: llvm.func module → LLVM IR (skip spine-opt, only mlir-translate)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        llmlir_path = os.path.join(tmpdir, "mode1.mlir")
+        llir_path = os.path.join(tmpdir, ".ll")
+        Path(llmlir_path).write_text(llvm_module_text)
+        mlir_translate_path = get_llvm_bin_path("mlir-translate")
+        subprocess.check_call([mlir_translate_path, llmlir_path, "--mlir-to-llvmir", "-o", llir_path])
+        dump_ir_if_needed([llir_path], metadata["name"])
+        return Path(llir_path).read_text()
+
+
 def _optimize_llir(llir: str):
     # We don't apply any optimizations now, but we can add passes if needed.
     return llir
@@ -339,22 +351,57 @@ class CPUBackend(BaseBackend):
         mod.set_attr("tt.num_threads", builder.get_int32_attr(num_threads))
         mod.set_attr("tt.arch_id", builder.get_string_attr(arch_id))
         mod.set_attr("tt.force_vector_interleave", builder.get_int32_attr(force_vector_interleave))
+
+        # Mode-1: pick up a pending llvm.func module text stashed by
+        # spine_raw.call() during make_ir (process-global handoff — see
+        # call_registry.take_pending_mode1_module). None for non-mode-1 kernels.
+        _mode1_text, _mode1_name = None, None
+        try:
+            from triton.language.extra.spine_raw.call_registry import take_pending_mode1_module
+            _mode1_text, _mode1_name = take_pending_mode1_module()
+            if _mode1_text:
+                metadata["mode1_llvm_module"] = _mode1_text
+                # Mode-1 bypasses _ttir_to_linalgdir, which normally seeds
+                # smt_parallel_inside (read by the launcher + pipeline option).
+                # Mode-1 kernels are single-program (no bind_sub_block), so False.
+                metadata["smt_parallel_inside"] = False
+        except Exception:
+            pass
+
         tt_pattern = r"tt\.func\s+public\s+@(\w+)\s*\("
         kernel_name = extract_kernel_name(tt_pattern, str(mod))
         metadata["name"] = kernel_name
+        # Mode-1: the binary exports the emitted llvm.func's symbol (the raw
+        # kernel name), not the @triton.jit host wrapper. The launcher looks up
+        # metadata["name"] as the symbol, so override it to the emitted name.
+        if _mode1_text and _mode1_name:
+            metadata["name"] = _mode1_name
         return mod
 
     def add_stages(self, stages, options, language):
         stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
-        stages["linalgdir"] = lambda src, metadata: _optimize_linalgdir(_ttir_to_linalgdir(src, metadata))
+
+        def _linalgdir_stage(src, metadata):
+            # Mode-1 bypass: if metadata has pre-emitted llvm.func module, return it
+            if "mode1_llvm_module" in metadata:
+                return metadata["mode1_llvm_module"]
+            return _optimize_linalgdir(_ttir_to_linalgdir(src, metadata))
+
+        stages["linalgdir"] = _linalgdir_stage
 
         use_ref_pipeline = int(os.getenv("SPINE_TRITON_USE_REF_PIPELINE", "0")) > 0
 
-        if not use_ref_pipeline:
-            stages["llir"] = lambda src, metadata: _optimize_llir(_spine_mlir_linalgdir_to_llir(src, metadata))
-        else:
-            stages["llir"] = lambda src, metadata: _optimize_llir(_spine_mlir_linalgdir_to_llir_ref(src, metadata))
+        def _llir_stage(src, metadata):
+            # Mode-1 bypass: skip spine-opt, only mlir-translate
+            if "mode1_llvm_module" in metadata:
+                return _optimize_llir(_mode1_llvm_to_llir(src, metadata))
+            # Normal path
+            if not use_ref_pipeline:
+                return _optimize_llir(_spine_mlir_linalgdir_to_llir(src, metadata))
+            else:
+                return _optimize_llir(_spine_mlir_linalgdir_to_llir_ref(src, metadata))
 
+        stages["llir"] = _llir_stage
         stages["so"] = lambda src, metadata: _llir_to_so(src, metadata)
 
     @functools.lru_cache()

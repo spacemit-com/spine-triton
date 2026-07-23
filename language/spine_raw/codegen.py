@@ -81,7 +81,9 @@ _SPINE_RAW_BUILTIN_NAMES = {
     "range", "proton_mark", "vconfig", "vzero", "vload", "vmacc",
     "vreduce_sum", "vreduce_max", "vreduce_min", "vreduce_mul",
     "vstore", "alloc", "pack", "vmadot",
-    "vpack", "vbroadcast", "vshape", "spread", "imin", "vmin", "vmax", "sqrt", "rsqrt", "vexp", "vlog", "sload", "sstore", "viota", "abs", "cast", "select"
+    "vpack", "vbroadcast", "vshape", "spread", "imin", "vmin", "vmax", "sqrt", "rsqrt", "vexp", "vlog", "sload", "sstore", "viota", "abs", "cast", "select",
+    # Mode-1 LLVM-dialect primitives (call_intrinsic full-channel kernels)
+    "call_intrinsic", "llvm_poison", "llvm_const", "llvm_base_ptr", "llvm_gep", "llvm_size",
 }
 
 # Element-type classification for §6.4 elementwise dispatch.
@@ -467,6 +469,8 @@ class SpineMLIRBuilderCodegen:
             self._gen_sstore(node)
         elif _is_spine_raw_attr(node.func, "pack", self._aliases):
             self._gen_pack(node)
+        elif _is_spine_raw_attr(node.func, "call_intrinsic", self._aliases):
+            self._gen_call_intrinsic(node)   # void form (e.g. llvm.riscv.vse)
         else:
             raise NotImplementedError(f"Unsupported call stmt: {ast.dump(node.func)}")
 
@@ -603,6 +607,12 @@ class SpineMLIRBuilderCodegen:
         if _is_spine_raw_attr(node.func, "vexp", b):  return self._gen_unary_math(node, "exp")
         if _is_spine_raw_attr(node.func, "vlog", b):  return self._gen_unary_math(node, "log")
         if _is_spine_raw_attr(node.func, "sload", b): return self._gen_sload(node)
+        if _is_spine_raw_attr(node.func, "call_intrinsic", b): return self._gen_call_intrinsic(node)
+        if _is_spine_raw_attr(node.func, "llvm_poison", b): return self._gen_llvm_poison(node)
+        if _is_spine_raw_attr(node.func, "llvm_const", b): return self._gen_llvm_const(node)
+        if _is_spine_raw_attr(node.func, "llvm_base_ptr", b): return self._gen_llvm_base_ptr(node)
+        if _is_spine_raw_attr(node.func, "llvm_gep", b): return self._gen_llvm_gep(node)
+        if _is_spine_raw_attr(node.func, "llvm_size", b): return self._gen_llvm_size(node)
         if _is_spine_raw_attr(node.func, "viota", b): return self._gen_viota(node)
         if _is_spine_raw_attr(node.func, "abs", b):   return self._gen_abs(node)
         if _is_spine_raw_attr(node.func, "cast", b):  return self._gen_cast(node)
@@ -926,6 +936,131 @@ class SpineMLIRBuilderCodegen:
         dtype = _resolve_dtype(kwargs.get("dtype"), "f32")
         ranked_v, _ = self._ranked_cast(ptr_v, ptr_t)
         return self._b.create_memref_load(ranked_v, [idx_v]), dtype
+
+    # ------------------------------------------------------------------
+    # LLVM-dialect mode-1 primitives (full call_intrinsic kernel)
+    # ------------------------------------------------------------------
+
+    def _gen_call_intrinsic(self, node: ast.Call) -> tuple:
+        """call_intrinsic("llvm.riscv.vle", [ops...], result_type="vector<[8]xf16>").
+
+        Emits an LLVM-dialect op. op name starting with 'llvm.' whose text is an
+        intrinsic (llvm.riscv.*) → llvm.call_intrinsic with intrin= string attr;
+        otherwise the op name is used directly (e.g. llvm.intr.vector.extract).
+        result_type="()" → void op (e.g. llvm.riscv.vse store).
+        """
+        if not isinstance(node.args[0], ast.Constant):
+            raise ValueError("call_intrinsic: op name must be a string literal")
+        op_name = node.args[0].value
+        if not isinstance(node.args[1], (ast.List, ast.Tuple)):
+            raise ValueError("call_intrinsic: operands must be a list literal")
+        operand_vs = [self._gen_expr(e)[0] for e in node.args[1].elts]
+        result_t = None
+        for kw in node.keywords:
+            if kw.arg == "result_type":
+                if not isinstance(kw.value, ast.Constant):
+                    raise ValueError("call_intrinsic: result_type must be a string literal")
+                result_t = kw.value.value
+        if result_t is None:
+            raise ValueError("call_intrinsic: must specify result_type=")
+        # llvm.riscv.* / other bare intrinsic names → llvm.call_intrinsic with
+        # the name carried as the `intrin` string attr. Dotted MLIR op names
+        # (llvm.intr.*) are emitted directly.
+        is_intrinsic = op_name.startswith("llvm.riscv.") or op_name.startswith("llvm.experimental.")
+        if is_intrinsic:
+            emit_name = "llvm.call_intrinsic"
+            # llvm.call_intrinsic has two operand segments (args, op_bundle_operands);
+            # all our operands are args, so segment sizes = [len(args), 0]. Without
+            # this the generic builder defaults to [0,0] and verify fails.
+            attrs = {
+                "intrin": f'"{op_name}"',
+                "operandSegmentSizes": f"array<i32: {len(operand_vs)}, 0>",
+                "op_bundle_sizes": "array<i32>",
+            }
+        else:
+            emit_name = op_name
+            attrs = {}
+        result_types = [] if result_t == "()" else [self._t(result_t)]
+        res = self._b.create_op_textattr(emit_name, operand_vs, attrs, result_types)
+        if result_t == "()":
+            return None, "()"
+        return res[0], result_t
+
+    def _gen_llvm_poison(self, node: ast.Call) -> tuple:
+        """llvm_poison("vector<[8]xf16>") → llvm.mlir.poison : T (vle passthru)."""
+        if not isinstance(node.args[0], ast.Constant):
+            raise ValueError("llvm_poison: type must be a string literal")
+        ty = node.args[0].value
+        res = self._b.create_op_textattr("llvm.mlir.poison", [], {}, [self._t(ty)])
+        return res[0], ty
+
+    def _gen_llvm_const(self, node: ast.Call) -> tuple:
+        """llvm_const(64, "i64") or llvm_const(0.0, "vector<[4]xf32>").
+
+        Scalar int/float → llvm.mlir.constant(N : T). Vector type → splat
+        dense<val> : T (dense elements attr, parsed from text).
+        """
+        val = self._try_const_int(node.args[0])
+        fval = None
+        if val is None:
+            if isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, float):
+                fval = node.args[0].value
+            elif isinstance(node.args[0], ast.UnaryOp) and isinstance(node.args[0].op, ast.USub) \
+                    and isinstance(node.args[0].operand, ast.Constant):
+                fval = -node.args[0].operand.value
+            else:
+                raise ValueError("llvm_const: value must be a compile-time int/float literal")
+        if not isinstance(node.args[1], ast.Constant):
+            raise ValueError("llvm_const: type must be a string literal")
+        ty = node.args[1].value
+        if ty.startswith("vector<"):
+            lit = f"{fval if fval is not None else val}"
+            attr = f"dense<{lit}> : {ty}"
+        elif _is_float_elem(ty):
+            attr = f"{fval if fval is not None else float(val)} : {ty}"
+        else:
+            attr = f"{val} : {ty}"
+        res = self._b.create_op_textattr("llvm.mlir.constant", [], {"value": attr}, [self._t(ty)])
+        return res[0], ty
+
+    def _gen_llvm_base_ptr(self, node: ast.Call) -> tuple:
+        """llvm_base_ptr(mem) → llvm.extractvalue %desc[1] : !llvm.ptr (aligned base).
+
+        The raw-kernel memref param must be materialised as an LLVM struct
+        descriptor; extractvalue[1] is the aligned pointer field.
+        """
+        ptr_v, ptr_t = self._gen_expr(node.args[0])
+        struct_t = "!llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>"
+        desc = self._b.create_op_textattr(
+            "builtin.unrealized_conversion_cast", [ptr_v], {}, [self._t(struct_t)])
+        res = self._b.create_op_textattr(
+            "llvm.extractvalue", [desc[0]], {"position": "array<i64: 1>"}, [self._t("!llvm.ptr")])
+        return res[0], "!llvm.ptr"
+
+    def _gen_llvm_gep(self, node: ast.Call) -> tuple:
+        """llvm_gep(base_ptr, offset, elem="f16") → llvm.getelementptr."""
+        kwargs = {kw.arg: kw.value for kw in node.keywords}
+        base_v, _ = self._gen_expr(node.args[0])
+        off_v, _ = self._gen_expr(node.args[1])
+        elem = _resolve_dtype(kwargs.get("elem"), "f16")
+        res = self._b.create_op_textattr(
+            "llvm.getelementptr", [base_v, off_v],
+            {"rawConstantIndices": "array<i32: -2147483648>",
+             "elem_type": elem},
+            [self._t("!llvm.ptr")])
+        return res[0], "!llvm.ptr"
+
+    def _gen_llvm_size(self, node: ast.Call) -> tuple:
+        """llvm_size(mem, dim=0) → llvm.extractvalue %desc[3, dim] : i64 (size field)."""
+        kwargs = {kw.arg: kw.value for kw in node.keywords}
+        ptr_v, ptr_t = self._gen_expr(node.args[0])
+        dim = self._try_const_int(kwargs.get("dim")) if "dim" in kwargs else 0
+        struct_t = "!llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>"
+        desc = self._b.create_op_textattr(
+            "builtin.unrealized_conversion_cast", [ptr_v], {}, [self._t(struct_t)])
+        res = self._b.create_op_textattr(
+            "llvm.extractvalue", [desc[0]], {"position": f"array<i64: 3, {dim}>"}, [self._t("i64")])
+        return res[0], "i64"
 
     def _gen_viota(self, node: ast.Call) -> tuple:
         """viota() → vector<VLxf32> = [0.0, 1.0, .., VL-1.0].

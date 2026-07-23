@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -1032,7 +1033,40 @@ void init_triton_spine_raw_ir(py::module &&m) {
            },
            py::arg("op_name"), py::arg("operands"), py::arg("int_attrs"),
            py::arg("result_types"),
-           "Create an unregistered/generic-form op (e.g. vector_ext.*)");
+           "Create an unregistered/generic-form op (e.g. vector_ext.*)")
+
+  // ========================================================================
+  // Generic op builder with text-parsed attributes — for LLVM-dialect mode-1
+  // kernels (call_intrinsic / mlir.constant / extractvalue / getelementptr).
+  // Each attr value is an MLIR attribute in text form, parsed via
+  // parseAttribute, so string / dense / array / type attrs are all covered by
+  // one method (create_generic_op only handles i64 attrs).
+  // ========================================================================
+      .def("create_op_textattr",
+           [](TritonOpBuilder &self, const std::string &opName,
+              std::vector<Value> operands,
+              std::map<std::string, std::string> textAttrs,
+              std::vector<Type> resultTypes) -> std::vector<Value> {
+             auto &builder = self.getBuilder();
+             auto *ctx = builder.getContext();
+             mlir::OperationState state(self.getLastLoc(), opName);
+             state.addOperands(operands);
+             state.addTypes(resultTypes);
+             for (auto &[name, txt] : textAttrs) {
+               mlir::Attribute attr = mlir::parseAttribute(txt, ctx);
+               if (!attr)
+                 throw std::runtime_error(
+                     "create_op_textattr: failed to parse attribute '" + name +
+                     "' = " + txt);
+               state.addAttribute(name, attr);
+             }
+             mlir::Operation *op = builder.create(state);
+             return std::vector<Value>(op->getResults().begin(),
+                                       op->getResults().end());
+           },
+           py::arg("op_name"), py::arg("operands"), py::arg("text_attrs"),
+           py::arg("result_types"),
+           "Create an op with text-parsed attributes (LLVM dialect mode-1)");
 }
 
 void init_triton_spine_triton(py::module &&m) {
@@ -1051,7 +1085,7 @@ void init_triton_spine_triton(py::module &&m) {
                     mlir::arith::ArithDialect, mlir::scf::SCFDialect,
                     mlir::math::MathDialect,
                     mlir::bufferization::BufferizationDialect,
-                    mlir::ptr::PtrDialect>();
+                    mlir::ptr::PtrDialect, mlir::LLVM::LLVMDialect>();
     // Registering func dialect above makes TTIR's InlinerPass query func's
     // DialectInlinerInterface; that interface lives in a separate extension
     // that must be registered explicitly, or the inliner aborts with

@@ -89,6 +89,16 @@ abs = _SpineRawBuiltin("abs")  # abs(a) → |a| → math.absf / absi  # noqa: A0
 cast = _SpineRawBuiltin("cast")  # cast(a, dtype) → 类型转换 → arith.extf/truncf/sitofp/fptosi/extsi/trunci
 select = _SpineRawBuiltin("select")  # select(m, a, b) → a if m else b → arith.select (§6.8 回退)
 
+# ── LLVM-dialect mode-1 primitives (full call_intrinsic kernel, all scalable) ──
+call_intrinsic = _SpineRawBuiltin("call_intrinsic")  # call_intrinsic(name, [ops], result_type=T) → llvm.call_intrinsic / dotted llvm op
+llvm_poison = _SpineRawBuiltin("llvm_poison")  # llvm_poison(T) → llvm.mlir.poison : T (vle passthru)
+llvm_const = _SpineRawBuiltin("llvm_const")  # llvm_const(v, T) → llvm.mlir.constant (scalar or dense splat)
+llvm_base_ptr = _SpineRawBuiltin("llvm_base_ptr")  # llvm_base_ptr(mem) → llvm.extractvalue desc[1] → !llvm.ptr
+llvm_gep = _SpineRawBuiltin("llvm_gep")  # llvm_gep(base, off, elem=) → llvm.getelementptr
+llvm_size = _SpineRawBuiltin("llvm_size")  # llvm_size(mem, dim=) → llvm.extractvalue desc[3,dim] → i64
+llvm_fadd = _SpineRawBuiltin("llvm_fadd")  # llvm_fadd(a, b) → llvm.fadd (vector or scalar)
+llvm_fmul = _SpineRawBuiltin("llvm_fmul")  # llvm_fmul(a, b) → llvm.fmul (vector or scalar)
+
 # ---------------------------------------------------------------------------
 # Document-facing sugar: dtype names and the `mem` / `index` / `raw_kernel`
 # helpers so a kernel can be written close to the feishu 3.3 surface syntax.
