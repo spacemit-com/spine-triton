@@ -1,6 +1,6 @@
 """LLVM-direct end-to-end on K3: matrix-vector multiply with K-loop.
 
-Validates: for-loop, iter-arg accumulator, llvm_size, llvm_fadd/fmul, llvm_gep.
+Validates: for-loop, iter-arg accumulator, call_intrinsic for LLVM ops, llvm_gep.
 Compute: C[i] = sum_k A[i*K + k] * B[k]  (simplified: single row, K tiles)
 """
 import os
@@ -35,8 +35,8 @@ def llvm_direct_mv_k3(A: tle.mem(f32), B: tle.mem(f32), C: tle.mem(f32, out=True
         gb = tle.llvm_gep(tle.llvm_base_ptr(B), k, "f32")
         va = tle.call_intrinsic("llvm.riscv.vle", [pa, ga, vl], result_type="vector<[8]xf32>")
         vb = tle.call_intrinsic("llvm.riscv.vle", [pb, gb, vl], result_type="vector<[8]xf32>")
-        prod = tle.llvm_fmul(va, vb)
-        acc = tle.llvm_fadd(acc, prod)
+        prod = tle.call_intrinsic("llvm.fmul", [va, vb], result_type="vector<[8]xf32>")
+        acc = tle.call_intrinsic("llvm.fadd", [acc, prod], result_type="vector<[8]xf32>")
 
     # Store accumulated vector (simplified: no reduction to scalar)
     gc = tle.llvm_base_ptr(C)

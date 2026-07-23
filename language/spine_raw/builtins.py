@@ -96,8 +96,6 @@ llvm_const = _SpineRawBuiltin("llvm_const")  # llvm_const(v, T) → llvm.mlir.co
 llvm_base_ptr = _SpineRawBuiltin("llvm_base_ptr")  # llvm_base_ptr(mem) → llvm.extractvalue desc[1] → !llvm.ptr
 llvm_gep = _SpineRawBuiltin("llvm_gep")  # llvm_gep(base, off, elem=) → llvm.getelementptr
 llvm_size = _SpineRawBuiltin("llvm_size")  # llvm_size(mem, dim=) → llvm.extractvalue desc[3,dim] → i64
-llvm_fadd = _SpineRawBuiltin("llvm_fadd")  # llvm_fadd(a, b) → llvm.fadd (vector or scalar)
-llvm_fmul = _SpineRawBuiltin("llvm_fmul")  # llvm_fmul(a, b) → llvm.fmul (vector or scalar)
 
 # ---------------------------------------------------------------------------
 # Document-facing sugar: dtype names and the `mem` / `index` / `raw_kernel`

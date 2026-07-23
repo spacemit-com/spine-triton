@@ -279,16 +279,6 @@ class LLVMDirectTextCodegen:
             "memref descriptors with no shape. Pass sizes as scalar params "
             "(e.g. K: tle.index) and use them for loop bounds.")
 
-    def _p_llvm_fadd(self, node):
-        lv, lt = self._gen_expr(node.args[0])
-        rv, _ = self._gen_expr(node.args[1])
-        return self._def(f"llvm.fadd {lv}, {rv} : {lt}", lt), lt
-
-    def _p_llvm_fmul(self, node):
-        lv, lt = self._gen_expr(node.args[0])
-        rv, _ = self._gen_expr(node.args[1])
-        return self._def(f"llvm.fmul {lv}, {rv} : {lt}", lt), lt
-
     def _p_call_intrinsic(self, node):
         intrin = node.args[0].value
         elts = node.args[1].elts
@@ -301,8 +291,21 @@ class LLVMDirectTextCodegen:
             s, t = self._arg(e)
             ops.append(s)
             tys.append(t if t is not None else self._types.get(s, "i64"))
-        sig = f"({', '.join(tys)}) -> {rt}"
-        call = f'llvm.call_intrinsic "{intrin}"({", ".join(ops)}) : {sig}'
+
+        # Detect: plain LLVM op (llvm.fadd) vs intrinsic (llvm.riscv.vle / llvm.sadd.with.overflow)
+        # Heuristic: if name contains '.' after 'llvm', it's an intrinsic; otherwise plain op.
+        # Plain ops: llvm.fadd, llvm.fmul, llvm.getelementptr (emitted directly)
+        # Intrinsics: llvm.riscv.vle, llvm.sadd.with.overflow (wrapped in llvm.call_intrinsic)
+        is_intrinsic = '.' in intrin[5:] if intrin.startswith("llvm.") else False
+
+        if is_intrinsic:
+            sig = f"({', '.join(tys)}) -> {rt}"
+            call = f'llvm.call_intrinsic "{intrin}"({", ".join(ops)}) : {sig}'
+        else:
+            # Plain LLVM op: emit directly as "llvm.fadd %0, %1 : vector<[8]xf32>"
+            # For binary ops, signature is just the result type (operands already typed)
+            call = f'{intrin} {", ".join(ops)} : {rt}'
+
         if rt == "()":
             self._emit(call)
             return None, "()"

@@ -474,8 +474,9 @@ The **LLVM-direct path** is a second compilation route for kernels that use *onl
 | `llvm_poison(mlir_type)` | Emit poison (uninitialized) | RVV load intrinsics require a "merge" operand (the old register value); poison = "don't care". |
 | `llvm_base_ptr(mem)` | Extract data pointer from memref descriptor | Loads the rank-0 `{allocated, aligned, offset}` descriptor and returns `extractvalue[1]` (the aligned data pointer). |
 | `llvm_gep(ptr, offset, elem_type)` | Pointer arithmetic | `llvm.getelementptr %ptr[%offset] : (!llvm.ptr, i64) -> !llvm.ptr, elem_type`. |
-| `llvm_fadd(a, b)` | Vector FP add | `llvm.fadd %a, %b : vector<[8]xf32>`. Also `llvm_fmul`. |
 | `llvm_size(mem, dim)` | ❌ **unavailable** | The driver ABI passes rank-0 descriptors with no shape. Pass dimensions as scalar `index` params instead. |
+
+**Note:** Standard LLVM ops like `llvm.fadd`, `llvm.fmul`, etc. are available via `call_intrinsic("llvm.fadd", [a, b], result_type="vector<[8]xf32>")`. No separate wrappers — `call_intrinsic` is the unified entry point.
 
 ### Example: MV with vle/vse
 
@@ -497,8 +498,8 @@ def llvm_direct_mv(A: tle.mem("f32"), B: tle.mem("f32"),
         gb = tle.llvm_gep(tle.llvm_base_ptr(B), k, "f32")
         va = tle.call_intrinsic("llvm.riscv.vle", [pa, ga, vl], result_type="vector<[8]xf32>")
         vb = tle.call_intrinsic("llvm.riscv.vle", [pb, gb, vl], result_type="vector<[8]xf32>")
-        prod = tle.llvm_fmul(va, vb)
-        acc = tle.llvm_fadd(acc, prod)
+        prod = tle.call_intrinsic("llvm.fmul", [va, vb], result_type="vector<[8]xf32>")
+        acc = tle.call_intrinsic("llvm.fadd", [acc, prod], result_type="vector<[8]xf32>")
     gc = tle.llvm_base_ptr(C)
     tle.call_intrinsic("llvm.riscv.vse", [acc, gc, vl], result_type="()")
 

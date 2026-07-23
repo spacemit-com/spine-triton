@@ -16,7 +16,7 @@ from .call_registry import call
 from .builtins import proton_mark
 from .builtins import vconfig, vzero, vload, vmacc, vreduce_sum, vreduce_max, vreduce_min, vreduce_mul, vstore, alloc, pack, vpack, vmadot, vshape, vbroadcast, spread
 from .builtins import vmin, vmax, sqrt, rsqrt, vexp, vlog, sload, sstore, viota, abs, cast, select  # §6.4 elementwise + transcendental
-from .builtins import call_intrinsic, llvm_poison, llvm_const, llvm_base_ptr, llvm_gep, llvm_size, llvm_fadd, llvm_fmul  # LLVM-dialect llvm-direct
+from .builtins import call_intrinsic, llvm_poison, llvm_const, llvm_base_ptr, llvm_gep, llvm_size  # LLVM-dialect llvm-direct
 from .builtins import f16, f32, bf16
 from .builtins import mma_cube
 from .builtins import range as range  # noqa: A001 (shadows builtin intentionally)
@@ -69,8 +69,6 @@ __all__ = [
     "llvm_base_ptr",
     "llvm_gep",
     "llvm_size",
-    "llvm_fadd",
-    "llvm_fmul",
     "f16",
     "f32",
     "bf16",
