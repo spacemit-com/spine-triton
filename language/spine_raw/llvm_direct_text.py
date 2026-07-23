@@ -82,6 +82,7 @@ class LLVMDirectTextCodegen:
     # ------------------------------------------------------------------
     def emit_module(self, fn) -> str:
         params = _parse_signature(fn)
+        self._params = params  # Store for program_id computation
         src = textwrap.dedent(inspect.getsource(fn))
         func_node = next(n for n in ast.walk(ast.parse(src))
                          if isinstance(n, ast.FunctionDef))
@@ -278,6 +279,30 @@ class LLVMDirectTextCodegen:
             "llvm-direct: llvm_size is unavailable — the driver ABI passes rank-0 "
             "memref descriptors with no shape. Pass sizes as scalar params "
             "(e.g. K: tle.index) and use them for loop bounds.")
+
+    def _p_program_id(self, node):
+        """program_id(axis) -> i64 index of current program in the grid.
+
+        The driver ABI passes 6 trailing i32 args: gridX/Y/Z, progX/Y/Z.
+        program_id(0) -> progX, program_id(1) -> progY, program_id(2) -> progZ.
+        These are at indices [N, N+1, ..., N+5] where N = len(user params).
+        Grid args start at arg index N+3 (after gridX/Y/Z).
+        """
+        axis = node.args[0].value
+        if axis not in (0, 1, 2):
+            raise ValueError(f"program_id axis must be 0, 1, or 2; got {axis}")
+
+        # Count user params to find where grid/prog args start
+        # Each memref param takes 2 args (i64 rank, !llvm.ptr), scalar takes 1 (i64)
+        n_user_args = sum(2 if p[1].mlir_type.startswith("memref") else 1
+                          for p in self._params)
+        # Trailing 6 args: gridX/Y/Z (indices n_user_args+0/1/2), progX/Y/Z (indices n_user_args+3/4/5)
+        prog_arg_idx = n_user_args + 3 + axis  # progX at +3, progY at +4, progZ at +5
+
+        prog_ssa = f"%arg{prog_arg_idx}"
+        # Driver passes as i32, need to extend to i64 for arithmetic
+        pid_i64 = self._def(f"llvm.sext {prog_ssa} : i32 to i64", "i64")
+        return pid_i64, "i64"
 
     def _p_call_intrinsic(self, node):
         intrin = node.args[0].value
