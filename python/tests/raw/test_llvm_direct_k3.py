@@ -56,22 +56,23 @@ def llvm_direct_gemv_k3(A: tle.mem(f32), B: tle.mem(f32), C: tle.mem(f32, out=Tr
     Compute: C[row] = sum_k A[row*K + k] * B[k]  (true matrix-vector multiply)
     """
     vl = tle.llvm_const(8, "i64")
+    eight = tle.llvm_const(8, "i64")
     zero = tle.llvm_const(0, "i64")
-    row = tle.program_id(0)
-
-    # Compute row offset: A[row*K + k]
-    row_offset = tle.call_intrinsic("llvm.mul", [row, K], result_type="i64")
+    row = tle.program_id(0)          # this program's row — the ONLY per-program input
 
     # Accumulator for this row
     acc = tle.llvm_const("0.000000e+00", "vector<[8]xf32>")
 
-    # Loop over K dimension with vector stride
+    # Loop over K dimension with vector stride.
+    # SPMD idiom: the per-program offset (row*K + k) is computed INSIDE the kernel
+    # with natural Python arithmetic — the emitter lowers `*`/`+` to llvm.mul/llvm.add.
+    # No call_intrinsic boilerplate, and crucially no `A + offset` in the host body
+    # (which cannot cross the _sr_call boundary — see AGENT.md §8.1).
     for k in tle.range(zero, K, vl):
         pa = tle.llvm_poison("vector<[8]xf32>")
         pb = tle.llvm_poison("vector<[8]xf32>")
 
-        # A[row*K + k] offset
-        a_offset = tle.call_intrinsic("llvm.add", [row_offset, k], result_type="i64")
+        a_offset = row * K + k        # A[row*K + k] — natural arithmetic
         ga = tle.llvm_gep(tle.llvm_base_ptr(A), a_offset, "f32")
         gb = tle.llvm_gep(tle.llvm_base_ptr(B), k, "f32")
 
@@ -81,7 +82,7 @@ def llvm_direct_gemv_k3(A: tle.mem(f32), B: tle.mem(f32), C: tle.mem(f32, out=Tr
         acc = tle.call_intrinsic("llvm.fadd", [acc, prod], result_type="vector<[8]xf32>")
 
     # Store accumulated vector to C[row*8 : row*8+8]
-    c_offset = tle.call_intrinsic("llvm.mul", [row, tle.llvm_const(8, "i64")], result_type="i64")
+    c_offset = row * eight            # natural arithmetic
     gc = tle.llvm_gep(tle.llvm_base_ptr(C), c_offset, "f32")
     tle.call_intrinsic("llvm.riscv.vse", [acc, gc, vl], result_type="()")
 
@@ -148,6 +149,35 @@ def main():
         import traceback
         print("COMPILE/RUN FAILED:", type(e).__name__)
         traceback.print_exc()
+
+    # Test 3: fail-loud guard — wrong arity / computed-pointer in inputs must raise
+    # at compile time, not silently produce a wrong answer.
+    print(f"\n=== Fail-loud guard: arity mismatch must raise (not silent wrong answer) ===")
+    from triton.language.extra.spine_raw.call_registry import call as _sr_call_direct
+
+    @triton.jit
+    def bad_host(A, B, C, M, K):
+        # Deliberately drops M — inputs no longer match the kernel's 5 params.
+        # Pre-guard this silently ran with garbage; now it must raise ValueError.
+        _sr_call(llvm_direct_gemv_k3, outputs=[], inputs=[A, B, C, K])
+
+    try:
+        A2 = torch.arange(4 * 64, dtype=torch.float32)
+        B2 = torch.ones(64, dtype=torch.float32)
+        C2 = torch.zeros(32, dtype=torch.float32)
+        bad_host[(4,)](A2, B2, C2, 4, 64)
+        print("FAIL: expected guard to raise for arity mismatch, but call succeeded")
+    except Exception as e:
+        # Triton wraps the guard's ValueError in a CompilationError; inspect the
+        # full message chain (str(e) includes the __cause__ text on CompilationError).
+        msg = str(e)
+        if "LLVM-direct" in msg and "1:1" in msg:
+            print("PASS: guard raised as expected (fail-loud, not silent wrong answer)")
+            print(f"  via {type(e).__name__}, guard message propagated")
+        else:
+            import traceback
+            print(f"FAIL: raised {type(e).__name__} but guard message missing")
+            traceback.print_exc()
 
 
 if __name__ == "__main__":

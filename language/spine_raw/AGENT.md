@@ -528,6 +528,67 @@ The driver (`backend/driver.py:192`) passes each memref as a **rank-0** `Strided
 
 **Tests:** `python/tests/raw/test_llvm_direct_k3.py` (K3 numerical validation), `test_llvm_direct_emit.py` (x86→riscv64 .o chain). See commit `c599275` (initial) and `01ef396` (rename mode-1→llvm-direct).
 
+### 8.1 The SPMD contract — offsets live INSIDE the kernel, not in `inputs`
+
+`_sr_call` looks like a runtime function call, but in LLVM-direct mode it is **not**.
+Understanding why is the difference between correct code and a silent wrong answer.
+
+**What actually happens.** `_sr_call(fn, inputs=[...])` does *not* thread `inputs`
+into the callee. It emits `fn` as a standalone top-level `llvm.func` and stashes the
+text; `make_ttir` then **discards the entire host `@triton.jit` body** and swaps in
+that module. At launch, the driver calls the emitted symbol with the **host kernel's
+launch arguments**, positionally, each memref as a rank-0 descriptor with `offset=0`
+(`driver.py:192`). So:
+
+- The `inputs` list must be the kernel's **bare parameters, 1:1, in order** — it
+  mirrors the launch args, nothing more. `call_registry.py` enforces the arity and
+  raises `ValueError` on mismatch (fail-loud, not silent garbage).
+- A **per-program offset cannot be passed from the host.** Writing
+  `_sr_call(fn, inputs=[A + row*K, ...])` does **not** work — `A + row*K` is a
+  `tt.addptr` in the host body, which is thrown away. Every program would read `A[0]`.
+
+**Why this is not a limitation.** This is exactly the CUDA/SPMD model: you pass the
+**base pointer** `A` and compute the per-program slice **inside** the kernel from
+`program_id`. You would never pass `A + blockIdx*K` to a CUDA kernel either.
+
+**The idiom.** Compute offsets in the kernel with **natural Python arithmetic** —
+the emitter lowers `*` / `+` / `-` to `llvm.mul` / `llvm.add` / `llvm.sub`, so no
+`call_intrinsic` boilerplate is needed:
+
+```python
+@tle.raw_kernel
+def gemv(A: tle.mem("f32"), B: tle.mem("f32"),
+         C: tle.mem("f32", out=True), M: tle.index, K: tle.index):
+    vl = tle.llvm_const(8, "i64"); eight = tle.llvm_const(8, "i64")
+    zero = tle.llvm_const(0, "i64")
+    row = tle.program_id(0)                 # ← per-program identity, the ONLY thing that varies
+    acc = tle.llvm_const("0.000000e+00", "vector<[8]xf32>")
+    for k in tle.range(zero, K, vl):
+        ga = tle.llvm_gep(tle.llvm_base_ptr(A), row * K + k, "f32")   # natural arithmetic
+        gb = tle.llvm_gep(tle.llvm_base_ptr(B), k, "f32")
+        pa = tle.llvm_poison("vector<[8]xf32>"); pb = tle.llvm_poison("vector<[8]xf32>")
+        va = tle.call_intrinsic("llvm.riscv.vle", [pa, ga, vl], result_type="vector<[8]xf32>")
+        vb = tle.call_intrinsic("llvm.riscv.vle", [pb, gb, vl], result_type="vector<[8]xf32>")
+        prod = tle.call_intrinsic("llvm.fmul", [va, vb], result_type="vector<[8]xf32>")
+        acc = tle.call_intrinsic("llvm.fadd", [acc, prod], result_type="vector<[8]xf32>")
+    gc = tle.llvm_gep(tle.llvm_base_ptr(C), row * eight, "f32")       # natural arithmetic
+    tle.call_intrinsic("llvm.riscv.vse", [acc, gc, vl], result_type="()")
+
+@triton.jit
+def gemv_host(A, B, C, M, K):
+    _sr_call(gemv, outputs=[], inputs=[A, B, C, M, K])   # bare params, 1:1 — no A+offset
+
+gemv_host[(M,)](A.flatten(), B, C, M, K)                 # grid=(M,): one program per row
+```
+
+**Uniform offsets** (same for every program) need no kernel arithmetic at all — slice
+the tensor in Python before launch. The driver bakes the torch storage offset into
+`data_ptr()`, so `fn_host[(1,)](X[128:], ...)` hands the kernel a base pointer already
+advanced by 128 elements.
+
+**Tests:** `test_llvm_direct_k3.py` — grid=4 GEMV (per-program `program_id` offset,
+`max_err=0`) + fail-loud arity guard.
+
 ---
 
 ## 9. Debugging & IR inspection

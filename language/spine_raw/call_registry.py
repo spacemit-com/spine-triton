@@ -62,8 +62,28 @@ def call(fn, outputs=None, inputs=None, _semantic=None):
     # LLVM-direct bypass: detect and emit
     if getattr(fn, '_llvm_direct', False):
         from .llvm_direct_text import emit_llvm_direct_module
+        from .codegen import _parse_signature
         # emit_llvm_direct_module needs the raw Python function, not the JIT wrapper
         raw_fn = fn._fn if hasattr(fn, '_fn') else fn
+
+        # SPMD contract (fail-loud): the emitted llvm.func is called by the driver
+        # with the HOST kernel's launch arguments, positionally — the `inputs` list
+        # itself is NOT threaded through (the host @triton.jit body is discarded when
+        # make_ttir swaps in the emitted module). So `inputs` must be exactly the
+        # raw kernel's bare parameters, 1:1, same order. A per-program offset CANNOT
+        # be passed here (e.g. `A + row*K`): it lives inside the kernel, computed from
+        # program_id. Passing a computed pointer or wrong arity silently produced a
+        # wrong answer before this guard — every program would read the base address.
+        n_params = len(_parse_signature(raw_fn))
+        if len(inputs) != n_params:
+            raise ValueError(
+                f"spine_raw.call: LLVM-direct kernel {raw_fn.__name__!r} declares "
+                f"{n_params} parameter(s) but got {len(inputs)} input(s). In LLVM-direct "
+                f"mode `inputs` must be the kernel's bare parameters (the host's launch "
+                f"args), 1:1 in order — the host body is discarded, so a computed pointer "
+                f"like `A + row*K` is NOT passed through. Compute per-program offsets "
+                f"INSIDE the kernel from tle.program_id(axis). See AGENT.md §8.1.")
+
         llvm_module_text = emit_llvm_direct_module(raw_fn)
         # Stash for make_ttir via the process-global holder (no C++ module attr:
         # get_module/set_attr aren't bound in this libtriton API). This runs
