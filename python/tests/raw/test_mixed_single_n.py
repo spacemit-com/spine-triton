@@ -22,27 +22,30 @@ def pre_scale_tl(vec_ptr, vec_s_ptr, alpha, K, BLOCK: tl.constexpr):
 
 @tle.raw_kernel
 def gemv_spine_raw(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, out=True),
-                   K: tle.index, N: tle.index):
+                   K: tle.index, row_base: tle.index, row_end: tle.index):
     nvl = tle.vconfig(-1, 1)
     Kfloor = (K // nvl) * nvl
-    for n in tle.range(0, N, 1):
+    for n in tle.range(row_base, row_end, 1):
         acc = tle.vzero(f32)
         # Main loop: full vectors
         for ki in tle.range(0, Kfloor, nvl):
             vm = tle.vload(Mat, n * K + ki)
             vv = tle.vload(vec_s, ki)
             acc = tle.vmacc(acc, vm, vv)
-        # Tail: single fixed iteration, vconfig handles actual length
-        # When Kfloor==K, this loads/processes 0 elements (vconfig(0, 1))
-        tail_vl = tle.vconfig(K - Kfloor, 1)
-        tm = tle.vload(Mat, n * K + Kfloor)
-        tv = tle.vload(vec_s, Kfloor)
-        acc = tle.vmacc(acc, tm, tv)
+        # Tail: use working pattern from test_raw_mv_svector.py
+        for ki in tle.range(Kfloor, K, nvl):
+            nvl = tle.vconfig(K - ki, 1)
+            tm = tle.vload(Mat, n * K + ki)
+            tv = tle.vload(vec_s, ki)
+            acc = tle.vmacc(acc, tm, tv)
         tle.sstore(scores, n, tle.vreduce_sum(acc))
 
-@triton.jit
-def gemv_host(Mat, vec_s, scores, K, N):
-    _sr_call(gemv_spine_raw, outputs=[], inputs=[Mat, vec_s, scores, K, N])
+@triton.jit(do_not_specialize=["K", "N"])
+def gemv_host(Mat, vec_s, scores, K, N, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    row_base = pid * BLOCK
+    row_end = min(row_base + BLOCK, N)
+    _sr_call(gemv_spine_raw, outputs=[], inputs=[Mat, vec_s, scores, K, row_base, row_end])
 
 @tle.raw_kernel
 def post_scale_llvm(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
@@ -73,7 +76,7 @@ def test_single_n(N, K, alpha=1.5, BLOCK=64):
 
     grid1 = ((K + BLOCK - 1) // BLOCK,)
     pre_scale_tl[grid1](vec.contiguous(), vec_s, alpha, K, BLOCK=BLOCK)
-    gemv_host[(1,)](Mat.contiguous().reshape(-1), vec_s, scores, K, N)
+    gemv_host[(1,)](Mat.contiguous().reshape(-1), vec_s, scores, K, N, BLOCK=N)
     post_scale_host[(1,)](scores, out, N)
 
     ref = torch.mv(Mat.float(), (vec.float() * alpha).half().float()) * _BETA

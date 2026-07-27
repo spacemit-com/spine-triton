@@ -57,19 +57,19 @@ def pre_scale_tl(vec_ptr, vec_s_ptr, alpha, K, BLOCK: tl.constexpr):
 # K3-proven idiom. Tail loop handles arbitrary K.
 @tle.raw_kernel
 def gemv_spine_raw(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, out=True),
-                   K: tle.index, N: tle.index):
+                   K: tle.index, row_base: tle.index, row_end: tle.index):
     nvl = tle.vconfig(-1, 1)              # f16 lmul=1 → VLMAX=64
     Kfloor = (K // nvl) * nvl
-    for n in tle.range(0, N, 1):
+    for n in tle.range(row_base, row_end, 1):
         acc = tle.vzero(f32)
+        # Main loop: process full vectors
         for ki in tle.range(0, Kfloor, nvl):
             vm = tle.vload(Mat, n * K + ki)
             vv = tle.vload(vec_s, ki)
             acc = tle.vmacc(acc, vm, vv)
-        # Tail: iterate from Kfloor to K with step=1, not nvl
-        # Each iteration reconfigures vl for remaining elements
-        for ki in tle.range(Kfloor, K, 1):
-            tail_vl = tle.vconfig(K - ki, 1)
+        # Tail loop: step=nvl, but reconfigure inside (style from test_raw_mv_svector.py)
+        for ki in tle.range(Kfloor, K, nvl):
+            nvl = tle.vconfig(K - ki, 1)  # Reconfigure for tail length
             tm = tle.vload(Mat, n * K + ki)
             tv = tle.vload(vec_s, ki)
             acc = tle.vmacc(acc, tm, tv)
@@ -77,9 +77,12 @@ def gemv_spine_raw(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, 
 
 
 @triton.jit(do_not_specialize=["K", "N"])
-def gemv_host(Mat, vec_s, scores, K, N):
-    # spine_raw sub-kernel inlined as a tle.dsl_region into this host body
-    _sr_call(gemv_spine_raw, outputs=[], inputs=[Mat, vec_s, scores, K, N])
+def gemv_host(Mat, vec_s, scores, K, N, BLOCK: tl.constexpr):
+    # Use row_base/row_end pattern to avoid constant specialization
+    pid = tl.program_id(0)
+    row_base = pid * BLOCK
+    row_end = min(row_base + BLOCK, N)
+    _sr_call(gemv_spine_raw, outputs=[], inputs=[Mat, vec_s, scores, K, row_base, row_end])
 
 
 # ── 层级 3: call_intrinsic (LLVM-direct) —— post-scale out = scores * beta ───
@@ -117,8 +120,8 @@ def _run(N, K, alpha=1.5, BLOCK=64):
     # stage 1: pure tl elementwise pre-scale
     grid1 = ((K + BLOCK - 1) // BLOCK,)
     pre_scale_tl[grid1](vec.contiguous(), vec_s, alpha, K, BLOCK=BLOCK)
-    # stage 2: spine_raw GEMV (Mat @ vec_s), grid=1
-    gemv_host[(1,)](Mat.contiguous().reshape(-1), vec_s, scores, K, N)
+    # stage 2: spine_raw GEMV (Mat @ vec_s), grid=1 with BLOCK=N
+    gemv_host[(1,)](Mat.contiguous().reshape(-1), vec_s, scores, K, N, BLOCK=N)
     # stage 3: llvm-direct post-scale (scores * beta), grid=1
     post_scale_host[(1,)](scores, out, N)
 
