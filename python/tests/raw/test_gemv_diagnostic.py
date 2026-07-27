@@ -22,8 +22,9 @@ def gemv_spine_raw(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, 
             vm = tle.vload(Mat, n * K + ki)
             vv = tle.vload(vec_s, ki)
             acc = tle.vmacc(acc, vm, vv)
-        for ki in tle.range(Kfloor, K, nvl):
-            nvl = tle.vconfig(K - ki, 1)
+        # Tail: iterate from Kfloor to K with step=1
+        for ki in tle.range(Kfloor, K, 1):
+            tail_vl = tle.vconfig(K - ki, 1)
             tm = tle.vload(Mat, n * K + ki)
             tv = tle.vload(vec_s, ki)
             acc = tle.vmacc(acc, tm, tv)
