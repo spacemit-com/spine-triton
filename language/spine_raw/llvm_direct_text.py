@@ -337,6 +337,67 @@ class LLVMDirectTextCodegen:
         return self._def(call, rt), rt
 
 
+def emit_llvm_func_for_inline(fn) -> tuple[str, list[str]]:
+    """Emit an llvm.func that can be called from a host func.func.
+
+    Unlike emit_module (which wraps the llvm.func in a standalone module),
+    this returns just the function text to be appended as a sibling in a
+    mixed-mode module.
+
+    Returns:
+        (func_text, param_types) where:
+        - func_text is the complete llvm.func definition (no module wrapper)
+        - param_types is a list of MLIR type strings for the call site
+          Format: ["i64", "!llvm.ptr", "i64", ...] (memref→i64+ptr, scalar→i64)
+    """
+    codegen = LLVMDirectTextCodegen()
+    params = _parse_signature(fn)
+    codegen._params = params
+    src = textwrap.dedent(inspect.getsource(fn))
+    func_node = next(n for n in ast.walk(ast.parse(src))
+                     if isinstance(n, ast.FunctionDef))
+
+    # Build signature WITHOUT 6 trailing grid args (caller will convert memref→ptr)
+    codegen._mem_ptr: dict[str, str] = {}
+    codegen._mem_dtype: dict[str, str] = {}
+    sig: list[str] = []
+    param_types: list[str] = []
+    ai = 0
+
+    for pname, ann in params:
+        if ann.mlir_type.startswith("memref"):
+            # Simplified ABI: memref → (i64 rank, !llvm.ptr descriptor)
+            sig.append(f"%arg{ai}: i64")
+            sig.append(f"%arg{ai+1}: !llvm.ptr")
+            param_types.append("i64")
+            param_types.append("!llvm.ptr")
+            codegen._mem_ptr[pname] = f"%arg{ai+1}"
+            codegen._mem_dtype[pname] = codegen._mem_elem(ann.mlir_type)
+            ai += 2
+        else:  # scalar
+            a = f"%arg{ai}"
+            sig.append(f"{a}: i64")
+            param_types.append("i64")
+            codegen._env[pname] = a
+            codegen._types[a] = "i64"
+            ai += 1
+
+    # Generate body
+    for stmt in func_node.body:
+        if isinstance(stmt, ast.Pass):
+            continue
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+            continue
+        codegen._gen_stmt(stmt)
+    codegen._emit("llvm.return")
+
+    # Return just the llvm.func text (no module wrapper)
+    body = "\n".join(codegen._lines)
+    func_text = f"  llvm.func @{fn.__name__}({', '.join(sig)}) {{\n{body}\n  }}"
+
+    return func_text, param_types
+
+
 def emit_llvm_direct_module(fn) -> str:
     """Convenience: build a fresh codegen and return the module text."""
     return LLVMDirectTextCodegen().emit_module(fn)

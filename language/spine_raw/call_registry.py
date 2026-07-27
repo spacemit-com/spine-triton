@@ -29,7 +29,7 @@ def _to_handle(v, builder, param_type_str: str):
 # compiles one kernel at a time, so a process-global holder is a safe, C++-free
 # channel from call() → make_ttir (avoids binding get_module/set_attr, which
 # don't exist in this libtriton API and would need a full riscv64 rebuild).
-_PENDING_LLVM_DIRECT_MODULE: dict[str, str] = {}
+_PENDING_LLVM_DIRECT_MODULE: dict[str, any] = {}
 
 
 def take_pending_llvm_direct_module(kernel_name: str = None):
@@ -41,6 +41,16 @@ def take_pending_llvm_direct_module(kernel_name: str = None):
     text = _PENDING_LLVM_DIRECT_MODULE.pop("text", None)
     name = _PENDING_LLVM_DIRECT_MODULE.pop("name", None)
     return text, name
+
+
+def take_pending_llvm_funcs():
+    """make_ttir calls this to retrieve + clear pending llvm.func siblings for mixed mode.
+
+    Returns list of llvm.func text strings (no module wrapper), or empty list.
+    Used when host contains both normal ops and llvm-direct calls.
+    """
+    funcs = _PENDING_LLVM_DIRECT_MODULE.pop("llvm_funcs", [])
+    return funcs
 
 
 def call(fn, outputs=None, inputs=None, _semantic=None):
