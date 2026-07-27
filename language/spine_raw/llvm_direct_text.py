@@ -35,7 +35,7 @@ _DESC = "!llvm.struct<(ptr, ptr, i64)>"
 class LLVMDirectTextCodegen:
     """Walk a @spine_raw fn and emit a top-level `llvm.func` module as text."""
 
-    def __init__(self) -> None:
+    def __init__(self, sibling_abi: bool = False) -> None:
         self._ssa = 0            # %0, %1, ... counter
         self._blk = 0            # ^bb0, ^bb1, ... counter
         self._lines: list[str] = []
@@ -44,6 +44,13 @@ class LLVMDirectTextCodegen:
         self._desc_cache: dict[str, str] = {}  # pyname -> loaded-descriptor SSA
         self._arch = '0xA064'
         self._num_threads = 4
+        # sibling_abi=True: called from a func.func sibling (mixed mode). Each
+        # memref param arrives as a single i64 (the aligned data pointer, cast
+        # from index by the host bridge), recovered via llvm.inttoptr — NOT the
+        # driver's (i64 rank, !llvm.ptr descriptor) pair. No 6 trailing grid args.
+        # Proven by test_manual_mixed_ir.py.
+        self._sibling_abi = sibling_abi
+        self._ptr_i64: dict[str, str] = {}  # pyname -> i64 arg holding data ptr
 
     # --- SSA / emit helpers ---
     def _fresh(self) -> str:
@@ -252,6 +259,15 @@ class LLVMDirectTextCodegen:
 
     def _p_llvm_base_ptr(self, node):
         pname = node.args[0].id
+        if self._sibling_abi:
+            # Sibling ABI: memref arrives as a single i64 (aligned data ptr).
+            # Recover the pointer via inttoptr, once, cached.
+            base = self._desc_cache.get(pname)
+            if base is None:
+                i64_arg = self._ptr_i64[pname]
+                base = self._def(f"llvm.inttoptr {i64_arg} : i64 to !llvm.ptr", "!llvm.ptr")
+                self._desc_cache[pname] = base
+            return base, "!llvm.ptr"
         desc = self._desc_cache.get(pname)
         if desc is None:
             ptr_arg = self._mem_ptr[pname]
@@ -350,14 +366,17 @@ def emit_llvm_func_for_inline(fn) -> tuple[str, list[str]]:
         - param_types is a list of MLIR type strings for the call site
           Format: ["i64", "!llvm.ptr", "i64", ...] (memref→i64+ptr, scalar→i64)
     """
-    codegen = LLVMDirectTextCodegen()
+    codegen = LLVMDirectTextCodegen(sibling_abi=True)
     params = _parse_signature(fn)
     codegen._params = params
     src = textwrap.dedent(inspect.getsource(fn))
     func_node = next(n for n in ast.walk(ast.parse(src))
                      if isinstance(n, ast.FunctionDef))
 
-    # Build signature WITHOUT 6 trailing grid args (caller will convert memref→ptr)
+    # Sibling ABI (called from func.func, see test_manual_mixed_ir.py):
+    #   memref param → single i64 (aligned data ptr, cast from index by host)
+    #   scalar param → single i64
+    # No 6 trailing grid args. base_ptr recovered via llvm.inttoptr inside body.
     codegen._mem_ptr: dict[str, str] = {}
     codegen._mem_dtype: dict[str, str] = {}
     sig: list[str] = []
@@ -365,22 +384,16 @@ def emit_llvm_func_for_inline(fn) -> tuple[str, list[str]]:
     ai = 0
 
     for pname, ann in params:
+        a = f"%arg{ai}"
+        sig.append(f"{a}: i64")
+        param_types.append("i64")
         if ann.mlir_type.startswith("memref"):
-            # Simplified ABI: memref → (i64 rank, !llvm.ptr descriptor)
-            sig.append(f"%arg{ai}: i64")
-            sig.append(f"%arg{ai+1}: !llvm.ptr")
-            param_types.append("i64")
-            param_types.append("!llvm.ptr")
-            codegen._mem_ptr[pname] = f"%arg{ai+1}"
+            codegen._ptr_i64[pname] = a
             codegen._mem_dtype[pname] = codegen._mem_elem(ann.mlir_type)
-            ai += 2
         else:  # scalar
-            a = f"%arg{ai}"
-            sig.append(f"{a}: i64")
-            param_types.append("i64")
             codegen._env[pname] = a
             codegen._types[a] = "i64"
-            ai += 1
+        ai += 1
 
     # Generate body
     for stmt in func_node.body:

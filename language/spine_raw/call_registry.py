@@ -53,6 +53,18 @@ def take_pending_llvm_funcs():
     return funcs
 
 
+def take_pending_llvm_calls():
+    """Retrieve + clear pending mixed-mode llvm.call bridge specs.
+
+    Returns a list of {"callee": str, "arg_bridge": [{"pos": int,
+    "kind": "ptr"|"scalar"}, ...]}, one per _sr_call to an llvm-direct kernel
+    inside a host that also does other work. `pos` is the host func.func
+    argument index; `kind` selects the bridge (memref→data-ptr-i64 vs i32→i64).
+    Empty list if the just-compiled kernel had no mixed llvm-direct calls.
+    """
+    return _PENDING_LLVM_DIRECT_MODULE.pop("llvm_calls", [])
+
+
 def call(fn, outputs=None, inputs=None, _semantic=None):
     """Inside @triton.jit: emit tle.dsl_region TTIR op holding the raw kernel body.
 
@@ -71,39 +83,66 @@ def call(fn, outputs=None, inputs=None, _semantic=None):
 
     # LLVM-direct bypass: detect and emit
     if getattr(fn, '_llvm_direct', False):
-        from .llvm_direct_text import emit_llvm_direct_module
+        from .llvm_direct_text import emit_llvm_func_for_inline
         from .codegen import _parse_signature
-        # emit_llvm_direct_module needs the raw Python function, not the JIT wrapper
+        # emit_llvm_func_for_inline needs the raw Python function, not the JIT wrapper
         raw_fn = fn._fn if hasattr(fn, '_fn') else fn
 
-        # SPMD contract (fail-loud): the emitted llvm.func is called by the driver
-        # with the HOST kernel's launch arguments, positionally — the `inputs` list
-        # itself is NOT threaded through (the host @triton.jit body is discarded when
-        # make_ttir swaps in the emitted module). So `inputs` must be exactly the
-        # raw kernel's bare parameters, 1:1, same order. A per-program offset CANNOT
-        # be passed here (e.g. `A + row*K`): it lives inside the kernel, computed from
-        # program_id. Passing a computed pointer or wrong arity silently produced a
-        # wrong answer before this guard — every program would read the base address.
+        # Arity guard: inputs must match kernel signature
         n_params = len(_parse_signature(raw_fn))
         if len(inputs) != n_params:
             raise ValueError(
                 f"spine_raw.call: LLVM-direct kernel {raw_fn.__name__!r} declares "
-                f"{n_params} parameter(s) but got {len(inputs)} input(s). In LLVM-direct "
-                f"mode `inputs` must be the kernel's bare parameters (the host's launch "
-                f"args), 1:1 in order — the host body is discarded, so a computed pointer "
-                f"like `A + row*K` is NOT passed through. Compute per-program offsets "
-                f"INSIDE the kernel from tle.program_id(axis). See AGENT.md §8.1.")
+                f"{n_params} parameter(s) but got {len(inputs)} input(s).")
 
-        llvm_module_text = emit_llvm_direct_module(raw_fn)
-        # Stash for make_ttir via the process-global holder (no C++ module attr:
-        # get_module/set_attr aren't bound in this libtriton API). This runs
-        # inside make_ir, before the ttir stage reads it — same-process, same
-        # single-kernel compile, so the handoff is safe.
-        _PENDING_LLVM_DIRECT_MODULE["text"] = llvm_module_text
-        # The emitted llvm.func is named after the raw kernel (raw_fn), NOT the
-        # @triton.jit host wrapper. The launcher looks up metadata["name"] as the
-        # binary symbol, so make_ttir must override name to the emitted symbol.
-        _PENDING_LLVM_DIRECT_MODULE["name"] = raw_fn.__name__
+        # Emit the sibling llvm.func (no module wrapper). param_types is the
+        # sibling ABI (every param → i64: memref=data-ptr-as-i64, scalar=i64).
+        llvm_func_text, param_types = emit_llvm_func_for_inline(raw_fn)
+        if "llvm_funcs" not in _PENDING_LLVM_DIRECT_MODULE:
+            _PENDING_LLVM_DIRECT_MODULE["llvm_funcs"] = []
+        _PENDING_LLVM_DIRECT_MODULE["llvm_funcs"].append(llvm_func_text)
+
+        # Mixed-mode host bridge is emitted by compiler.py at the *linalgdir*
+        # stage (func.func form), where memrefs exist and llvm.call is legal —
+        # not here at TTIR (tt.ptr, no bridge ops). We can't reference the host
+        # func.func's SSA args from here, but they map 1:1 by POSITION to the
+        # host's entry-block args (verified: tt.func user params → func.func
+        # %arg0.. in the same order). So record each input's host-arg index.
+        builder = _semantic.builder
+        entry = builder.get_insertion_block()
+        n_block_args = entry.get_num_arguments()
+        # NOTE: .id is a bound method on this libtriton build (pybind11), not a
+        # property — call it. Using the method object as a dict key silently never
+        # matches, so every input would look like a non-host-arg. (K3-verified.)
+        argid_to_pos = {entry.get_argument(i).id(): i for i in range(n_block_args)}
+
+        params = _parse_signature(raw_fn)  # [(pname, ann), ...]
+        arg_bridge = []  # per-input: {"pos": int, "kind": "ptr"|"scalar"}
+        for (pname, ann), v in zip(params, inputs):
+            if not hasattr(v, "handle"):
+                raise ValueError(
+                    f"spine_raw.call: LLVM-direct kernel {raw_fn.__name__!r} in "
+                    f"mixed mode requires every input to be a host launch arg "
+                    f"(a tt.func parameter); got a computed/constexpr value for "
+                    f"{pname!r}. Compute derived values INSIDE the kernel from "
+                    f"tle.program_id(axis).")
+            pos = argid_to_pos.get(v.handle.id())
+            if pos is None:
+                raise ValueError(
+                    f"spine_raw.call: input for {pname!r} of {raw_fn.__name__!r} "
+                    f"is not a host entry-block argument. In mixed mode inputs must "
+                    f"be the host's own launch parameters (bridged to the sibling "
+                    f"llvm.func by position at the linalgdir stage).")
+            kind = "ptr" if ann.mlir_type.startswith("memref") else "scalar"
+            arg_bridge.append({"pos": pos, "kind": kind})
+
+        if "llvm_calls" not in _PENDING_LLVM_DIRECT_MODULE:
+            _PENDING_LLVM_DIRECT_MODULE["llvm_calls"] = []
+        _PENDING_LLVM_DIRECT_MODULE["llvm_calls"].append({
+            "callee": raw_fn.__name__,
+            "arg_bridge": arg_bridge,   # ordered per sibling param
+        })
+
         return  # skip dsl_region emission
 
     # Normal path
