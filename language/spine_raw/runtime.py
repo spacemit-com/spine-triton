@@ -2,50 +2,59 @@
 # SPDX-License-Identifier: MIT
 """@spine_raw decorator and SpineLinalgJITFunction.
 
-SpineLinalgJITFunction wraps a Python function annotated with In/InOut,
-triggers SpineMLIRCodeGenerator on first call to make_linalg(), and
-caches the resulting MLIR string.
+SpineLinalgJITFunction wraps a Python function annotated with In/InOut and,
+on first call to make_body_builder(), runs SpineMLIRBuilderCodegen to build
+the raw kernel body straight through the C++ builder API (no MLIR text).
 """
 from __future__ import annotations
 
-import inspect
 from typing import Callable
 
-from .codegen import SpineMLIRCodeGenerator
+from .codegen import SpineMLIRBuilderCodegen
 
 
 class SpineLinalgJITFunction:
-    """Wrapper around a @spine_raw function that compiles Python → Linalg MLIR.
+    """Wrapper around a @spine_raw function that emits its body via builder API.
 
     Attributes:
-        _fn         : original Python function
-        _mlir_text  : cached bare func.func string (None until make_linalg() called)
+        _fn                  : original Python function
+        _body_builder_cache  : cached (param_type_strs, body_builder) | None
     """
 
     def __init__(self, fn: Callable) -> None:
         self._fn = fn
-        self._mlir_text: str | None = None
-        # Tell Triton's JIT not to track this as a mutable global (same as
-        # FlagTree's MLIRJITFunction.__triton_builtin__)
+        self._body_builder_cache = None   # (param_type_strs, body_builder) | None
         self.__triton_builtin__ = True
+        # LLVM-direct: mark functions using only llvm_* primitives for direct llvm.func emission
+        self._llvm_direct = self._detect_llvm_direct(fn)
+
+    def _detect_llvm_direct(self, fn: Callable) -> bool:
+        """Detect if fn uses only llvm-direct (llvm_*) primitives by scanning its source."""
+        import ast
+        import inspect
+        try:
+            src = inspect.getsource(fn)
+            tree = ast.parse(src)
+            # Scan for calls to tle.llvm_* or sr.llvm_* (llvm-direct markers)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    if isinstance(node.func, ast.Attribute):
+                        if node.func.attr.startswith("llvm_") or node.func.attr == "call_intrinsic":
+                            return True
+            return False
+        except Exception:
+            return False
 
     @property
     def __name__(self) -> str:
         return self._fn.__name__
 
-    def make_linalg(self) -> str:
-        """Trigger AST → MLIR compilation (lazy, cached).
-
-        Returns a module-wrapped MLIR string:
-            module {
-              func.func @name(...) { ... }
-            }
-        """
-        if self._mlir_text is None:
-            gen = SpineMLIRCodeGenerator()
-            func_text = gen.generate(self._fn)
-            self._mlir_text = "module {{\n{}\n}}\n".format(func_text)
-        return self._mlir_text
+    def make_body_builder(self):
+        """Return (param_type_strs, body_builder) for create_tle_dsl_region_direct."""
+        if self._body_builder_cache is None:
+            gen = SpineMLIRBuilderCodegen()
+            self._body_builder_cache = gen.generate_builder(self._fn)
+        return self._body_builder_cache
 
     def __repr__(self) -> str:
         return f"SpineLinalgJITFunction({self._fn.__name__!r})"
@@ -65,9 +74,7 @@ def spine_raw(*, name: str = "linalg") -> Callable:
             ...
     """
     if name not in _REGISTRY:
-        raise ValueError(
-            f"spine_raw: unknown backend {name!r}. Available: {list(_REGISTRY)}"
-        )
+        raise ValueError(f"spine_raw: unknown backend {name!r}. Available: {list(_REGISTRY)}")
     cls = _REGISTRY[name]
 
     def decorator(fn: Callable) -> SpineLinalgJITFunction:

@@ -382,9 +382,9 @@ void PtrAnalysis::visitOperandSub(
   state.source = lhsState.source ? lhsState.source : rhsState.source;
 
   if (lhsState.scalar && rhsState.scalar) {
-    state.scalar = arith::SubIOp::create(rewriter, loc,
-                                         lhsState.scalar, rhsState.scalar)
-                       .getResult();
+    state.scalar =
+        arith::SubIOp::create(rewriter, loc, lhsState.scalar, rhsState.scalar)
+            .getResult();
   } else if (lhsState.getRank() == 0) {
     // One side is a scalar constant zero; just take the non-zero scalar.
     state.scalar = lhsState.scalar ? lhsState.scalar : rhsState.scalar;

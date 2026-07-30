@@ -12,53 +12,121 @@ from __future__ import annotations
 
 
 class _SpineRawBuiltin:
+
     def __init__(self, name: str):
         self._name = name
 
     def __call__(self, *args, **kwargs):
-        raise NotImplementedError(
-            f"spine_raw.{self._name}() must only be called inside a "
-            f"@spine_raw function body (used by SpineMLIRCodeGenerator)"
-        )
+        raise NotImplementedError(f"spine_raw.{self._name}() must only be called inside a "
+                                  f"@spine_raw function body (used by SpineMLIRCodeGenerator)")
 
     def __repr__(self):
         return f"spine_raw.{self._name}"
 
 
 class _SpineRawRange:
-    """Marker for spine_raw.range(n) — translated to scf.for upper bound."""
-    def __call__(self, n):
-        raise NotImplementedError(
-            "spine_raw.range() must only be used in a @spine_raw function body"
-        )
+    """Marker for spine_raw.range(...) — translated to scf.for bounds.
+
+    Accepts range(stop) or range(start, stop, step) like the Python builtin;
+    only ever evaluated by SpineMLIRCodeGenerator (raises if called directly).
+    """
+
+    def __call__(self, *args):
+        raise NotImplementedError("spine_raw.range() must only be used in a @spine_raw function body")
 
     def __repr__(self):
         return "spine_raw.range"
 
 
 # Public built-in objects
-splat    = _SpineRawBuiltin("splat")     # splat(val, shape=[N]) → vector.splat
-load_vec = _SpineRawBuiltin("load_vec")  # load_vec(ptr, idx, N, dtype) → vector.load
-store_vec = _SpineRawBuiltin("store_vec")# store_vec(ptr, idx, vec) → vector.store
-store_scalar = _SpineRawBuiltin("store_scalar")  # store_scalar(ptr, idx, val) → memref.store
-fma      = _SpineRawBuiltin("fma")       # fma(a, b, c) → vector.fma
-extf     = _SpineRawBuiltin("extf")      # extf(v, dtype) → arith.extf
-reduce_add = _SpineRawBuiltin("reduce_add")  # reduce_add(vec) → vector.reduction <add>
-matmul   = _SpineRawBuiltin("matmul")    # matmul(lhs, rhs, acc, m, n, k) → vector_ext.matmul
-load_tile = _SpineRawBuiltin("load_tile")  # load_tile(ptr, row_base, row_stride, M, K, dtype) → MxK row-major vector<(M*K)>
-pad_vec  = _SpineRawBuiltin("pad_vec")   # pad_vec(vec, total) → place vec at front of vector<total>, rest zero
-extract_elem = _SpineRawBuiltin("extract_elem")  # extract_elem(vec, idx) → vector.extract
-batch_macc = _SpineRawBuiltin("batch_macc")  # batch_macc(lhs_memref, rhs_vec, acc_vec) → vector_ext.batch_macc
-view_2d  = _SpineRawBuiltin("view_2d")   # view_2d(ptr, rows, cols, dtype) → 2D strided memref view
-load_2d  = _SpineRawBuiltin("load_2d")   # load_2d(ptr, rows, cols, dtype) → vector<rows x cols>
-load_2d_at = _SpineRawBuiltin("load_2d_at")  # load_2d_at(ptr, elem_off, rows, cols, dtype)
-load_2d_t = _SpineRawBuiltin("load_2d_t")  # load_2d_t(ptr, row_base, K, NB, M, dtype) → transposed vector<KxNB>
-pack_2d_t = _SpineRawBuiltin("pack_2d_t")  # pack_2d_t(ptr, row_base, K, NB, M, dtype) → same but reads A row-major (unit inner stride) via alloca+linalg.generic transpose
-alloc_tcm_2d = _SpineRawBuiltin("alloc_tcm_2d")  # alloc_tcm_2d(K, NB, dtype) → memref<K×NB> via memref.alloc (→ spine_thread_malloc/TCM)
-pack_2d_t_into = _SpineRawBuiltin("pack_2d_t_into")  # pack_2d_t_into(buf, ptr, row_base, K, NB, M, dtype) → packs A^T into existing buf (no alloca)
-free_tcm = _SpineRawBuiltin("free_tcm")  # free_tcm(buf) → memref.dealloc (→ spine_thread_free)
 proton_mark = _SpineRawBuiltin("proton_mark")  # proton_mark(name, is_start) → rdtime + func.call @proton_record
-splat_2d = _SpineRawBuiltin("splat_2d")  # splat_2d(val, rows, cols, dtype) → vector<rows x cols>
-store_2d = _SpineRawBuiltin("store_2d")  # store_2d(ptr, rows, cols, vec) → 2D transfer_write
-store_2d_at = _SpineRawBuiltin("store_2d_at")  # store_2d_at(ptr, elem_off, rows, cols, vec)
-range    = _SpineRawRange()              # range(n) → scf.for upper bound
+range = _SpineRawRange()  # range(n) / range(start, stop, step) → scf.for bounds
+
+# ---------------------------------------------------------------------------
+# svector-level markers (feishu 3.3 mv 示例). Fixed-VL eDSL that maps document
+# names to already-verified vector/arith/memref primitives.
+#   vconfig  : vconfig(avl, lmul) → VLMAX const (SEW from dtype); avl deferred
+#   vzero    : vector.broadcast 0.0 -> vector<VL x dtype>
+#   vload    : transfer_read a VL-length vector (1D idx, or 2D idx + row stride)
+#   vmacc    : widening multiply-accumulate  acc += extf(x) * extf(y)
+#   vreduce_sum : vector.reduction <add> -> scalar
+#   vstore   : store a scalar to memref[idx]
+#   alloc    : memref.alloc N-D scratch (写法3 packed_B)
+#   pack     : pack a B row-block into the packed_B scratch layout (写法3)
+#   vpack    : vpack(v, group_len) → vector_ext.group_interleave → 多条 smt.vpack.vv (cube 交织)
+#   vmadot   : vmadot(acc, x, y) → vector_ext.cross_batch_matmul → 多条 smt.vfwmadot (批量 cube 叉乘)
+#   vshape   : vshape(v, shape) → vector.shape_cast (reshape)
+#   vbroadcast: vbroadcast(v, n) → vector.broadcast (广播维)
+# ---------------------------------------------------------------------------
+vconfig = _SpineRawBuiltin("vconfig")  # vconfig(avl, lmul) → VL = min(avl, VLMAX), VLMAX = lmul × VLEN / SEW (SPEC §6.1)
+vzero = _SpineRawBuiltin("vzero")  # vzero(dtype) → vector<VL x dtype> zeros
+vload = _SpineRawBuiltin("vload")  # vload(ptr, idx_tuple[, stride]) → vector<VL x dtype>
+vmacc = _SpineRawBuiltin("vmacc")  # vmacc(acc, x, y) → widening fma accumulate
+vreduce_sum = _SpineRawBuiltin("vreduce_sum")  # vreduce_sum(vec) → scalar
+vreduce_max = _SpineRawBuiltin("vreduce_max")  # vreduce_max(vec) → scalar  (vector.reduction<maxf/maxsi>)
+vreduce_min = _SpineRawBuiltin("vreduce_min")  # vreduce_min(vec) → scalar  (vector.reduction<minf/minsi>)
+vreduce_mul = _SpineRawBuiltin("vreduce_mul")  # vreduce_mul(vec) → scalar  (vector.reduction<mul>)
+vstore = _SpineRawBuiltin("vstore")  # vstore(ptr, idx, vec) → transfer_write (vector only, width = VL; use sstore for scalars)
+alloc = _SpineRawBuiltin("alloc")  # alloc(shape_tuple, dtype) → memref.alloc
+pack = _SpineRawBuiltin("pack")  # pack(src, src_idx, dst, dst_shape) → pack rows (写法3)
+vpack = _SpineRawBuiltin("vpack")  # vpack(v, group_len) → vector_ext.group_interleave → 多条 smt.vpack.vv (cube 交织, vector<b×N>→<(b/2)×2N>)
+vmadot = _SpineRawBuiltin("vmadot")  # vmadot(acc, x, y) → vector_ext.cross_batch_matmul → 多条 smt.vfwmadot (批量 cube 叉乘)
+vshape = _SpineRawBuiltin("vshape")  # vshape(v, shape) → vector.shape_cast (同 numel reshape)
+vbroadcast = _SpineRawBuiltin("vbroadcast")  # vbroadcast(v, n) → vector.broadcast: vector<64> → vector<n×64> (广播维)
+spread = _SpineRawBuiltin("spread")  # spread(src, cube_shape=(kc,n,k)) → scf.for 标量广播 pack → memref<kc×(n*k)>(A 的 n 广播, 绕开 vscale)
+imin = _SpineRawBuiltin("imin")  # imin(a, b) → arith.minsi on index(valid_rows = imin(MB, M-row_base))
+# §6.4 逐元素具名函数(算术运算符直接用 Python 操作符, 无需 marker)
+vmin = _SpineRawBuiltin("vmin")  # vmin(a, b) → 逐元素 min → arith.minimumf / minsi
+vmax = _SpineRawBuiltin("vmax")  # vmax(a, b) → 逐元素 max → arith.maximumf / maxsi
+sqrt = _SpineRawBuiltin("sqrt")  # sqrt(a) → √a → math.sqrt
+rsqrt = _SpineRawBuiltin("rsqrt")  # rsqrt(a) → 1/√a → math.rsqrt
+vexp = _SpineRawBuiltin("vexp")  # vexp(a)  → eˣ  → math.exp  (vector or scalar)
+vlog = _SpineRawBuiltin("vlog")  # vlog(a)  → ln(a) → math.log (vector or scalar)
+sload = _SpineRawBuiltin("sload")  # sload(ptr, idx, dtype=f32) → scalar load from ptr[idx] (s-prefix = scalar, no VL)
+sstore = _SpineRawBuiltin("sstore")  # sstore(ptr, idx, scalar) → scalar store to ptr[idx] (s-prefix = scalar, no VL)
+viota = _SpineRawBuiltin("viota")  # viota() → vector<VLxindex> [0,1,..,VL-1] (vector.step), for argmax index tracking
+abs = _SpineRawBuiltin("abs")  # abs(a) → |a| → math.absf / absi  # noqa: A001 (shadows builtin intentionally)
+cast = _SpineRawBuiltin("cast")  # cast(a, dtype) → 类型转换 → arith.extf/truncf/sitofp/fptosi/extsi/trunci
+select = _SpineRawBuiltin("select")  # select(m, a, b) → a if m else b → arith.select (§6.8 回退)
+
+# ── LLVM-dialect llvm-direct primitives (full call_intrinsic kernel, all scalable) ──
+call_intrinsic = _SpineRawBuiltin("call_intrinsic")  # call_intrinsic(name, [ops], result_type=T) → llvm.call_intrinsic / dotted llvm op
+llvm_poison = _SpineRawBuiltin("llvm_poison")  # llvm_poison(T) → llvm.mlir.poison : T (vle passthru)
+llvm_const = _SpineRawBuiltin("llvm_const")  # llvm_const(v, T) → llvm.mlir.constant (scalar or dense splat)
+llvm_base_ptr = _SpineRawBuiltin("llvm_base_ptr")  # llvm_base_ptr(mem) → llvm.extractvalue desc[1] → !llvm.ptr
+llvm_gep = _SpineRawBuiltin("llvm_gep")  # llvm_gep(base, off, elem=) → llvm.getelementptr
+llvm_size = _SpineRawBuiltin("llvm_size")  # llvm_size(mem, dim=) → llvm.extractvalue desc[3,dim] → i64
+
+# ---------------------------------------------------------------------------
+# Document-facing sugar: dtype names and the `mem` / `index` / `raw_kernel`
+# helpers so a kernel can be written close to the feishu 3.3 surface syntax.
+# dtype constants are plain MLIR element-type strings.
+# ---------------------------------------------------------------------------
+f16 = "f16"
+f32 = "f32"
+bf16 = "bf16"
+
+# ---------------------------------------------------------------------------
+# MMA cube size per dtype (K3, arch 0xA064). Mirrors spine-mlir's
+# TargetDescriptionAnalysis::getMMACubicSize (MMACubicSize{m, n, k}):
+#   f16/bf16 -> {8, 8, 8},  i8 -> {8, 16, 8},  i4 -> {8, 32, 8}
+# so kernels derive spread/vmadot cube dims from the dtype instead of a
+# hardcoded 8. Keyed by the eDSL element-type string.
+# ---------------------------------------------------------------------------
+_MMA_CUBE = {
+    "f16": (8, 8, 8),
+    "bf16": (8, 8, 8),
+    "i8": (8, 16, 8),
+    "i4": (8, 32, 8),
+}
+
+
+def mma_cube(dtype: str) -> tuple:
+    """Return the (m, n, k) MMA cube size for `dtype` on K3.
+
+    Mirrors TargetDescriptionAnalysis::getMMACubicSize so raw kernels can size
+    spread/vmadot cubes from the target's MMA shape rather than a literal 8.
+    """
+    if dtype not in _MMA_CUBE:
+        raise KeyError(f"no MMA cube size for dtype {dtype!r}; known: {sorted(_MMA_CUBE)}")
+    return _MMA_CUBE[dtype]

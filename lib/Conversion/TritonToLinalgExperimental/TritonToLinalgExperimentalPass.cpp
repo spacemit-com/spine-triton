@@ -37,8 +37,8 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/IRMapping.h"
-#include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/Passes.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
@@ -76,7 +76,7 @@ struct InlineSpineRawRegion
           if (isa<IndexType>(arg.getType()) &&
               operand.getType().isSignlessInteger(32))
             mapped = arith::IndexCastOp::create(b, op->getLoc(),
-                                                 b.getIndexType(), operand);
+                                                b.getIndexType(), operand);
         mapping.map(arg, mapped);
       }
       for (Operation &inner : body) {
@@ -165,8 +165,9 @@ public:
     }
 
     // Allow unregistered ops (spine_ext.raw_region, vector_ext.*, proton.record
-    // allowed via --allow-unregistered-dialect command-line flag (set in compiler.py
-    // at context-creation time — safe in multi-threaded passes, CLAUDE.md rule 40a).
+    // allowed via --allow-unregistered-dialect command-line flag (set in
+    // compiler.py at context-creation time — safe in multi-threaded passes,
+    // CLAUDE.md rule 40a).
     if (failed(runPipeline(pm, getOperation()))) {
       signalPassFailure();
     }
