@@ -36,7 +36,7 @@ def layernorm_1d_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), N: tle.ind
         va = tle.cast(tle.vload(X, i), f32)
         acc1 = acc1 + va
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t1 = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         ta = tle.cast(tle.vload(X, i), f32)
         acc1 = acc1 + ta
     mean = tle.vreduce_sum(acc1) / N  # f32 scalar
@@ -47,7 +47,7 @@ def layernorm_1d_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), N: tle.ind
         vb = tle.cast(tle.vload(X, i), f32)
         acc2 = acc2 + vb * vb
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t2 = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tb = tle.cast(tle.vload(X, i), f32)  # fill=0: 0²=0, no inflation
         acc2 = acc2 + tb * tb
     var = tle.vreduce_sum(acc2) / N - mean * mean  # E[x²] - mean² = Var(x)
@@ -58,7 +58,7 @@ def layernorm_1d_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), N: tle.ind
         vc = tle.cast(tle.vload(X, i), f32)
         tle.vstore(out, i, (vc - mean) * scale)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t3 = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tc = tle.cast(tle.vload(X, i), f32)
         tle.vstore(out, i, (tc - mean) * scale)
 

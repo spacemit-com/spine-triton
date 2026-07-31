@@ -67,7 +67,7 @@ def _host_func_arg_types(linalgdir: str, func_name: str) -> list[str]:
     if not m:
         raise RuntimeError(f"mixed-mode: host func @{func_name} not found in linalgdir")
     i = m.end()
-    depth, start, args = 1, i, []
+    start, args = i, []
     ang = cur = par = 0
     while i < len(linalgdir):
         c = linalgdir[i]

@@ -28,7 +28,7 @@ def silu_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
         sig = 1.0 / (1.0 + tle.vexp(-vx))  # sigmoid(x)
         tle.vstore(out, i, vx * sig)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.vload(X, i, dtype=f32)
         sig2 = 1.0 / (1.0 + tle.vexp(-tx))
         tle.vstore(out, i, tx * sig2)

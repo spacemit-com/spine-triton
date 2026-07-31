@@ -34,7 +34,7 @@ def max_dim1_kernel(X: tle.mem(f32), vals: tle.mem(f32, out=True), idxs: tle.mem
         best_val = tle.select(gt, vx, best_val)
         best_idx = tle.select(gt, idx, best_idx)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.vload(X, base + i, dtype=f32, fill=-1e38)
         tidx = lane + tle.cast(i, f32)
         gt2 = tx > best_val
@@ -90,7 +90,7 @@ def min_dim1_kernel(X: tle.mem(f32), vals: tle.mem(f32, out=True), idxs: tle.mem
         best_val = tle.select(lt, vx, best_val)
         best_idx = tle.select(lt, idx, best_idx)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.vload(X, base + i, dtype=f32, fill=1e38)
         tidx = lane + tle.cast(i, f32)
         lt2 = tx < best_val

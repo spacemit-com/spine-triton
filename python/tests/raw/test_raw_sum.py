@@ -40,7 +40,7 @@ def sum_1d_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), N: tle.index):
 
     # Tail loop: partial tile (use different variable names)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_tail = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.vload(X, i)
         tx_f32 = tle.cast(tx, f32)
         acc = acc + tx_f32
@@ -89,7 +89,7 @@ def sum_2d_dim1_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), M: tle.inde
 
     # Tail loop (use different variable names)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_tail = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.vload(X, row_idx * N + i)
         tx_f32 = tle.cast(tx, f32)
         acc = acc + tx_f32

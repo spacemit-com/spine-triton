@@ -26,7 +26,7 @@ def mean_dim1_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), M: tle.index,
         vx = tle.vload(X, base + i, dtype=f32)
         acc = acc + vx
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.vload(X, base + i, dtype=f32)
         acc = acc + tx
     tle.sstore(out, row, tle.vreduce_sum(acc) / N)

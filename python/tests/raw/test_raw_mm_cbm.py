@@ -29,7 +29,7 @@ B1, B2 = MB // 8, NB // 8  # 2, 4
 def mm(Ap: tle.mem(f16), Bp: tle.mem(f16), C: tle.mem(f16, out=True)):
     # Ap packed <1,8,16,8> flat, Bp packed <1,8,32,8> flat. per kc-tile:
     #   A tile 连续 128 = <2×64>(b1=2 cubes), B tile 连续 256 = <4×64>(b2=4)
-    nvl = tle.vconfig(-1, 1)  # VL=64
+    tle.vconfig(-1, 1)  # VL=64
     acc = tle.vzero(f32, group=8)  # <8×64xf32> = b1·b2
     for kc in tle.range(0, KC, 1):
         va = tle.vload(Ap, kc * 128, group=B1)  # <2×64xf16>

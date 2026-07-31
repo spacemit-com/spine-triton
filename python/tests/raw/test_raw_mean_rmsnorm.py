@@ -28,7 +28,7 @@ def mean_1d_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), N: tle.index):
         vx = tle.cast(tle.vload(X, i), f32)
         acc = acc + vx
     for i in tle.range(Nfloor, N, nvl):
-        nvl_tail = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.cast(tle.vload(X, i), f32)
         acc = acc + tx
     s = tle.vreduce_sum(acc)
@@ -62,7 +62,7 @@ def rms_norm_1d_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), N: tle.inde
         vx = tle.cast(tle.vload(X, i), f32)
         acc = acc + vx * vx
     for i in tle.range(Nfloor, N, nvl):
-        nvl_tail = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.cast(tle.vload(X, i), f32)
         acc = acc + tx * tx
     ms = tle.vreduce_sum(acc) / N  # mean of squares (scalar)
@@ -73,7 +73,7 @@ def rms_norm_1d_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), N: tle.inde
         nx = tle.cast(tle.vload(X, i), f32)
         tle.vstore(out, i, nx * scale)  # scalar broadcast into vector
     for i in tle.range(Nfloor, N, nvl):
-        nvl_tail2 = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         mx = tle.cast(tle.vload(X, i), f32)
         tle.vstore(out, i, mx * scale)
 

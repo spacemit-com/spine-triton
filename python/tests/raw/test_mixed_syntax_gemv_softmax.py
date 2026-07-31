@@ -65,7 +65,7 @@ def softmax_stage(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.inde
         va = tle.vload(scores, i, dtype=f32)
         acc_max = tle.vmax(acc_max, va)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t1 = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         ta = tle.vload(scores, i, dtype=f32)
         acc_max = tle.vmax(acc_max, ta)
     xmax = tle.vreduce_max(acc_max)
@@ -76,7 +76,7 @@ def softmax_stage(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.inde
         vb = tle.vload(scores, i, dtype=f32)
         acc_sum = acc_sum + tle.vexp(vb - xmax)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t2 = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tb = tle.vload(scores, i, dtype=f32, fill=-1e38)  # padded lanes → exp≈0
         acc_sum = acc_sum + tle.vexp(tb - xmax)
     denom = tle.vreduce_sum(acc_sum)
@@ -87,7 +87,7 @@ def softmax_stage(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.inde
         vc = tle.vload(scores, i, dtype=f32)
         tle.vstore(out, i, tle.vexp(vc - xmax) * inv_denom)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t3 = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tc = tle.vload(scores, i, dtype=f32)
         tle.vstore(out, i, tle.vexp(tc - xmax) * inv_denom)
 

@@ -33,7 +33,7 @@ def relu_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
         vx = tle.vload(X, i, dtype=f32)
         tle.vstore(out, i, tle.vmax(vx, zero))
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.vload(X, i, dtype=f32)
         tle.vstore(out, i, tle.vmax(tx, zero))
 
@@ -54,7 +54,7 @@ def sigmoid_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
         vx = tle.vload(X, i, dtype=f32)
         tle.vstore(out, i, 1.0 / (1.0 + tle.vexp(-vx)))
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.vload(X, i, dtype=f32)
         tle.vstore(out, i, 1.0 / (1.0 + tle.vexp(-tx)))
 
@@ -78,7 +78,7 @@ def gelu_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
         tanh_v = (e2 - 1.0) / (e2 + 1.0)  # tanh via exp
         tle.vstore(out, i, 0.5 * vx * (1.0 + tanh_v))
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.vload(X, i, dtype=f32)
         inner2 = _SQRT_2_PI * (tx + _GELU_COEF * tx * tx * tx)
         e22 = tle.vexp(inner2 + inner2)

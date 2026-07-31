@@ -27,7 +27,7 @@ def softmax_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index
         va = tle.vload(X, i, dtype=f32)
         acc_max = tle.vmax(acc_max, va)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t1 = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         ta = tle.vload(X, i, dtype=f32)
         acc_max = tle.vmax(acc_max, ta)
     xmax = tle.vreduce_max(acc_max)  # scalar
@@ -38,7 +38,7 @@ def softmax_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index
         vb = tle.vload(X, i, dtype=f32)
         acc_sum = acc_sum + tle.vexp(vb - xmax)  # vexp on vec-scalar sub
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t2 = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         # fill=-1e38: padded lanes get exp(-1e38 - xmax)≈0, don't inflate denom
         tb = tle.vload(X, i, dtype=f32, fill=-1e38)
         acc_sum = acc_sum + tle.vexp(tb - xmax)
@@ -50,7 +50,7 @@ def softmax_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index
         vc = tle.vload(X, i, dtype=f32)
         tle.vstore(out, i, tle.vexp(vc - xmax) * inv_denom)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t3 = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tc = tle.vload(X, i, dtype=f32)
         tle.vstore(out, i, tle.vexp(tc - xmax) * inv_denom)
 

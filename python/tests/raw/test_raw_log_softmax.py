@@ -29,7 +29,7 @@ def log_softmax_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.i
         va = tle.vload(X, i, dtype=f32)
         acc_max = tle.vmax(acc_max, va)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t1 = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         ta = tle.vload(X, i, dtype=f32)
         acc_max = tle.vmax(acc_max, ta)
     xmax = tle.vreduce_max(acc_max)
@@ -40,7 +40,7 @@ def log_softmax_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.i
         vb = tle.vload(X, i, dtype=f32)
         acc_sum = acc_sum + tle.vexp(vb - xmax)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t2 = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tb = tle.vload(X, i, dtype=f32, fill=-1e38)
         acc_sum = acc_sum + tle.vexp(tb - xmax)
     denom = tle.vreduce_sum(acc_sum)
@@ -52,7 +52,7 @@ def log_softmax_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.i
         vc = tle.vload(X, i, dtype=f32)
         tle.vstore(out, i, (vc - xmax) - log_denom)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t3 = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tc = tle.vload(X, i, dtype=f32)
         tle.vstore(out, i, (tc - xmax) - log_denom)
 

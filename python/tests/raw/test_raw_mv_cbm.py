@@ -53,7 +53,7 @@ def make_mv(M, K):
 
     @tle.raw_kernel
     def mv(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f16, out=True), row_base: tle.index):
-        nvl = tle.vconfig(VL, 1)  # 活跃 VL = cube lane 宽(经 _active_vl 供 vzero/vload)
+        tle.vconfig(VL, 1)  # 活跃 VL = cube lane 宽(经 _active_vl 供 vzero/vload)
         # ① B 侧:valid_rows = min(MB, M-row_base)(末 block 不满 MB);vpack 只读真实行,
         #    codegen fill+insert 把 M(行)/K(列)一起补到 MB×Kp,越界行/列填 0(PLAN_pad §2.B)。
         vr = tle.imin(MB, Mtot - row_base)

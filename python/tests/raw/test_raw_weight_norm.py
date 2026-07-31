@@ -33,7 +33,7 @@ def weight_norm_kernel(W: tle.mem(f32), W_norm: tle.mem(f32, out=True), g_out: t
         vw = tle.vload(W, base + i, dtype=f32)
         acc_sq = acc_sq + vw * vw
     for i in tle.range(Nfloor, C_in, nvl):
-        nvl_t = tle.vconfig(C_in - i, 1)
+        tle.vconfig(C_in - i, 1)
         tw = tle.vload(W, base + i, dtype=f32)
         acc_sq = acc_sq + tw * tw
 
@@ -47,7 +47,7 @@ def weight_norm_kernel(W: tle.mem(f32), W_norm: tle.mem(f32, out=True), g_out: t
         vw2 = tle.vload(W, base + i, dtype=f32)
         tle.vstore(W_norm, base + i, vw2 * inv_g)
     for i in tle.range(Nfloor, C_in, nvl):
-        nvl_t2 = tle.vconfig(C_in - i, 1)
+        tle.vconfig(C_in - i, 1)
         tw2 = tle.vload(W, base + i, dtype=f32)
         tle.vstore(W_norm, base + i, tw2 * inv_g)
 

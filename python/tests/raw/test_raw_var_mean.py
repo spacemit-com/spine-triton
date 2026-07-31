@@ -37,7 +37,7 @@ def var_mean_1d_kernel(
         acc_sq = acc_sq + vx * vx
 
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.vload(X, i, dtype=f32)  # fill=0 → 0²=0 ✓
         acc_sum = acc_sum + tx
         acc_sq = acc_sq + tx * tx

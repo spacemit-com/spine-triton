@@ -740,7 +740,6 @@ class SpineMLIRBuilderCodegen:
         if B != b1 * b2:
             raise ValueError(f"vmadot acc rows must be b1·b2={b1*b2}, got {B}")
         m_s, n_s, k_s = _mma_cube(xm.group(3))
-        lane = n_s * k_s
         result_T = self._t(acc_t)
         res = self._b.create_generic_op("vector_ext.cross_batch_matmul", [x_v, y_v, acc_v],
                                         {"k": k_s, "m": m_s, "n": n_s}, [result_T])
@@ -1209,7 +1208,6 @@ class SpineMLIRBuilderCodegen:
             off_node = kwargs.get("offset")
             off_v = self._gen_expr(off_node)[0] if off_node is not None else self._const_int(0)
             cst = self._const_float(0.0, et)
-            Kv = self._const_int(K)
             if vr_node is not None:
                 vr_v = self._gen_expr(vr_node)[0]
                 mr_t = f"memref<?x{K}x{et}, strided<[{K}, 1], offset: ?>, {sp}>"

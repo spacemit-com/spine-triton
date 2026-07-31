@@ -29,7 +29,7 @@ def cross_entropy_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle
         va = tle.vload(X, i, dtype=f32)
         acc_max = tle.vmax(acc_max, va)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t1 = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         ta = tle.vload(X, i, dtype=f32)
         acc_max = tle.vmax(acc_max, ta)
     xmax = tle.vreduce_max(acc_max)
@@ -40,7 +40,7 @@ def cross_entropy_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle
         vb = tle.vload(X, i, dtype=f32)
         acc_sum = acc_sum + tle.vexp(vb - xmax)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t2 = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tb = tle.vload(X, i, dtype=f32, fill=-1e38)
         acc_sum = acc_sum + tle.vexp(tb - xmax)
     denom = tle.vreduce_sum(acc_sum)

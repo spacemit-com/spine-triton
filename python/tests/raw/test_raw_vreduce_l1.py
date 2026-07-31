@@ -27,7 +27,7 @@ def amax_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
         vx = tle.vload(X, i, dtype=f32)
         acc = tle.vmax(acc, vx)  # element-wise max across tiles
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.vload(X, i, dtype=f32)
         acc = tle.vmax(acc, tx)
     tle.sstore(out, 0, tle.vreduce_max(acc))  # L1: horizontal max
@@ -50,7 +50,7 @@ def amin_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
         vx = tle.vload(X, i, dtype=f32)
         acc = tle.vmin(acc, vx)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.vload(X, i, dtype=f32)
         acc = tle.vmin(acc, tx)
     tle.sstore(out, 0, tle.vreduce_min(acc))  # L1: horizontal min
@@ -74,7 +74,7 @@ def prod_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
         vx = tle.vload(X, i, dtype=f32)
         acc = acc * vx
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.vload(X, i, dtype=f32)
         acc = acc * tx
     tle.sstore(out, 0, tle.vreduce_mul(acc))  # L1: horizontal product

@@ -35,7 +35,7 @@ def group_norm_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), G: tle.index
         va = tle.cast(tle.vload(X, base + i), f32)
         acc1 = acc1 + va
     for i in tle.range(Cfloor, C, nvl):
-        nvl_t1 = tle.vconfig(C - i, 1)
+        tle.vconfig(C - i, 1)
         ta = tle.cast(tle.vload(X, base + i), f32)
         acc1 = acc1 + ta
     mean = tle.vreduce_sum(acc1) / C
@@ -47,7 +47,7 @@ def group_norm_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), G: tle.index
         vb = tle.cast(tle.vload(X, base + i), f32)
         acc2 = acc2 + vb * vb
     for i in tle.range(Cfloor, C, nvl):
-        nvl_t2 = tle.vconfig(C - i, 1)
+        tle.vconfig(C - i, 1)
         tb = tle.cast(tle.vload(X, base + i), f32)  # fill=0: 0²=0, no inflation
         acc2 = acc2 + tb * tb
     var = tle.vreduce_sum(acc2) / C - mean * mean  # E[x²] - mean² = Var(x)
@@ -58,7 +58,7 @@ def group_norm_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), G: tle.index
         nx = tle.cast(tle.vload(X, base + i), f32)
         tle.vstore(out, base + i, (nx - mean) * scale)
     for i in tle.range(Cfloor, C, nvl):
-        nvl_t3 = tle.vconfig(C - i, 1)
+        tle.vconfig(C - i, 1)
         mx = tle.cast(tle.vload(X, base + i), f32)
         tle.vstore(out, base + i, (mx - mean) * scale)
 

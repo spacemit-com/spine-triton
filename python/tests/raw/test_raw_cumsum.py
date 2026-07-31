@@ -28,7 +28,7 @@ f32 = tle.f32
 
 @tle.raw_kernel
 def cumsum_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)  # sets VL (vzero needs it)
+    tle.vconfig(-1, 1)  # sets VL (vzero needs it)
     acc = tle.vreduce_sum(tle.vzero(f32))  # 0.0 as an f32 scalar (scan seed)
     for i in tle.range(0, N, 1):
         xi = tle.sload(X, i, dtype=f32)

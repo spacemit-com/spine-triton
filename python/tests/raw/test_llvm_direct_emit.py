@@ -25,7 +25,7 @@ index = _t.index
 
 # ---- a minimal llvm-direct copy kernel written with llvm_* primitives ----
 def llvm_direct_copy(X: mem(f16), out: mem(f16, out=True), N: index):
-    vl = None  # placeholders so python doesn't choke; real values via primitives
+    pass  # placeholders so python doesn't choke; real values via primitives
     # NOTE: body is walked as AST, not executed.
 
 

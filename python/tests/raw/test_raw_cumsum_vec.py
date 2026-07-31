@@ -46,7 +46,7 @@ def block_sum_host(X, block_sums, N, P):
 # Phase 2 — exclusive prefix over block_sums (single program, P small)
 @tle.raw_kernel
 def prefix_offset_kernel(block_sums: tle.mem(f32), offsets: tle.mem(f32, out=True), P: tle.index):
-    nvl = tle.vconfig(-1, 1)
+    tle.vconfig(-1, 1)
     acc = tle.vreduce_sum(tle.vzero(f32))  # 0.0 — exclusive: offsets[p] = sum(0..p-1)
     for i in tle.range(0, P, 1):
         tle.sstore(offsets, i, acc)  # write BEFORE adding

@@ -21,7 +21,7 @@ def copy_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
     for i in tle.range(0, Nf, nvl):
         tle.vstore(out, i, tle.vload(X, i, dtype=f32))
     for i in tle.range(Nf, N, nvl):
-        nvl_t = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tle.vstore(out, i, tle.vload(X, i, dtype=f32))
 
 

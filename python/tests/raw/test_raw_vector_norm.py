@@ -32,7 +32,7 @@ def l2_norm_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
         vx = tle.vload(X, i, dtype=f32)
         acc = acc + vx * vx
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.vload(X, i, dtype=f32)
         acc = acc + tx * tx
     tle.sstore(out, 0, tle.sqrt(tle.vreduce_sum(acc)))
@@ -55,7 +55,7 @@ def l1_norm_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
         vx = tle.vload(X, i, dtype=f32)
         acc = acc + tle.abs(vx)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.vload(X, i, dtype=f32)
         acc = acc + tle.abs(tx)
     tle.sstore(out, 0, tle.vreduce_sum(acc))
@@ -78,7 +78,7 @@ def linf_norm_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index)
         vx = tle.vload(X, i, dtype=f32)
         acc = tle.vmax(acc, tle.abs(vx))
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.vload(X, i, dtype=f32)
         acc = tle.vmax(acc, tle.abs(tx))
     tle.sstore(out, 0, tle.vreduce_max(acc))
@@ -101,7 +101,7 @@ def normalize_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index)
         vx = tle.vload(X, i, dtype=f32)
         acc = acc + vx * vx
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         tx = tle.vload(X, i, dtype=f32)
         acc = acc + tx * tx
     inv = tle.rsqrt(tle.vreduce_sum(acc))  # 1 / sqrt(sum(x²))
@@ -109,7 +109,7 @@ def normalize_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index)
         nx = tle.vload(X, i, dtype=f32)
         tle.vstore(out, i, nx * inv)
     for i in tle.range(Nfloor, N, nvl):
-        nvl_t2 = tle.vconfig(N - i, 1)
+        tle.vconfig(N - i, 1)
         mx = tle.vload(X, i, dtype=f32)
         tle.vstore(out, i, mx * inv)
 

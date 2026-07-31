@@ -92,7 +92,7 @@ def bench_cumsum():
     for N in [256, 512, 1024, 2048, 4096, 8192, 16384]:
         torch.manual_seed(0)
         X = torch.randn(N, dtype=torch.float32)
-        out_v = torch.zeros(N, dtype=torch.float32)
+        torch.zeros(N, dtype=torch.float32)
         out_s = torch.zeros(N, dtype=torch.float32)
 
         def run_vec():
