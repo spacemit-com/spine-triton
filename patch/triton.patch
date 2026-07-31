@@ -574,7 +574,7 @@ index fccb4ef17..a5856b736 100644
 
 
  class BackendInstaller:
-@@ -94,13 +96,56 @@ class BackendInstaller:
+@@ -94,13 +96,55 @@ class BackendInstaller:
          if not os.path.exists(tools_dir):
              tools_dir = None
 
@@ -595,18 +595,17 @@ index fccb4ef17..a5856b736 100644
 +        if not os.path.exists(lib_dir):
 +            lib_dir = None
 +        elif backend_name == "spine_triton":
-+            spine_mlir_install_dir = os.environ.get("SPINE_MLIR_INSTALL_DIR", None)
-+            assert spine_mlir_install_dir is not None
++            spine_runtime_install_dir = os.environ.get("SPINE_RUNTIME_INSTALL_DIR", None)
++            assert spine_runtime_install_dir is not None
 +            import glob
 +            from collections import defaultdict
 +            lib_patterns = [
-+                "libSpeIR*.so*",
-+                "libspine_tcm.so*",
++                "libspert.so*",
 +            ]
 +            so_file_list = []
 +            for pattern in lib_patterns:
 +                so_file_list.extend(
-+                    glob.glob(os.path.join(spine_mlir_install_dir, "lib", pattern))
++                    glob.glob(os.path.join(spine_runtime_install_dir, "lib", pattern))
 +                )
 +            lib_groups = defaultdict(list)
 +            for so_file in so_file_list:

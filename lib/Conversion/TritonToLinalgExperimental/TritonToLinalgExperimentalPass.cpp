@@ -42,6 +42,7 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/Passes.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
+#include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
 
 using namespace mlir;
 using namespace triton;
@@ -104,7 +105,7 @@ public:
                 memref::MemRefDialect, ttx::TritonTilingExtDialect,
                 tts::TritonStructuredDialect, ptr::PtrDialect, DLTIDialect,
                 LLVM::LLVMDialect, vector::VectorDialect, xsmt::XSMTDialect,
-                triton::proton::ProtonDialect>();
+                xsmt_async::XSMTAsyncDialect, triton::proton::ProtonDialect>();
   }
 
   void runOnOperation() override {
