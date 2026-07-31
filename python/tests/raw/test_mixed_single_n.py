@@ -3,6 +3,7 @@ import torch
 import triton
 import triton.language as tl
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import triton.language.extra.spine_raw as tle
 from triton.language.extra.spine_raw import call as _sr_call
@@ -10,6 +11,7 @@ from triton.language.extra.spine_raw import call as _sr_call
 f16 = tle.f16
 f32 = tle.f32
 _BETA = 0.5
+
 
 @triton.jit
 def pre_scale_tl(vec_ptr, vec_s_ptr, alpha, K, BLOCK: tl.constexpr):
@@ -20,9 +22,10 @@ def pre_scale_tl(vec_ptr, vec_s_ptr, alpha, K, BLOCK: tl.constexpr):
     y = (x.to(tl.float32) * alpha).to(tl.float16)
     tl.store(vec_s_ptr + offs, y, mask=mask)
 
+
 @tle.raw_kernel
-def gemv_spine_raw(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, out=True),
-                   K: tle.index, row_base: tle.index, row_end: tle.index):
+def gemv_spine_raw(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, out=True), K: tle.index,
+                   row_base: tle.index, row_end: tle.index):
     nvl = tle.vconfig(-1, 1)
     Kfloor = (K // nvl) * nvl
     for n in tle.range(row_base, row_end, 1):
@@ -40,12 +43,14 @@ def gemv_spine_raw(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, 
             acc = tle.vmacc(acc, tm, tv)
         tle.sstore(scores, n, tle.vreduce_sum(acc))
 
+
 @triton.jit(do_not_specialize=["K", "N"])
 def gemv_host(Mat, vec_s, scores, K, N, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     row_base = pid * BLOCK
     row_end = min(row_base + BLOCK, N)
     _sr_call(gemv_spine_raw, outputs=[], inputs=[Mat, vec_s, scores, K, row_base, row_end])
+
 
 @tle.raw_kernel
 def post_scale_llvm(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
@@ -60,9 +65,11 @@ def post_scale_llvm(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.in
         go = tle.llvm_gep(tle.llvm_base_ptr(out), i, "f32")
         tle.call_intrinsic("llvm.riscv.vse", [r, go, vl], result_type="()")
 
+
 @triton.jit
 def post_scale_host(scores, out, N):
     _sr_call(post_scale_llvm, outputs=[], inputs=[scores, out, N])
+
 
 def test_single_n(N, K, alpha=1.5, BLOCK=64):
     """Test with single N value to avoid specialization cache collision."""
@@ -74,16 +81,17 @@ def test_single_n(N, K, alpha=1.5, BLOCK=64):
     scores = torch.zeros(N, dtype=torch.float32)
     out = torch.zeros(N, dtype=torch.float32)
 
-    grid1 = ((K + BLOCK - 1) // BLOCK,)
+    grid1 = ((K + BLOCK - 1) // BLOCK, )
     pre_scale_tl[grid1](vec.contiguous(), vec_s, alpha, K, BLOCK=BLOCK)
-    gemv_host[(1,)](Mat.contiguous().reshape(-1), vec_s, scores, K, N, BLOCK=N)
-    post_scale_host[(1,)](scores, out, N)
+    gemv_host[(1, )](Mat.contiguous().reshape(-1), vec_s, scores, K, N, BLOCK=N)
+    post_scale_host[(1, )](scores, out, N)
 
     ref = torch.mv(Mat.float(), (vec.float() * alpha).half().float()) * _BETA
     max_diff = (out - ref).abs().max().item()
 
     print(f"N={N} K={K}: max_diff={max_diff:.4e} {'PASS' if max_diff < 1e-1 else 'FAIL'}")
     return max_diff < 1e-1
+
 
 if __name__ == "__main__":
     # Test each N separately to avoid cache collision

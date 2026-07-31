@@ -25,11 +25,7 @@ f32 = tle.f32
 # sum_1d: 对 1D 张量求和
 # ---------------------------------------------------------------------------
 @tle.raw_kernel
-def sum_1d_kernel(
-    X: tle.mem(f16),
-    out: tle.mem(f32, out=True),
-    N: tle.index
-):
+def sum_1d_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), N: tle.index):
     """1D sum: 单 kernel 处理整个向量。"""
     nvl = tle.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
@@ -69,7 +65,7 @@ def sum_1d_raw(X: torch.Tensor) -> torch.Tensor:
     # Always create a fresh output tensor for each call
     out = torch.empty(1, dtype=torch.float32)
 
-    sum_1d_host[(1,)](X.contiguous(), out, N)
+    sum_1d_host[(1, )](X.contiguous(), out, N)
 
     return out[0]
 
@@ -78,13 +74,7 @@ def sum_1d_raw(X: torch.Tensor) -> torch.Tensor:
 # sum_2d: 对 2D 张量的某个维度求和
 # ---------------------------------------------------------------------------
 @tle.raw_kernel
-def sum_2d_dim1_kernel(
-    X: tle.mem(f16),
-    out: tle.mem(f32, out=True),
-    M: tle.index,
-    N: tle.index,
-    row_idx: tle.index
-):
+def sum_2d_dim1_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), M: tle.index, N: tle.index, row_idx: tle.index):
     """2D sum along dim=1: 每行独立求和，输出 [M]。"""
     nvl = tle.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
@@ -125,7 +115,7 @@ def sum_2d_raw(X: torch.Tensor, dim: int) -> torch.Tensor:
         # Sum along columns: [M, N] -> [M]
         M, N = X.shape
         out = torch.empty(M, dtype=torch.float32)
-        sum_2d_dim1_host[(M,)](X.contiguous().reshape(-1), out, M, N)
+        sum_2d_dim1_host[(M, )](X.contiguous().reshape(-1), out, M, N)
         return out
     else:
         # Sum along rows: [M, N] -> [N]

@@ -16,7 +16,6 @@ work.
 """
 import torch
 import triton
-import triton.language as tl
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
@@ -29,8 +28,8 @@ f32 = tle.f32
 
 @tle.raw_kernel
 def cumsum_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)                 # sets VL (vzero needs it)
-    acc = tle.vreduce_sum(tle.vzero(f32))   # 0.0 as an f32 scalar (scan seed)
+    nvl = tle.vconfig(-1, 1)  # sets VL (vzero needs it)
+    acc = tle.vreduce_sum(tle.vzero(f32))  # 0.0 as an f32 scalar (scan seed)
     for i in tle.range(0, N, 1):
         xi = tle.sload(X, i, dtype=f32)
         acc = acc + xi
@@ -47,6 +46,6 @@ def test_cumsum_1d(N):
     torch.manual_seed(42)
     X = torch.randn(N, dtype=torch.float32)
     out = torch.zeros(N, dtype=torch.float32)
-    cumsum_1d_host[(1,)](X, out, N)
+    cumsum_1d_host[(1, )](X, out, N)
     ref = torch.cumsum(X, dim=0)
     torch.testing.assert_close(out, ref, rtol=1e-4, atol=1e-4)

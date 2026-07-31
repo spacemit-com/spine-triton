@@ -37,20 +37,20 @@ f32 = tle.f32
 # vmacc builds a 2048-bit vector<64xf32> fma that mis-tiles for K>VL — so the
 # matmul inputs stay f16 and only the reduction result is f32.
 @tle.raw_kernel
-def gemv_rows(Mat: tle.mem(f16), vec: tle.mem(f16), C: tle.mem(f32, out=True),
-              K: tle.index, row_base: tle.index, row_end: tle.index):
+def gemv_rows(Mat: tle.mem(f16), vec: tle.mem(f16), C: tle.mem(f32, out=True), K: tle.index, row_base: tle.index,
+              row_end: tle.index):
     """Compute C[n] = sum_k Mat[n*K + k] * vec[k] for n in [row_base, row_end)."""
-    nvl = tle.vconfig(-1, 1)             # f16 lmul=1 → VLMAX=64
-    Kfloor = (K // nvl) * nvl            # full-tile K span
+    nvl = tle.vconfig(-1, 1)  # f16 lmul=1 → VLMAX=64
+    Kfloor = (K // nvl) * nvl  # full-tile K span
     for n in tle.range(row_base, row_end, 1):
         acc = tle.vzero(f32)
-        for ki in tle.range(0, Kfloor, nvl):        # main loop: full tiles, fast path
-            vm = tle.vload(Mat, n * K + ki)          # f16 (vload default)
+        for ki in tle.range(0, Kfloor, nvl):  # main loop: full tiles, fast path
+            vm = tle.vload(Mat, n * K + ki)  # f16 (vload default)
             vv = tle.vload(vec, ki)
-            acc = tle.vmacc(acc, vm, vv)             # widening f16×f16→f32
-        for ki in tle.range(Kfloor, K, nvl):        # tail: 0/1 iters, narrow → fill-0
+            acc = tle.vmacc(acc, vm, vv)  # widening f16×f16→f32
+        for ki in tle.range(Kfloor, K, nvl):  # tail: 0/1 iters, narrow → fill-0
             nvl = tle.vconfig(K - ki, 1)
-            tm = tle.vload(Mat, n * K + ki)          # distinct temp names (tail iter_arg rule)
+            tm = tle.vload(Mat, n * K + ki)  # distinct temp names (tail iter_arg rule)
             tv = tle.vload(vec, ki)
             acc = tle.vmacc(acc, tm, tv)
         tle.sstore(C, n, tle.vreduce_sum(acc))
@@ -61,7 +61,7 @@ def gemv_rows(Mat: tle.mem(f16), vec: tle.mem(f16), C: tle.mem(f32, out=True),
 def gemv_host(Mat, vec, C, K, N, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     row_base = pid * BLOCK
-    row_end = min(row_base + BLOCK, N)   # 末 program 不越界 N
+    row_end = min(row_base + BLOCK, N)  # 末 program 不越界 N
     _sr_call(gemv_rows, outputs=[], inputs=[Mat, vec, C, K, row_base, row_end])
 
 
@@ -69,9 +69,9 @@ def _run(N, K, BLOCK=4):
     torch.manual_seed(0)
     # 末 program 的 row_end 已被 min 限到 N,但内层按 row 无条件 sstore(C, n),
     # n 严格 < row_end ≤ N,故不写 phantom 行 → C 分配 N 即可。
-    Mat = torch.randn(N, K, dtype=torch.float16)   # f16 inputs (widening vmacc)
+    Mat = torch.randn(N, K, dtype=torch.float16)  # f16 inputs (widening vmacc)
     vec = torch.randn(K, dtype=torch.float16)
-    C = torch.zeros(N, dtype=torch.float32)         # f32 accumulator/output
+    C = torch.zeros(N, dtype=torch.float32)  # f32 accumulator/output
     grid = ((N + BLOCK - 1) // BLOCK, )
     gemv_host[grid](Mat.contiguous().reshape(-1), vec.contiguous(), C, K, N, BLOCK=BLOCK)
     # golden in f32 from the SAME f16-rounded inputs the kernel reads

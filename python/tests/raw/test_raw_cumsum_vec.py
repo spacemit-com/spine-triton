@@ -26,14 +26,15 @@ from triton.language.extra.spine_raw import call as _sr_call
 
 f32 = tle.f32
 
+
 # Phase 1 — reduce VL elements per program → block_sums
 @tle.raw_kernel
-def block_sum_kernel(X: tle.mem(f32), block_sums: tle.mem(f32, out=True),
-                     N: tle.index, p: tle.index):
+def block_sum_kernel(X: tle.mem(f32), block_sums: tle.mem(f32, out=True), N: tle.index, p: tle.index):
     nvl = tle.vconfig(-1, 1)
     base = p * nvl
     vx = tle.vload(X, base, dtype=f32)
     tle.sstore(block_sums, p, tle.vreduce_sum(vx))
+
 
 @triton.jit
 def block_sum_host(X, block_sums, N, P):
@@ -44,14 +45,14 @@ def block_sum_host(X, block_sums, N, P):
 
 # Phase 2 — exclusive prefix over block_sums (single program, P small)
 @tle.raw_kernel
-def prefix_offset_kernel(block_sums: tle.mem(f32), offsets: tle.mem(f32, out=True),
-                         P: tle.index):
+def prefix_offset_kernel(block_sums: tle.mem(f32), offsets: tle.mem(f32, out=True), P: tle.index):
     nvl = tle.vconfig(-1, 1)
-    acc = tle.vreduce_sum(tle.vzero(f32))   # 0.0 — exclusive: offsets[p] = sum(0..p-1)
+    acc = tle.vreduce_sum(tle.vzero(f32))  # 0.0 — exclusive: offsets[p] = sum(0..p-1)
     for i in tle.range(0, P, 1):
-        tle.sstore(offsets, i, acc)          # write BEFORE adding
+        tle.sstore(offsets, i, acc)  # write BEFORE adding
         s = tle.sload(block_sums, i, dtype=f32)
         acc = acc + s
+
 
 @triton.jit
 def prefix_offset_host(block_sums, offsets, P):
@@ -60,17 +61,17 @@ def prefix_offset_host(block_sums, offsets, P):
 
 # Phase 3 — local prefix (VL-step scalar loop) + add exclusive offset per block
 @tle.raw_kernel
-def apply_prefix_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True),
-                        offsets: tle.mem(f32),
-                        N: tle.index, p: tle.index):
+def apply_prefix_kernel(
+        X: tle.mem(f32), out: tle.mem(f32, out=True), offsets: tle.mem(f32), N: tle.index, p: tle.index):
     nvl = tle.vconfig(-1, 1)
     base = p * nvl
     offset = tle.sload(offsets, p, dtype=f32)
-    acc = tle.vreduce_sum(tle.vzero(f32))   # 0.0 scalar
+    acc = tle.vreduce_sum(tle.vzero(f32))  # 0.0 scalar
     for j in tle.range(0, nvl, 1):
         xi = tle.sload(X, base + j, dtype=f32)
         acc = acc + xi
         tle.sstore(out, base + j, acc + offset)
+
 
 @triton.jit
 def apply_prefix_host(X, out, offsets, N, P):
@@ -91,9 +92,9 @@ def cumsum_vectorized(X: torch.Tensor) -> torch.Tensor:
         bs = torch.zeros(P, dtype=torch.float32)
         offs = torch.zeros(P, dtype=torch.float32)
         Xf = X[:Nfloor].contiguous().reshape(-1)
-        block_sum_host[(P,)](Xf, bs, Nfloor, P)
-        prefix_offset_host[(1,)](bs, offs, P)
-        apply_prefix_host[(P,)](Xf, out[:Nfloor], offs, Nfloor, P)
+        block_sum_host[(P, )](Xf, bs, Nfloor, P)
+        prefix_offset_host[(1, )](bs, offs, P)
+        apply_prefix_host[(P, )](Xf, out[:Nfloor], offs, Nfloor, P)
 
     # Tail (< VL elements): scalar sequential with running offset
     if Nfloor < N:

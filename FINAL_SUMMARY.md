@@ -24,7 +24,7 @@
    - Solution: Use row_base/row_end pattern from test_raw_mv_svector.py
    - test_gemv_diagnostic_v2.py: 3/3 shapes PASS on K3
      - (8, 64): max_diff=0.0000e+00 PASS
-     - (16, 128): max_diff=9.5367e-06 PASS  
+     - (16, 128): max_diff=9.5367e-06 PASS
      - (8, 65): max_diff=1.9073e-06 PASS
    - test_isolated_gemv.py: 3/3 shapes PASS on K3
 
@@ -68,7 +68,7 @@ def gemv_host(Mat, vec_s, scores, K, N, BLOCK: tl.constexpr):
 c779440 fix(spine_raw): resolve multi-shape gemv failures via row_base/row_end pattern
 01de1bb docs: add final summary + single-N test to isolate compiler bug
 1fb7da5 fix(spine_raw): correct gemv K>64 tail handling
-505e1a6 test(spine_raw): add diagnostic tests + K3 verification report  
+505e1a6 test(spine_raw): add diagnostic tests + K3 verification report
 f8fd365 docs: add work summary
 944e9bf feat(spine_raw): add API for llvm.func inline emission
 ```

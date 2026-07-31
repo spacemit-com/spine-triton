@@ -23,10 +23,7 @@ EPS = 1e-5
 
 
 @tle.raw_kernel
-def group_norm_kernel(
-    X: tle.mem(f16), out: tle.mem(f32, out=True),
-    G: tle.index, C: tle.index, row: tle.index
-):
+def group_norm_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), G: tle.index, C: tle.index, row: tle.index):
     """Normalize one group (row) of C elements: (x - mean) / sqrt(var + eps)."""
     nvl = tle.vconfig(-1, 1)
     Cfloor = (C // nvl) * nvl
@@ -51,9 +48,9 @@ def group_norm_kernel(
         acc2 = acc2 + vb * vb
     for i in tle.range(Cfloor, C, nvl):
         nvl_t2 = tle.vconfig(C - i, 1)
-        tb = tle.cast(tle.vload(X, base + i), f32)   # fill=0: 0²=0, no inflation
+        tb = tle.cast(tle.vload(X, base + i), f32)  # fill=0: 0²=0, no inflation
         acc2 = acc2 + tb * tb
-    var = tle.vreduce_sum(acc2) / C - mean * mean     # E[x²] - mean² = Var(x)
+    var = tle.vreduce_sum(acc2) / C - mean * mean  # E[x²] - mean² = Var(x)
     scale = tle.rsqrt(var + EPS)
 
     # 趟3: (x - mean) * scale
@@ -76,7 +73,7 @@ def group_norm_host(X, out, G, C):
 def _ref_group_norm(X: torch.Tensor, G: int, C: int) -> torch.Tensor:
     xf = X.float().reshape(G, C)
     mean = xf.mean(dim=1, keepdim=True)
-    var = ((xf - mean) ** 2).mean(dim=1, keepdim=True)
+    var = ((xf - mean)**2).mean(dim=1, keepdim=True)
     return ((xf - mean) / torch.sqrt(var + EPS)).reshape(-1)
 
 
@@ -85,6 +82,6 @@ def test_group_norm(G, C):
     torch.manual_seed(42)
     X = torch.randn(G * C, dtype=torch.float16)
     out = torch.zeros(G * C, dtype=torch.float32)
-    group_norm_host[(G,)](X, out, G, C)
+    group_norm_host[(G, )](X, out, G, C)
     ref = _ref_group_norm(X, G, C)
     torch.testing.assert_close(out, ref, rtol=1e-2, atol=1e-2)

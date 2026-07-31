@@ -41,8 +41,7 @@ except Exception as e:  # noqa: BLE001
     print(f"[perf_mv] FlagGems not importable ({e}); skipping the flaggems column.")
 
 # (N=M, K): N%16==0 (svector N%4 & cbm M%16), K%64==0 (svector K%64 & cbm K%8)
-SHAPES = [(64, 64), (128, 64), (256, 64), (512, 64), (1024, 64),
-          (64, 128), (128, 128), (256, 128), (512, 128),
+SHAPES = [(64, 64), (128, 64), (256, 64), (512, 64), (1024, 64), (64, 128), (128, 128), (256, 128), (512, 128),
           (128, 256), (256, 256), (512, 512)]
 
 
@@ -75,12 +74,12 @@ def main():
         B, A = Blog.contiguous(), Alog.contiguous()
 
         Cs2 = torch.empty(N, dtype=torch.float32)
-        t_s2, ok2 = bench(lambda: sv._mv_sv_host_style2[(N // 4,)](B, A, Cs2, K, N, BLOCK=4), ref, lambda: Cs2)
+        t_s2, ok2 = bench(lambda: sv._mv_sv_host_style2[(N // 4, )](B, A, Cs2, K, N, BLOCK=4), ref, lambda: Cs2)
         Cs3 = torch.empty(N, dtype=torch.float32)
-        t_s3, ok3 = bench(lambda: sv._mv_sv_host_style3[(N // 4,)](B, A, Cs3, K, N, BLOCK=4), ref, lambda: Cs3)
+        t_s3, ok3 = bench(lambda: sv._mv_sv_host_style3[(N // 4, )](B, A, Cs3, K, N, BLOCK=4), ref, lambda: Cs3)
         Ccbm = torch.zeros(N, cbm.Npad, dtype=torch.float16)
         ch = cbm.make_mv(N, K)
-        t_cb, okc = bench(lambda: ch[(N // cbm.MB,)](B, A, Ccbm, BLOCK=cbm.MB), ref, lambda: Ccbm[:, 0])
+        t_cb, okc = bench(lambda: ch[(N // cbm.MB, )](B, A, Ccbm, BLOCK=cbm.MB), ref, lambda: Ccbm[:, 0])
 
         line = f"{N:>4}x{K:<4} | {t_s2:9.1f} {t_s3:9.1f} {t_cb:9.1f}"
         all_ok = ok2 and ok3 and okc

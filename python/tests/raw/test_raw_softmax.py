@@ -6,7 +6,6 @@ Uses: vreduce_max + vexp + vreduce_sum (all L1 primitives).
 """
 import torch
 import triton
-import triton.language as tl
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
@@ -23,7 +22,7 @@ def softmax_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index
     Nfloor = (N // nvl) * nvl
 
     # ── 趟1: max(x) ───────────────────────────────────────────────────────
-    acc_max = tle.vload(X, 0, dtype=f32)          # seed with first tile
+    acc_max = tle.vload(X, 0, dtype=f32)  # seed with first tile
     for i in tle.range(0, Nfloor, nvl):
         va = tle.vload(X, i, dtype=f32)
         acc_max = tle.vmax(acc_max, va)
@@ -31,22 +30,22 @@ def softmax_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index
         nvl_t1 = tle.vconfig(N - i, 1)
         ta = tle.vload(X, i, dtype=f32)
         acc_max = tle.vmax(acc_max, ta)
-    xmax = tle.vreduce_max(acc_max)               # scalar
+    xmax = tle.vreduce_max(acc_max)  # scalar
 
     # ── 趟2: sum(exp(x - max)) ────────────────────────────────────────────
     acc_sum = tle.vzero(f32)
     for i in tle.range(0, Nfloor, nvl):
         vb = tle.vload(X, i, dtype=f32)
-        acc_sum = acc_sum + tle.vexp(vb - xmax)   # vexp on vec-scalar sub
+        acc_sum = acc_sum + tle.vexp(vb - xmax)  # vexp on vec-scalar sub
     for i in tle.range(Nfloor, N, nvl):
         nvl_t2 = tle.vconfig(N - i, 1)
         # fill=-1e38: padded lanes get exp(-1e38 - xmax)≈0, don't inflate denom
         tb = tle.vload(X, i, dtype=f32, fill=-1e38)
         acc_sum = acc_sum + tle.vexp(tb - xmax)
-    denom = tle.vreduce_sum(acc_sum)              # scalar
+    denom = tle.vreduce_sum(acc_sum)  # scalar
 
     # ── 趟3: exp(x - max) / denom ─────────────────────────────────────────
-    inv_denom = 1.0 / denom                       # f32 ÷ f32 scalar (L0)
+    inv_denom = 1.0 / denom  # f32 ÷ f32 scalar (L0)
     for i in tle.range(0, Nfloor, nvl):
         vc = tle.vload(X, i, dtype=f32)
         tle.vstore(out, i, tle.vexp(vc - xmax) * inv_denom)
@@ -66,7 +65,7 @@ def test_softmax_1d(N):
     torch.manual_seed(42)
     X = torch.randn(N, dtype=torch.float32)
     out = torch.zeros(N, dtype=torch.float32)
-    softmax_1d_host[(1,)](X, out, N)
+    softmax_1d_host[(1, )](X, out, N)
     ref = torch.softmax(X, dim=0)
     torch.testing.assert_close(out, ref, rtol=1e-3, atol=1e-4)
 
@@ -76,6 +75,6 @@ def test_softmax_1d_arb(N):
     torch.manual_seed(7)
     X = torch.randn(N, dtype=torch.float32)
     out = torch.zeros(N, dtype=torch.float32)
-    softmax_1d_host[(1,)](X, out, N)
+    softmax_1d_host[(1, )](X, out, N)
     ref = torch.softmax(X, dim=0)
     torch.testing.assert_close(out, ref, rtol=1e-3, atol=1e-4)

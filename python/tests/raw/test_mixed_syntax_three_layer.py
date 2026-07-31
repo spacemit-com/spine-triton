@@ -43,7 +43,7 @@ from triton.language.extra.spine_raw import call as _sr_call
 f16 = tle.f16
 f32 = tle.f32
 
-_BETA = 0.5   # baked into the LLVM-direct stage as a constant vector splat
+_BETA = 0.5  # baked into the LLVM-direct stage as a constant vector splat
 
 
 # ── 层级 1: 普通 tl 语法 —— elementwise pre-scale vec_s = vec * alpha ────────
@@ -63,9 +63,9 @@ def pre_scale_tl(vec_ptr, vec_s_ptr, alpha, K, BLOCK: tl.constexpr):
 # Mat/vec_s f16, acc f32: tle.vmacc IS the widening vfwmacc (f16×f16→f32), the
 # K3-proven idiom. Tail loop handles arbitrary K.
 @tle.raw_kernel
-def gemv_spine_raw(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, out=True),
-                   K: tle.index, row_base: tle.index, row_end: tle.index):
-    nvl = tle.vconfig(-1, 1)              # f16 lmul=1 → VLMAX=64
+def gemv_spine_raw(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, out=True), K: tle.index,
+                   row_base: tle.index, row_end: tle.index):
+    nvl = tle.vconfig(-1, 1)  # f16 lmul=1 → VLMAX=64
     Kfloor = (K // nvl) * nvl
     for n in tle.range(row_base, row_end, 1):
         acc = tle.vzero(f32)
@@ -94,7 +94,7 @@ def gemv_spine_raw(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, 
 def post_scale_llvm(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
     vl = tle.llvm_const(8, "i64")
     zero = tle.llvm_const(0, "i64")
-    beta = tle.llvm_const("5.000000e-01", "vector<[8]xf32>")   # 0.5 splat
+    beta = tle.llvm_const("5.000000e-01", "vector<[8]xf32>")  # 0.5 splat
     for i in tle.range(zero, N, vl):
         p = tle.llvm_poison("vector<[8]xf32>")
         gs = tle.llvm_gep(tle.llvm_base_ptr(scores), i, "f32")
@@ -131,14 +131,13 @@ def _run(N, K, alpha=1.5, BLOCK=256):
     torch.manual_seed(0)
     Mat = torch.randn(N, K, dtype=torch.float16)
     vec = torch.randn(K, dtype=torch.float16)
-    vec_s = torch.zeros(K, dtype=torch.float16)     # stage1 → stage2 buffer
-    scores = torch.zeros(N, dtype=torch.float32)    # stage2 → stage3 buffer
+    vec_s = torch.zeros(K, dtype=torch.float16)  # stage1 → stage2 buffer
+    scores = torch.zeros(N, dtype=torch.float32)  # stage2 → stage3 buffer
     out = torch.zeros(N, dtype=torch.float32)
 
     # SINGLE fused launch — all three syntax layers in one program.
-    fused_three_layer_host[(1,)](
-        Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, out,
-        alpha, K, N, BLOCK=BLOCK)
+    fused_three_layer_host[(1, )](Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, out, alpha, K, N,
+                                  BLOCK=BLOCK)
 
     # golden from the SAME f16-rounded inputs each stage actually reads
     ref = torch.mv(Mat.float(), (vec.float() * alpha).half().float()) * _BETA

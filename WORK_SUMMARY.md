@@ -43,7 +43,7 @@ mlir-translate --mlir-to-llvmir test_mixed_lowered.mlir -o test_mixed.ll
 ```python
 def emit_llvm_func_for_inline(fn) -> tuple[str, list[str]]:
     """Emit llvm.func for inline (no module wrapper).
-    
+
     Returns:
         (func_text, param_types)
         - func_text: "llvm.func @name(...) { body }"
@@ -62,7 +62,7 @@ def emit_llvm_func_for_inline(fn) -> tuple[str, list[str]]:
 ```python
 def take_pending_llvm_funcs():
     """Retrieve pending llvm.func siblings for mixed mode.
-    
+
     Returns list of llvm.func text strings.
     """
 ```
@@ -85,7 +85,7 @@ module {
   func.func @host(...) {
     // Stage 1: 普通 tl/spine_raw ops
     scf.for %i = ... { memref.load/store }
-    
+
     // Stage 2: 调用 llvm.func
     %ptr_i64 = arith.index_cast %base : index to i64
     llvm.call @llvm_stage(%ptr_i64, %size) : (i64, i64) -> ()

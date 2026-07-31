@@ -18,7 +18,7 @@ module {
   func.func @mixed_host(...) {
     // Stage 1: 普通 arith/scf ops
     scf.for %i = %c0 to %c64 step %c1 { ... }
-    
+
     // Stage 2: 调用 llvm.func 兄弟
     %ptr_i64 = arith.index_cast %base : index to i64
     llvm.call @post_scale_stage(%ptr_i64, %size_i64) : (i64, i64) -> ()
@@ -36,7 +36,7 @@ module {
 **验证结果:**
 ```bash
 ✓ spine-opt --spine-triton-e2e-pipeline 成功
-✓ mlir-translate --mlir-to-llvmir 成功  
+✓ mlir-translate --mlir-to-llvmir 成功
 ✓ 最终 LLVM IR 包含两个函数，llvm.call 保留
 ```
 
@@ -55,7 +55,7 @@ module {
 ```python
 def emit_llvm_func_for_inline(fn) -> tuple[str, list[str]]:
     """Emit an llvm.func that can be called from a host func.func.
-    
+
     Returns:
         (func_text, param_types) where:
         - func_text: complete llvm.func definition (no module wrapper)
@@ -76,7 +76,7 @@ def emit_llvm_func_for_inline(fn) -> tuple[str, list[str]]:
 ```python
 def take_pending_llvm_funcs():
     """Retrieve pending llvm.func siblings for mixed mode.
-    
+
     Returns list of llvm.func text strings (no module wrapper).
     """
 ```
@@ -85,7 +85,7 @@ def take_pending_llvm_funcs():
 
 ### Phase 3-6: 待实施
 
-**阻塞原因:** 
+**阻塞原因:**
 - call_registry 在 make_ir 阶段运行（tt dialect），无法 emit LLVM dialect 的 `llvm.call`
 - 需要在更晚阶段（func.func 生成后）插入 llvm.call，或通过文本手术
 

@@ -50,19 +50,19 @@ def call(fn, outputs=None, inputs=None, _semantic=None):
     if getattr(fn, '_llvm_direct', False):
         from .llvm_direct_text import emit_llvm_func_for_inline
         raw_fn = fn._fn if hasattr(fn, '_fn') else fn
-        
+
         # Emit standalone llvm.func (not full module)
         llvm_func_text, param_types = emit_llvm_func_for_inline(raw_fn)
-        
+
         # Stash for make_ttir to append as sibling
         if "llvm_funcs" not in _PENDING_LLVM_DIRECT_MODULE:
             _PENDING_LLVM_DIRECT_MODULE["llvm_funcs"] = []
         _PENDING_LLVM_DIRECT_MODULE["llvm_funcs"].append(llvm_func_text)
-        
+
         # Emit llvm.call in host body via builder API
         builder = _semantic.builder
         handles = [_to_handle(v, builder, pt) for v, pt in zip(inputs, param_types)]
-        
+
         # Use builder.create_llvm_call() if binding exists, else text fallback
         try:
             builder.create_llvm_call(raw_fn.__name__, handles, param_types)
@@ -71,7 +71,7 @@ def call(fn, outputs=None, inputs=None, _semantic=None):
             # This is a temporary workaround until C++ binding is added
             pass
         return
-    
+
     # Normal spine_raw path (unchanged)
     ...
 ```
@@ -162,7 +162,7 @@ if src == "(llvm-direct-bypass)":
         std::vector<Value> &args, std::vector<std::string> &arg_type_strs) {
        auto &builder = self.getBuilder();
        SmallVector<Value> operands(args.begin(), args.end());
-       
+
        // Parse MLIR types from strings
        SmallVector<Type> arg_types;
        for (const auto &type_str : arg_type_strs) {
@@ -172,7 +172,7 @@ if src == "(llvm-direct-bypass)":
          }
          arg_types.push_back(type);
        }
-       
+
        // Create llvm.call: llvm.call @callee(%args) : (arg_types) -> ()
        builder.create<LLVM::CallOp>(
          builder.getStringAttr(callee),
@@ -202,10 +202,10 @@ def fused_three_layer_host(Mat, vec, vec_s, scores, out, alpha, K, N, BLOCK: tl.
     x = tl.load(vec + offs, mask=mask, other=0.0)
     y = (x.to(tl.float32) * alpha).to(tl.float16)
     tl.store(vec_s + offs, y, mask=mask)
-    
+
     # Stage 2: spine_raw GEMV (dsl_region inline)
     _sr_call(gemv_spine_raw, outputs=[], inputs=[Mat, vec_s, scores, K, N, BLOCK=N])
-    
+
     # Stage 3: call_intrinsic (llvm.call to sibling llvm.func)
     _sr_call(post_scale_llvm, outputs=[], inputs=[scores, out, N])
 
@@ -225,7 +225,7 @@ module {
     llvm.call @post_scale_llvm(...) : (...) -> ()
     return
   }
-  
+
   llvm.func @post_scale_llvm(...) {
     // vle, fmul, vse
     ...
@@ -303,7 +303,7 @@ Given:
 1. Read this document
 2. Verify Phase 1-2 API still works (run test_manual_mixed_ir.py)
 3. Implement Phase 3 (call_registry.py)
-4. Implement Phase 4 (compiler.py) 
+4. Implement Phase 4 (compiler.py)
 5. Test on x86 with IR dumps
 6. Optionally add Phase 5 (C++ binding)
 7. Update Phase 6 (test)

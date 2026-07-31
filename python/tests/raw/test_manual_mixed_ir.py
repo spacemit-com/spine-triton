@@ -11,9 +11,6 @@ The test validates:
 3. Full pipeline spine-opt → mlir-translate → LLVM IR succeeds
 """
 
-import triton
-import triton.language as tl
-import torch
 import subprocess
 import tempfile
 import os
@@ -85,10 +82,8 @@ def test_mixed_manual_ir():
 
         # Run spine-opt pipeline
         spine_opt = "/home/zuoweixia/work/tritons/spine-mlir-k3/build/x86/speir/Release/bin/spine-opt"
-        result = subprocess.run(
-            [spine_opt, "--spine-triton-e2e-pipeline", input_mlir, "-o", output_mlir],
-            capture_output=True, text=True
-        )
+        result = subprocess.run([spine_opt, "--spine-triton-e2e-pipeline", input_mlir, "-o", output_mlir],
+                                capture_output=True, text=True)
 
         if result.returncode != 0:
             print(f"spine-opt FAILED:\n{result.stderr}")
@@ -98,10 +93,8 @@ def test_mixed_manual_ir():
 
         # Run mlir-translate
         mlir_translate = "/home/zuoweixia/work/tritons/spine-mlir-k3/build/x86/speir/Release/installed/bin/mlir-translate"
-        result = subprocess.run(
-            [mlir_translate, "--mlir-to-llvmir", output_mlir, "-o", output_ll],
-            capture_output=True, text=True
-        )
+        result = subprocess.run([mlir_translate, "--mlir-to-llvmir", output_mlir, "-o", output_ll], capture_output=True,
+                                text=True)
 
         if result.returncode != 0:
             print(f"mlir-translate FAILED:\n{result.stderr}")

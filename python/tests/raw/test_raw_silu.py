@@ -9,7 +9,6 @@ arithmetic without new primitives.
 """
 import torch
 import triton
-import triton.language as tl
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
@@ -26,7 +25,7 @@ def silu_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
     Nfloor = (N // nvl) * nvl
     for i in tle.range(0, Nfloor, nvl):
         vx = tle.vload(X, i, dtype=f32)
-        sig = 1.0 / (1.0 + tle.vexp(-vx))   # sigmoid(x)
+        sig = 1.0 / (1.0 + tle.vexp(-vx))  # sigmoid(x)
         tle.vstore(out, i, vx * sig)
     for i in tle.range(Nfloor, N, nvl):
         nvl_t = tle.vconfig(N - i, 1)
@@ -45,6 +44,6 @@ def test_silu(N):
     torch.manual_seed(42)
     X = torch.randn(N, dtype=torch.float32)
     out = torch.zeros(N, dtype=torch.float32)
-    silu_host[(1,)](X, out, N)
+    silu_host[(1, )](X, out, N)
     ref = torch.nn.functional.silu(X)
     torch.testing.assert_close(out, ref, rtol=1e-5, atol=1e-5)

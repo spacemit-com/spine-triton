@@ -4,12 +4,14 @@ Extends perf_reduce.py results with:
   group_norm: spine_raw vs FlagGems, sweep over (G, C) shapes
   cumsum_vec: 3-phase vectorized vs sequential scalar, large N
 """
-import os, sys, time
+import os
+import time
 from importlib.machinery import SourceFileLoader
 import numpy as np
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import triton.language.extra.spine_raw as tle  # noqa
 
@@ -30,7 +32,8 @@ EPS = 1e-5
 
 
 def bench(fn):
-    for _ in range(WARMUP): fn()
+    for _ in range(WARMUP):
+        fn()
     ts = [0.0] * REPS
     for k in range(REPS):
         t0 = time.perf_counter()
@@ -45,26 +48,32 @@ def bench(fn):
 def bench_group_norm():
     print("\n=== group_norm (f16 in, 2D) ===")
     print(f"{'G':>5} {'C':>6} {'raw_us':>10} {'fg_us':>10} {'speedup':>9} {'ok':>4}")
-    shapes = [(4,64),(8,64),(16,64),(32,64),(4,128),(8,128),(16,256),(32,256)]
+    shapes = [(4, 64), (8, 64), (16, 64), (32, 64), (4, 128), (8, 128), (16, 256), (32, 256)]
     for G, C in shapes:
         torch.manual_seed(0)
         X = torch.randn(G * C, dtype=torch.float16)
         out = torch.zeros(G * C, dtype=torch.float32)
+
         def raw():
-            _gn.group_norm_host[(G,)](X, out, G, C)
+            _gn.group_norm_host[(G, )](X, out, G, C)
+
         raw_us = bench(raw)
         # reference
         xf = X.float().reshape(G, C)
-        m = xf.mean(1, keepdim=True); v = ((xf-m)**2).mean(1, keepdim=True)
-        ref = ((xf-m)/torch.sqrt(v+EPS)).reshape(-1)
-        ok = (out-ref).abs().max().item() < 1e-2
+        m = xf.mean(1, keepdim=True)
+        v = ((xf - m)**2).mean(1, keepdim=True)
+        ref = ((xf - m) / torch.sqrt(v + EPS)).reshape(-1)
+        ok = (out - ref).abs().max().item() < 1e-2
         # FlagGems
         if _HAVE_FG:
             try:
                 Xt = X.reshape(1, G, C)
                 w = torch.ones(C, dtype=torch.float16)
                 b2 = torch.zeros(C, dtype=torch.float16)
-                def fg(): flag_gems.group_norm(Xt, G, w, b2, EPS)
+
+                def fg():
+                    flag_gems.group_norm(Xt, G, w, b2, EPS)
+
                 fg_us = bench(fg)
                 sp = f"{fg_us/raw_us:.2f}x"
             except Exception as e2:
@@ -85,9 +94,13 @@ def bench_cumsum():
         X = torch.randn(N, dtype=torch.float32)
         out_v = torch.zeros(N, dtype=torch.float32)
         out_s = torch.zeros(N, dtype=torch.float32)
-        def run_vec(): return _cs.cumsum_vectorized(X)
+
+        def run_vec():
+            return _cs.cumsum_vectorized(X)
+
         def run_scl():
-            _cs1.cumsum_1d_host[(1,)](X, out_s, N)
+            _cs1.cumsum_1d_host[(1, )](X, out_s, N)
+
         vec_us = bench(run_vec)
         scl_us = bench(run_scl)
         ref = torch.cumsum(X, 0)

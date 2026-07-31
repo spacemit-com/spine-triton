@@ -16,7 +16,6 @@ constrain K % 64 == 0 and N % 4 == 0 (full tiles only).
 标量元素偏移,二维坐标由用户自行压平(如 B 的行 ni 列 ki 写作 ni*K + ki)。对
 alloc 出的 ranked scratch(packed_B),index 仍是逐维下标元组(ranked 自然寻址)。
 """
-import functools
 
 import torch
 import triton
@@ -39,18 +38,18 @@ f32 = tle.f32
 def mv_block_style2(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True), K: tle.index, row_base: tle.index,
                     row_end: tle.index):
     # grid 并发:host 按 program_id 把 N 行切块,本 program 只算 [row_base, row_end) 行。
-    nvl = tle.vconfig(-1, 1)   # lmul=1 → VLMAX=64 (f16, SPEC §6.1)
+    nvl = tle.vconfig(-1, 1)  # lmul=1 → VLMAX=64 (f16, SPEC §6.1)
     # strip-mine:K 循环分裂成主循环(满 tile)+尾循环(K%VL 那块)。要不要 pad 由 codegen 编译期
     # 按「是否设了 vconfig 收窄」决定(纯 Python if, 不往 IR 塞运行期 scf.if):主循环不收窄 →
     # vload 走快路直读, 零 pad 零分支;尾循环设 vconfig(K-ki) → vload fill-0 pad。尾循环
     # scf.for 天然跑 0 次(K%VL==0, 整除 shape)或 1 次, 用迭代次数代替分支。
-    Kfloor = (K // nvl) * nvl   # 满 tile 覆盖的 K 区间(VL 整数倍)
+    Kfloor = (K // nvl) * nvl  # 满 tile 覆盖的 K 区间(VL 整数倍)
     for ni in tle.range(row_base, row_end, 4):
         acc0 = tle.vzero(f32)
         acc1 = tle.vzero(f32)
         acc2 = tle.vzero(f32)
         acc3 = tle.vzero(f32)
-        for ki in tle.range(0, Kfloor, nvl):   # 主循环:满 tile, 快路直读(不设收窄)
+        for ki in tle.range(0, Kfloor, nvl):  # 主循环:满 tile, 快路直读(不设收窄)
             va = tle.vload(A, ki)
             vb0 = tle.vload(B, ni * K + ki)
             vb1 = tle.vload(B, (ni + 1) * K + ki)
@@ -60,7 +59,7 @@ def mv_block_style2(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
             acc1 = tle.vmacc(acc1, vb1, va)
             acc2 = tle.vmacc(acc2, vb2, va)
             acc3 = tle.vmacc(acc3, vb3, va)
-        for ki in tle.range(Kfloor, K, nvl):   # 尾循环:跑 0/1 次, 收窄 → codegen 走 fill-0 pad
+        for ki in tle.range(Kfloor, K, nvl):  # 尾循环:跑 0/1 次, 收窄 → codegen 走 fill-0 pad
             nvl = tle.vconfig(K - ki, 1)
             # 用独立临时名(ta/tb*):与主循环的 va/vb* 不同名, 否则它们泄漏到外层作用域,
             # 尾循环的 iter_arg 检测(_find_reassigned)会误把这些纯临时当成循环携带值 →
@@ -84,7 +83,7 @@ def mv_block_style2(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
 def _mv_sv_host_style2(B, A, C, K, N, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     row_base = pid * BLOCK
-    row_end = min(row_base + BLOCK, N)   # 限行:末 program 不越 N, 避免读 phantom 行 B
+    row_end = min(row_base + BLOCK, N)  # 限行:末 program 不越 N, 避免读 phantom 行 B
     _sr_call(mv_block_style2, outputs=[], inputs=[B, A, C, K, row_base, row_end])
 
 
@@ -95,7 +94,7 @@ def _mv_sv_host_style2(B, A, C, K, N, BLOCK: tl.constexpr):
 def mv_block_style3(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True), K: tle.index, row_base: tle.index,
                     row_end: tle.index):
     # grid 并发:本 program 只算 [row_base, row_end) 行。
-    nvl = tle.vconfig(-1, 1)   # lmul=1 → VLMAX=64 (f16, SPEC §6.1)
+    nvl = tle.vconfig(-1, 1)  # lmul=1 → VLMAX=64 (f16, SPEC §6.1)
     # tile 数须 ceil(K/nvl):pack 的 kb 循环跑 0..K step nvl = ceil(K/nvl) 个 tile,
     # alloc 用 floor(K//nvl)在 K%64≠0 时欠分配 → pack 写 dst[0,ceil-1,..] 越界 dim-1
     # → 堆缓冲区溢出(跨-kernel 污染, NaN)。用 ceil 匹配 pack 实际写的 tile 数。
@@ -111,7 +110,7 @@ def mv_block_style3(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
         acc2 = tle.vzero(f32)
         acc3 = tle.vzero(f32)
         tle.pack(B, (ni, 0), packed_B, (1, kct, 4, nvl), K)
-        for ki in tle.range(0, Kfloor, nvl):   # 主循环:满 tile 快路
+        for ki in tle.range(0, Kfloor, nvl):  # 主循环:满 tile 快路
             vb0 = tle.vload(packed_B, (0, ki // nvl, 0, 0))
             vb1 = tle.vload(packed_B, (0, ki // nvl, 1, 0))
             vb2 = tle.vload(packed_B, (0, ki // nvl, 2, 0))
@@ -121,7 +120,7 @@ def mv_block_style3(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
             acc1 = tle.vmacc(acc1, vb1, va)
             acc2 = tle.vmacc(acc2, vb2, va)
             acc3 = tle.vmacc(acc3, vb3, va)
-        for ki in tle.range(Kfloor, K, nvl):   # 尾循环:跑 0/1 次, 收窄→fill-0(独立临时名 tb*/ta)
+        for ki in tle.range(Kfloor, K, nvl):  # 尾循环:跑 0/1 次, 收窄→fill-0(独立临时名 tb*/ta)
             nvl = tle.vconfig(K - ki, 1)
             tb0 = tle.vload(packed_B, (0, ki // nvl, 0, 0))
             tb1 = tle.vload(packed_B, (0, ki // nvl, 1, 0))
@@ -142,7 +141,7 @@ def mv_block_style3(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f32, out=True),
 def _mv_sv_host_style3(B, A, C, K, N, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     row_base = pid * BLOCK
-    row_end = min(row_base + BLOCK, N)   # 限行:末 program 不越 N, pack 不读 phantom 行 B
+    row_end = min(row_base + BLOCK, N)  # 限行:末 program 不越 N, pack 不读 phantom 行 B
     _sr_call(mv_block_style3, outputs=[], inputs=[B, A, C, K, row_base, row_end])
 
 
@@ -187,8 +186,8 @@ def test_raw_mv_svector_style3(N, K):
 #      C[N..Np-1];C 分配到 Np=ceil(N/BLOCK)*BLOCK 吸收(仅分配无 copy),切 C[:N]。
 # _run 已同时处理 ①②,故任意 shape 直接复用 _run。
 # 任意 shape:K 非 64 倍数 / N 非 BLOCK 倍数 / 二者都非整除
-_SHAPES_ARB = [(4, 60), (4, 100), (8, 65), (4, 63), (8, 127), (4, 200), (16, 130), (12, 50),
-               (7, 64), (33, 65), (50, 130), (100, 100), (6, 60), (13, 200), (37, 130)]
+_SHAPES_ARB = [(4, 60), (4, 100), (8, 65), (4, 63), (8, 127), (4, 200), (16, 130), (12, 50), (7, 64), (33, 65),
+               (50, 130), (100, 100), (6, 60), (13, 200), (37, 130)]
 
 
 @pytest.mark.parametrize("N, K", _SHAPES_ARB)
@@ -199,4 +198,3 @@ def test_raw_mv_svector_style2_arb(N, K):
 @pytest.mark.parametrize("N, K", _SHAPES_ARB)
 def test_raw_mv_svector_style3_arb(N, K):
     _run(_mv_sv_host_style3, N, K)
-

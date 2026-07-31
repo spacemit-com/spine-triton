@@ -17,8 +17,11 @@ shape 支持(本文件验证的能力边界):
 
 cube 尺寸从 dtype 的 MMACubicSize 推(K3 f16={m8,n8,k8}),不硬编码 8。
 """
-import numpy as np, torch, triton
+import numpy as np
+import torch
+import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import triton.language as tl
 import pytest
@@ -29,10 +32,10 @@ f16 = tle.f16
 f32 = tle.f32
 
 CM, CN, CK = tle.mma_cube(f16)  # (8, 8, 8) for f16
-VL = CN * CK                    # cube lane 宽 = n×k,f16→64
-MB = 2 * CM                     # 每 program 的 cube 行块 = 16(b1=MB/CM=2,匹配已坐实还原链)
-Npad = 4 * CN                   # A 广播维 = 32(b2=Npad/CN=4,seg=2*CN*16=256≤512 硬件上限)
-B1, B2 = MB // CM, Npad // CN   # 2, 4
+VL = CN * CK  # cube lane 宽 = n×k,f16→64
+MB = 2 * CM  # 每 program 的 cube 行块 = 16(b1=MB/CM=2,匹配已坐实还原链)
+Npad = 4 * CN  # A 广播维 = 32(b2=Npad/CN=4,seg=2*CN*16=256≤512 硬件上限)
+B1, B2 = MB // CM, Npad // CN  # 2, 4
 
 
 def make_mv(M, K):
@@ -43,10 +46,10 @@ def make_mv(M, K):
     对齐 probe_fill_pad)。M>MB 且非整除的 per-program 动态行数属 §2.B 待扩,本函数不覆盖。
     每 shape 唯一 __name__ 避免 Triton JIT 按名缓存串用。
     """
-    Kp = ((K + CK - 1) // CK) * CK      # K 上取整到 CK 倍数(pad 尾补 0)
-    KC = Kp // CK                        # K 循环迭代数(按 pad 后)
-    Mtot = M                             # 闭包常量, 供 kernel 算 valid_rows = imin(MB, M-row_base)
-    grid_blocks = (M + MB - 1) // MB     # 任意 M:grid=ceil(M/MB), 末 block 动态行数
+    Kp = ((K + CK - 1) // CK) * CK  # K 上取整到 CK 倍数(pad 尾补 0)
+    KC = Kp // CK  # K 循环迭代数(按 pad 后)
+    Mtot = M  # 闭包常量, 供 kernel 算 valid_rows = imin(MB, M-row_base)
+    grid_blocks = (M + MB - 1) // MB  # 任意 M:grid=ceil(M/MB), 末 block 动态行数
 
     @tle.raw_kernel
     def mv(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f16, out=True), row_base: tle.index):
@@ -59,13 +62,13 @@ def make_mv(M, K):
         scrA = tle.spread(A, cube_shape=(KC, CN, CK), k_real=K)
         acc = tle.vzero(f32, group=B1 * B2)  # <8×64xf32>
         for kc in tle.range(0, KC, 1):
-            vb = tle.vload(Bcube, (0, kc), group=B1)   # <2×64xf16>
-            va1 = tle.vload(scrA, (kc, 0))             # <64xf16>(单 cube,A 已 n 广播)
-            va = tle.vbroadcast(va1, B2)               # <4×64xf16>
-            acc = tle.vmadot(acc, vb, va)              # cross_batch_matmul
+            vb = tle.vload(Bcube, (0, kc), group=B1)  # <2×64xf16>
+            va1 = tle.vload(scrA, (kc, 0))  # <64xf16>(单 cube,A 已 n 广播)
+            va = tle.vbroadcast(va1, B2)  # <4×64xf16>
+            acc = tle.vmadot(acc, vb, va)  # cross_batch_matmul
         # ⑤ 输出还原:group_interleave 逐级(groupLen 从 CN 起翻倍),cube→行主序 <MB×Npad>
-        c1 = tle.vpack(acc, CN)       # <8×64> → <4×128>
-        c2 = tle.vpack(c1, 2 * CN)    # <4×128> → <2×256>
+        c1 = tle.vpack(acc, CN)  # <8×64> → <4×128>
+        c2 = tle.vpack(c1, 2 * CN)  # <4×128> → <2×256>
         cf = tle.vshape(c2, (MB, Npad))
         c = tle.cast(cf, f16)
         tle.vstore(C, row_base * Npad, c, shape=(MB, Npad))
@@ -87,24 +90,24 @@ def make_mv(M, K):
 def _run(M, K):
     rng = np.random.default_rng(0)
     Blog = rng.standard_normal((M, K)).astype(np.float16)
-    Alog = rng.standard_normal((K,)).astype(np.float16)
+    Alog = rng.standard_normal((K, )).astype(np.float16)
     golden = Blog.astype(np.float64) @ Alog.astype(np.float64)
     B = torch.tensor(Blog.reshape(-1))
     A = torch.tensor(Alog.reshape(-1))
-    Mp = ((M + MB - 1) // MB) * MB       # kernel 每 block 写 MB 行 → C 按 Mp 分配, 尾行丢弃
+    Mp = ((M + MB - 1) // MB) * MB  # kernel 每 block 写 MB 行 → C 按 Mp 分配, 尾行丢弃
     C = torch.zeros(Mp, Npad, dtype=torch.float16)
     host = make_mv(M, K)
-    host[(host._grid_blocks,)](B.contiguous(), A.contiguous(), C, BLOCK=MB)
-    got = C[:M, 0].float().numpy().astype(np.float64)   # 取真实 M 行 col0
+    host[(host._grid_blocks, )](B.contiguous(), A.contiguous(), C, BLOCK=MB)
+    got = C[:M, 0].float().numpy().astype(np.float64)  # 取真实 M 行 col0
     diff = np.abs(got - golden).max()
     assert diff < 5e-2, f"M={M} K={K} max_diff={diff:.4e}\ngot={got[:4]}\ngold={golden[:4]}"
 
 
 # 整除族(回归)+ 任意 shape(K 非整除 / M<MB / M>MB 非整除)
-_SHAPES = [(64, 64), (128, 64), (64, 128), (256, 64),    # 整除回归
-           (64, 60), (128, 100), (64, 40),               # K 非整除(fill+insert 补 K 尾)
-           (12, 60), (12, 64), (4, 40),                  # M<MB 且 K 任意(单 block fill+insert 补 M/K)
-           (20, 64), (20, 60), (100, 64), (50, 100)]     # M>MB 非整除(§2.B 动态行数 valid_rows)
+_SHAPES = [(64, 64), (128, 64), (64, 128), (256, 64),  # 整除回归
+           (64, 60), (128, 100), (64, 40),  # K 非整除(fill+insert 补 K 尾)
+           (12, 60), (12, 64), (4, 40),  # M<MB 且 K 任意(单 block fill+insert 补 M/K)
+           (20, 64), (20, 60), (100, 64), (50, 100)]  # M>MB 非整除(§2.B 动态行数 valid_rows)
 
 
 @pytest.mark.parametrize("M, K", _SHAPES)

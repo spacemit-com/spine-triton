@@ -1,8 +1,9 @@
 """LLVM-direct probe: full call_intrinsic LLVM-dialect kernel. Dump TTIR to inspect
 structure (does tle.dsl_region carry the LLVM ops correctly?)."""
-import os, torch, triton
-import triton.language as tl
+import torch
+import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import triton.language.extra.spine_raw as tle
 from triton.language.extra.spine_raw import call as _sr_call
@@ -29,7 +30,7 @@ if __name__ == "__main__":
     X = torch.arange(8, dtype=torch.float16)
     out = torch.zeros(8, dtype=torch.float16)
     try:
-        llvm_direct_copy_host[(1,)](X, out, 8)
+        llvm_direct_copy_host[(1, )](X, out, 8)
         print("COMPILED OK")
         print("out:", out)
     except Exception as e:

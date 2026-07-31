@@ -13,7 +13,6 @@ Run on K3:
   GEMS_VENDOR=spacemit
 """
 import os
-import sys
 import time
 from importlib.machinery import SourceFileLoader
 
@@ -80,32 +79,47 @@ def run_op(name, raw_fn, fg_fn, ref_fn, make_out, in_dtype=torch.float32):
 def main():
     # rms_norm
     def rms_raw(X, out, N):
-        _rms.rms_norm_1d_host[(1,)](X, out, N)
+        _rms.rms_norm_1d_host[(1, )](X, out, N)
+
     def rms_ref(X):
-        xf = X.float(); return xf / torch.sqrt((xf * xf).mean())
+        xf = X.float()
+        return xf / torch.sqrt((xf * xf).mean())
+
     def rms_fg(X):
         w = torch.ones_like(X)
         return flag_gems.rms_norm(X.unsqueeze(0), [X.shape[0]], w, EPS)
-    run_op("rms_norm", rms_raw, rms_fg if _HAVE_FG else None, rms_ref, lambda N: torch.zeros(N, dtype=torch.float32), in_dtype=torch.float16)
+
+    run_op("rms_norm", rms_raw, rms_fg if _HAVE_FG else None, rms_ref, lambda N: torch.zeros(N, dtype=torch.float32),
+           in_dtype=torch.float16)
 
     # layernorm
     def ln_raw(X, out, N):
-        _ln.layernorm_1d_host[(1,)](X, out, N)
+        _ln.layernorm_1d_host[(1, )](X, out, N)
+
     def ln_ref(X):
-        xf = X.float(); m = xf.mean(); v = ((xf - m) ** 2).mean()
+        xf = X.float()
+        m = xf.mean()
+        v = ((xf - m)**2).mean()
         return (xf - m) / torch.sqrt(v + _ln.EPS)
+
     def ln_fg(X):
-        w = torch.ones_like(X); b = torch.zeros_like(X)
+        w = torch.ones_like(X)
+        b = torch.zeros_like(X)
         return flag_gems.layer_norm(X.unsqueeze(0), [X.shape[0]], w, b, _ln.EPS)
-    run_op("layernorm", ln_raw, ln_fg if _HAVE_FG else None, ln_ref, lambda N: torch.zeros(N, dtype=torch.float32), in_dtype=torch.float16)
+
+    run_op("layernorm", ln_raw, ln_fg if _HAVE_FG else None, ln_ref, lambda N: torch.zeros(N, dtype=torch.float32),
+           in_dtype=torch.float16)
 
     # softmax
     def sm_raw(X, out, N):
-        _sm.softmax_1d_host[(1,)](X, out, N)
+        _sm.softmax_1d_host[(1, )](X, out, N)
+
     def sm_ref(X):
         return torch.softmax(X.float(), dim=0)
+
     def sm_fg(X):
         return flag_gems.softmax(X.unsqueeze(0), dim=-1)
+
     run_op("softmax", sm_raw, sm_fg if _HAVE_FG else None, sm_ref, lambda N: torch.zeros(N, dtype=torch.float32))
 
 

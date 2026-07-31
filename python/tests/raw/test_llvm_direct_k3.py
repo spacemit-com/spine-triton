@@ -3,11 +3,10 @@
 Validates: for-loop, iter-arg accumulator, call_intrinsic for LLVM ops, llvm_gep.
 Compute: C[i] = sum_k A[i*K + k] * B[k]  (simplified: single row, K tiles)
 """
-import os
 import torch
 import triton
-import triton.language as tl
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import triton.language.extra.spine_raw as tle
 from triton.language.extra.spine_raw import call as _sr_call
@@ -58,7 +57,7 @@ def llvm_direct_gemv_k3(A: tle.mem(f32), B: tle.mem(f32), C: tle.mem(f32, out=Tr
     vl = tle.llvm_const(8, "i64")
     eight = tle.llvm_const(8, "i64")
     zero = tle.llvm_const(0, "i64")
-    row = tle.program_id(0)          # this program's row — the ONLY per-program input
+    row = tle.program_id(0)  # this program's row — the ONLY per-program input
 
     # Accumulator for this row
     acc = tle.llvm_const("0.000000e+00", "vector<[8]xf32>")
@@ -72,7 +71,7 @@ def llvm_direct_gemv_k3(A: tle.mem(f32), B: tle.mem(f32), C: tle.mem(f32, out=Tr
         pa = tle.llvm_poison("vector<[8]xf32>")
         pb = tle.llvm_poison("vector<[8]xf32>")
 
-        a_offset = row * K + k        # A[row*K + k] — natural arithmetic
+        a_offset = row * K + k  # A[row*K + k] — natural arithmetic
         ga = tle.llvm_gep(tle.llvm_base_ptr(A), a_offset, "f32")
         gb = tle.llvm_gep(tle.llvm_base_ptr(B), k, "f32")
 
@@ -82,7 +81,7 @@ def llvm_direct_gemv_k3(A: tle.mem(f32), B: tle.mem(f32), C: tle.mem(f32, out=Tr
         acc = tle.call_intrinsic("llvm.fadd", [acc, prod], result_type="vector<[8]xf32>")
 
     # Store accumulated vector to C[row*8 : row*8+8]
-    c_offset = row * eight            # natural arithmetic
+    c_offset = row * eight  # natural arithmetic
     gc = tle.llvm_gep(tle.llvm_base_ptr(C), c_offset, "f32")
     tle.call_intrinsic("llvm.riscv.vse", [acc, gc, vl], result_type="()")
 
@@ -106,7 +105,7 @@ def main():
 
     print(f"=== LLVM-direct MV with K-loop (K={K}, grid=1) ===")
     try:
-        llvm_direct_mv_k3_host[(1,)](A, B, C, K)
+        llvm_direct_mv_k3_host[(1, )](A, B, C, K)
         print("COMPILED OK")
         print("C (first 8):", C[:8])
         print("C_ref:      ", C_ref[:8])
@@ -135,7 +134,7 @@ def main():
 
     print(f"\n=== LLVM-direct GEMV with multi-program (M={M}, K={K}, grid={M}) ===")
     try:
-        llvm_direct_gemv_k3_host[(M,)](A_mat.flatten(), B_vec, C_mat, M, K)
+        llvm_direct_gemv_k3_host[(M, )](A_mat.flatten(), B_vec, C_mat, M, K)
         print("COMPILED OK")
         print("C (all):", C_mat)
         print("C_ref:  ", C_ref_mat)
@@ -152,8 +151,7 @@ def main():
 
     # Test 3: fail-loud guard — wrong arity / computed-pointer in inputs must raise
     # at compile time, not silently produce a wrong answer.
-    print(f"\n=== Fail-loud guard: arity mismatch must raise (not silent wrong answer) ===")
-    from triton.language.extra.spine_raw.call_registry import call as _sr_call_direct
+    print("\n=== Fail-loud guard: arity mismatch must raise (not silent wrong answer) ===")
 
     @triton.jit
     def bad_host(A, B, C, M, K):
@@ -165,7 +163,7 @@ def main():
         A2 = torch.arange(4 * 64, dtype=torch.float32)
         B2 = torch.ones(64, dtype=torch.float32)
         C2 = torch.zeros(32, dtype=torch.float32)
-        bad_host[(4,)](A2, B2, C2, 4, 64)
+        bad_host[(4, )](A2, B2, C2, 4, 64)
         print("FAIL: expected guard to raise for arity mismatch, but call succeeded")
     except Exception as e:
         # Triton wraps the guard's ValueError in a CompilationError; inspect the

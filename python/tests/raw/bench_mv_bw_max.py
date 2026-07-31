@@ -7,12 +7,14 @@ mv effective bytes = B[M,K]*2(f16) + A[K]*2(f16) + C[M]*4(f32).
 BW = bytes / median_time. util = BW / peak.
 Best util per shape = max over BLOCK sweep (dispatch/parallelism tradeoff).
 """
-import os, sys, time
+import os
+import time
 import numpy as np
 import torch
-import triton, triton.language as tl
+import triton
 from importlib.machinery import SourceFileLoader
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import triton.language.extra.spine_raw as tle  # noqa: F401
 
@@ -62,10 +64,11 @@ def main():
         for BLOCK in BLOCKS:
             if M % BLOCK != 0:
                 continue
-            grid = (M // BLOCK,)
+            grid = (M // BLOCK, )
 
             def run(g=grid, bl=BLOCK):
                 sv._mv_sv_host_style2[g](B, A, Cbuf, K, M, bl)
+
             try:
                 us = bench(run)
             except Exception:

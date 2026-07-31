@@ -18,7 +18,6 @@ fixed-VL svector loop runs full tiles (no tail; §6.1 narrowing deferred).
 """
 import torch
 import triton
-import triton.language as tl
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())

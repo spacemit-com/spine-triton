@@ -91,9 +91,8 @@ def call(fn, outputs=None, inputs=None, _semantic=None):
         # Arity guard: inputs must match kernel signature
         n_params = len(_parse_signature(raw_fn))
         if len(inputs) != n_params:
-            raise ValueError(
-                f"spine_raw.call: LLVM-direct kernel {raw_fn.__name__!r} declares "
-                f"{n_params} parameter(s) but got {len(inputs)} input(s).")
+            raise ValueError(f"spine_raw.call: LLVM-direct kernel {raw_fn.__name__!r} declares "
+                             f"{n_params} parameter(s) but got {len(inputs)} input(s).")
 
         # Emit the sibling llvm.func (no module wrapper). param_types is the
         # sibling ABI (every param → i64: memref=data-ptr-as-i64, scalar=i64).
@@ -120,27 +119,24 @@ def call(fn, outputs=None, inputs=None, _semantic=None):
         arg_bridge = []  # per-input: {"pos": int, "kind": "ptr"|"scalar"}
         for (pname, ann), v in zip(params, inputs):
             if not hasattr(v, "handle"):
-                raise ValueError(
-                    f"spine_raw.call: LLVM-direct kernel {raw_fn.__name__!r} in "
-                    f"mixed mode requires every input to be a host launch arg "
-                    f"(a tt.func parameter); got a computed/constexpr value for "
-                    f"{pname!r}. Compute derived values INSIDE the kernel from "
-                    f"tle.program_id(axis).")
+                raise ValueError(f"spine_raw.call: LLVM-direct kernel {raw_fn.__name__!r} in "
+                                 f"mixed mode requires every input to be a host launch arg "
+                                 f"(a tt.func parameter); got a computed/constexpr value for "
+                                 f"{pname!r}. Compute derived values INSIDE the kernel from "
+                                 f"tle.program_id(axis).")
             pos = argid_to_pos.get(v.handle.id())
             if pos is None:
-                raise ValueError(
-                    f"spine_raw.call: input for {pname!r} of {raw_fn.__name__!r} "
-                    f"is not a host entry-block argument. In mixed mode inputs must "
-                    f"be the host's own launch parameters (bridged to the sibling "
-                    f"llvm.func by position at the linalgdir stage).")
+                raise ValueError(f"spine_raw.call: input for {pname!r} of {raw_fn.__name__!r} "
+                                 f"is not a host entry-block argument. In mixed mode inputs must "
+                                 f"be the host's own launch parameters (bridged to the sibling "
+                                 f"llvm.func by position at the linalgdir stage).")
             kind = "ptr" if ann.mlir_type.startswith("memref") else "scalar"
             arg_bridge.append({"pos": pos, "kind": kind})
 
         if "llvm_calls" not in _PENDING_LLVM_DIRECT_MODULE:
             _PENDING_LLVM_DIRECT_MODULE["llvm_calls"] = []
         _PENDING_LLVM_DIRECT_MODULE["llvm_calls"].append({
-            "callee": raw_fn.__name__,
-            "arg_bridge": arg_bridge,   # ordered per sibling param
+            "callee": raw_fn.__name__, "arg_bridge": arg_bridge,  # ordered per sibling param
         })
 
         return  # skip dsl_region emission
@@ -160,4 +156,3 @@ def call(fn, outputs=None, inputs=None, _semantic=None):
 
 # Mark as triton builtin so JIT AST visitor injects _semantic automatically.
 call.__triton_builtin__ = True
-

@@ -14,8 +14,8 @@ import sys
 # import emitter straight from the source tree copy
 _SR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "language")
 sys.path.insert(0, os.path.abspath(_SR))
-from spine_raw.llvm_direct_text import emit_llvm_direct_module          # noqa: E402
-from spine_raw import types as _t                            # noqa: E402
+from spine_raw.llvm_direct_text import emit_llvm_direct_module  # noqa: E402
+from spine_raw import types as _t  # noqa: E402
 
 f16 = "f16"
 In = _t.In
@@ -25,7 +25,7 @@ index = _t.index
 
 # ---- a minimal llvm-direct copy kernel written with llvm_* primitives ----
 def llvm_direct_copy(X: mem(f16), out: mem(f16, out=True), N: index):
-    vl = None      # placeholders so python doesn't choke; real values via primitives
+    vl = None  # placeholders so python doesn't choke; real values via primitives
     # NOTE: body is walked as AST, not executed.
 
 
@@ -125,9 +125,8 @@ def _check(name, src, anns):
         r = subprocess.run(cmd, capture_output=True, text=True)
         return r.returncode, r.stdout, r.stderr
 
-    rc, _, err = run([f"{_BIN}/spine-opt", inp,
-                      '--spine-triton-e2e-pipeline=enable-always-tls=1 enable-fuse-group=false',
-                      "-o", o1])
+    rc, _, err = run(
+        [f"{_BIN}/spine-opt", inp, '--spine-triton-e2e-pipeline=enable-always-tls=1 enable-fuse-group=false', "-o", o1])
     print("spine-opt rc", rc, err[-800:] if rc else "")
     assert rc == 0, "spine-opt failed"
 
@@ -135,8 +134,10 @@ def _check(name, src, anns):
     print("translate rc", rc, err[-800:] if rc else "")
     assert rc == 0, "mlir-translate failed"
 
-    rc, _, err = run([f"{_BIN}/llc", "-O3", "--float-abi=hard", "--relocation-model=pic",
-                      "--march=riscv64", "--mattr=" + _MATTR, o2, "-filetype=obj", "-o", o3])
+    rc, _, err = run([
+        f"{_BIN}/llc", "-O3", "--float-abi=hard", "--relocation-model=pic", "--march=riscv64", "--mattr=" + _MATTR, o2,
+        "-filetype=obj", "-o", o3
+    ])
     print("llc rc", rc, err[-800:] if rc else "")
     assert rc == 0, "llc riscv64 failed"
 
@@ -148,12 +149,9 @@ def _check(name, src, anns):
 
 
 def main():
-    _check("llvm_direct_copy", _KSRC,
-           {"X": mem(f16), "out": mem(f16, out=True), "N": index})
-    _check("llvm_direct_mv", _KSRC_MV,
-           {"A": mem("f32"), "B": mem("f32"), "C": mem("f32", out=True), "K": index})
-    _check("llvm_direct_dot", _KSRC_DOT,
-           {"A": mem("f32"), "B": mem("f32"), "C": mem("f32", out=True), "N": index})
+    _check("llvm_direct_copy", _KSRC, {"X": mem(f16), "out": mem(f16, out=True), "N": index})
+    _check("llvm_direct_mv", _KSRC_MV, {"A": mem("f32"), "B": mem("f32"), "C": mem("f32", out=True), "K": index})
+    _check("llvm_direct_dot", _KSRC_DOT, {"A": mem("f32"), "B": mem("f32"), "C": mem("f32", out=True), "N": index})
     print("\nALL PASS (3 kernels: copy/mv/dot)")
 
 

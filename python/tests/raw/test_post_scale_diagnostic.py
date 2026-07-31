@@ -1,14 +1,15 @@
 """Test post_scale_llvm (call_intrinsic stage) in isolation."""
 import torch
 import triton
-import triton.language as tl
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import triton.language.extra.spine_raw as tle
 from triton.language.extra.spine_raw import call as _sr_call
 
 f32 = tle.f32
 _BETA = 0.5
+
 
 @tle.raw_kernel
 def post_scale_llvm(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
@@ -23,9 +24,11 @@ def post_scale_llvm(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.in
         go = tle.llvm_gep(tle.llvm_base_ptr(out), i, "f32")
         tle.call_intrinsic("llvm.riscv.vse", [r, go, vl], result_type="()")
 
+
 @triton.jit
 def post_scale_host(scores, out, N):
     _sr_call(post_scale_llvm, outputs=[], inputs=[scores, out, N])
+
 
 def test_post_scale_only(N):
     assert N % 8 == 0
@@ -33,7 +36,7 @@ def test_post_scale_only(N):
     scores = torch.randn(N, dtype=torch.float32)
     out = torch.zeros(N, dtype=torch.float32)
 
-    post_scale_host[(1,)](scores, out, N)
+    post_scale_host[(1, )](scores, out, N)
 
     ref = scores * _BETA
     max_diff = (out - ref).abs().max().item()
@@ -46,6 +49,7 @@ def test_post_scale_only(N):
     passed = torch.allclose(out, ref, rtol=1e-5, atol=1e-5)
     print(f"  {'PASS' if passed else 'FAIL'}")
     return passed
+
 
 if __name__ == "__main__":
     shapes = [8, 16, 32, 64]

@@ -18,10 +18,8 @@ INF_IDX = 1.0e30
 
 
 @tle.raw_kernel
-def max_dim1_kernel(
-    X: tle.mem(f32), vals: tle.mem(f32, out=True), idxs: tle.mem(f32, out=True),
-    M: tle.index, N: tle.index, row: tle.index
-):
+def max_dim1_kernel(X: tle.mem(f32), vals: tle.mem(f32, out=True), idxs: tle.mem(f32, out=True), M: tle.index,
+                    N: tle.index, row: tle.index):
     nvl = tle.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
     base = row * N
@@ -65,7 +63,7 @@ def test_max_dim1(M, N):
     X = torch.randn(M, N, dtype=torch.float32)
     vals = torch.zeros(M, dtype=torch.float32)
     idxs = torch.zeros(M, dtype=torch.float32)
-    max_dim1_host[(M,)](X.contiguous().reshape(-1), vals, idxs, M, N)
+    max_dim1_host[(M, )](X.contiguous().reshape(-1), vals, idxs, M, N)
     ref_v, ref_i = torch.max(X, dim=1)
     torch.testing.assert_close(vals, ref_v, rtol=1e-5, atol=1e-5)
     got_i = idxs.round().to(torch.int64)
@@ -76,10 +74,8 @@ def test_max_dim1(M, N):
 # min_dim
 # ---------------------------------------------------------------------------
 @tle.raw_kernel
-def min_dim1_kernel(
-    X: tle.mem(f32), vals: tle.mem(f32, out=True), idxs: tle.mem(f32, out=True),
-    M: tle.index, N: tle.index, row: tle.index
-):
+def min_dim1_kernel(X: tle.mem(f32), vals: tle.mem(f32, out=True), idxs: tle.mem(f32, out=True), M: tle.index,
+                    N: tle.index, row: tle.index):
     nvl = tle.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
     base = row * N
@@ -123,7 +119,7 @@ def test_min_dim1(M, N):
     X = torch.randn(M, N, dtype=torch.float32)
     vals = torch.zeros(M, dtype=torch.float32)
     idxs = torch.zeros(M, dtype=torch.float32)
-    min_dim1_host[(M,)](X.contiguous().reshape(-1), vals, idxs, M, N)
+    min_dim1_host[(M, )](X.contiguous().reshape(-1), vals, idxs, M, N)
     ref_v, ref_i = torch.min(X, dim=1)
     torch.testing.assert_close(vals, ref_v, rtol=1e-5, atol=1e-5)
     got_i = idxs.round().to(torch.int64)

@@ -58,7 +58,8 @@ range = _SpineRawRange()  # range(n) / range(start, stop, step) → scf.for boun
 #   vshape   : vshape(v, shape) → vector.shape_cast (reshape)
 #   vbroadcast: vbroadcast(v, n) → vector.broadcast (广播维)
 # ---------------------------------------------------------------------------
-vconfig = _SpineRawBuiltin("vconfig")  # vconfig(avl, lmul) → VL = min(avl, VLMAX), VLMAX = lmul × VLEN / SEW (SPEC §6.1)
+vconfig = _SpineRawBuiltin(
+    "vconfig")  # vconfig(avl, lmul) → VL = min(avl, VLMAX), VLMAX = lmul × VLEN / SEW (SPEC §6.1)
 vzero = _SpineRawBuiltin("vzero")  # vzero(dtype) → vector<VL x dtype> zeros
 vload = _SpineRawBuiltin("vload")  # vload(ptr, idx_tuple[, stride]) → vector<VL x dtype>
 vmacc = _SpineRawBuiltin("vmacc")  # vmacc(acc, x, y) → widening fma accumulate
@@ -66,14 +67,17 @@ vreduce_sum = _SpineRawBuiltin("vreduce_sum")  # vreduce_sum(vec) → scalar
 vreduce_max = _SpineRawBuiltin("vreduce_max")  # vreduce_max(vec) → scalar  (vector.reduction<maxf/maxsi>)
 vreduce_min = _SpineRawBuiltin("vreduce_min")  # vreduce_min(vec) → scalar  (vector.reduction<minf/minsi>)
 vreduce_mul = _SpineRawBuiltin("vreduce_mul")  # vreduce_mul(vec) → scalar  (vector.reduction<mul>)
-vstore = _SpineRawBuiltin("vstore")  # vstore(ptr, idx, vec) → transfer_write (vector only, width = VL; use sstore for scalars)
+vstore = _SpineRawBuiltin(
+    "vstore")  # vstore(ptr, idx, vec) → transfer_write (vector only, width = VL; use sstore for scalars)
 alloc = _SpineRawBuiltin("alloc")  # alloc(shape_tuple, dtype) → memref.alloc
 pack = _SpineRawBuiltin("pack")  # pack(src, src_idx, dst, dst_shape) → pack rows (写法3)
-vpack = _SpineRawBuiltin("vpack")  # vpack(v, group_len) → vector_ext.group_interleave → 多条 smt.vpack.vv (cube 交织, vector<b×N>→<(b/2)×2N>)
+vpack = _SpineRawBuiltin(
+    "vpack")  # vpack(v, group_len) → vector_ext.group_interleave → 多条 smt.vpack.vv (cube 交织, vector<b×N>→<(b/2)×2N>)
 vmadot = _SpineRawBuiltin("vmadot")  # vmadot(acc, x, y) → vector_ext.cross_batch_matmul → 多条 smt.vfwmadot (批量 cube 叉乘)
 vshape = _SpineRawBuiltin("vshape")  # vshape(v, shape) → vector.shape_cast (同 numel reshape)
 vbroadcast = _SpineRawBuiltin("vbroadcast")  # vbroadcast(v, n) → vector.broadcast: vector<64> → vector<n×64> (广播维)
-spread = _SpineRawBuiltin("spread")  # spread(src, cube_shape=(kc,n,k)) → scf.for 标量广播 pack → memref<kc×(n*k)>(A 的 n 广播, 绕开 vscale)
+spread = _SpineRawBuiltin(
+    "spread")  # spread(src, cube_shape=(kc,n,k)) → scf.for 标量广播 pack → memref<kc×(n*k)>(A 的 n 广播, 绕开 vscale)
 imin = _SpineRawBuiltin("imin")  # imin(a, b) → arith.minsi on index(valid_rows = imin(MB, M-row_base))
 # §6.4 逐元素具名函数(算术运算符直接用 Python 操作符, 无需 marker)
 vmin = _SpineRawBuiltin("vmin")  # vmin(a, b) → 逐元素 min → arith.minimumf / minsi
@@ -90,7 +94,8 @@ cast = _SpineRawBuiltin("cast")  # cast(a, dtype) → 类型转换 → arith.ext
 select = _SpineRawBuiltin("select")  # select(m, a, b) → a if m else b → arith.select (§6.8 回退)
 
 # ── LLVM-dialect llvm-direct primitives (full call_intrinsic kernel, all scalable) ──
-call_intrinsic = _SpineRawBuiltin("call_intrinsic")  # call_intrinsic(name, [ops], result_type=T) → llvm.call_intrinsic / dotted llvm op
+call_intrinsic = _SpineRawBuiltin(
+    "call_intrinsic")  # call_intrinsic(name, [ops], result_type=T) → llvm.call_intrinsic / dotted llvm op
 llvm_poison = _SpineRawBuiltin("llvm_poison")  # llvm_poison(T) → llvm.mlir.poison : T (vle passthru)
 llvm_const = _SpineRawBuiltin("llvm_const")  # llvm_const(v, T) → llvm.mlir.constant (scalar or dense splat)
 llvm_base_ptr = _SpineRawBuiltin("llvm_base_ptr")  # llvm_base_ptr(mem) → llvm.extractvalue desc[1] → !llvm.ptr

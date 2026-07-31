@@ -578,8 +578,8 @@ public:
                 .Case<tle::DSLRegionOp>([](tle::DSLRegionOp op) {
                   // tle.dsl_region carries its !tt.ptr operands untouched: the
                   // downstream ptr->memref pipeline wraps them in a cast chain
-                  // and TLEToLinalg's DSLRegionOpPattern traces them back to the
-                  // original memref. This pass must not rewrite them into
+                  // and TLEToLinalg's DSLRegionOpPattern traces them back to
+                  // the original memref. This pass must not rewrite them into
                   // offsets, so skip the op entirely.
                   return success();
                 })

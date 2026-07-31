@@ -20,12 +20,8 @@ f32 = tle.f32
 
 
 @tle.raw_kernel
-def weight_norm_kernel(
-    W: tle.mem(f32),
-    W_norm: tle.mem(f32, out=True),
-    g_out: tle.mem(f32, out=True),
-    C_out: tle.index, C_in: tle.index, row: tle.index
-):
+def weight_norm_kernel(W: tle.mem(f32), W_norm: tle.mem(f32, out=True), g_out: tle.mem(f32, out=True), C_out: tle.index,
+                       C_in: tle.index, row: tle.index):
     """One program per output filter (row). Computes g and W_norm for that row."""
     nvl = tle.vconfig(-1, 1)
     Nfloor = (C_in // nvl) * nvl
@@ -41,8 +37,8 @@ def weight_norm_kernel(
         tw = tle.vload(W, base + i, dtype=f32)
         acc_sq = acc_sq + tw * tw
 
-    g = tle.sqrt(tle.vreduce_sum(acc_sq))   # L2 norm (scalar)
-    inv_g = tle.rsqrt(tle.vreduce_sum(acc_sq))   # 1/g
+    g = tle.sqrt(tle.vreduce_sum(acc_sq))  # L2 norm (scalar)
+    inv_g = tle.rsqrt(tle.vreduce_sum(acc_sq))  # 1/g
 
     tle.sstore(g_out, row, g)
 
@@ -68,10 +64,10 @@ def test_weight_norm(C_out, C_in):
     torch.manual_seed(42)
     W = torch.randn(C_out, C_in, dtype=torch.float32)
     W_norm = torch.zeros(C_out, C_in, dtype=torch.float32)
-    g_out  = torch.zeros(C_out, dtype=torch.float32)
-    weight_norm_host[(C_out,)](W.reshape(-1), W_norm.reshape(-1), g_out, C_out, C_in)
+    g_out = torch.zeros(C_out, dtype=torch.float32)
+    weight_norm_host[(C_out, )](W.reshape(-1), W_norm.reshape(-1), g_out, C_out, C_in)
 
-    ref_g     = W.norm(dim=1, p=2)          # per-row L2 norm
-    ref_wnorm = W / ref_g.unsqueeze(1)      # per-row normalize
-    torch.testing.assert_close(g_out, ref_g,     rtol=1e-4, atol=1e-4)
+    ref_g = W.norm(dim=1, p=2)  # per-row L2 norm
+    ref_wnorm = W / ref_g.unsqueeze(1)  # per-row normalize
+    torch.testing.assert_close(g_out, ref_g, rtol=1e-4, atol=1e-4)
     torch.testing.assert_close(W_norm, ref_wnorm, rtol=1e-4, atol=1e-4)

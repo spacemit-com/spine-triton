@@ -7,10 +7,12 @@ host 端按 linalg.pack 规则把 A/B 摆成 packed 连续 buffer(与 probe_cbm_
   末: vpack×2 (group_interleave 还原) → vshape → vstore
 对拍 torch A@Bᵀ。这是把手写 MLIR probe 升级成 codegen 真生成的关键验证。
 """
-import numpy as np, torch, triton
+import numpy as np
+import torch
+import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
-import pytest
 import triton.language.extra.spine_raw as tle
 from triton.language.extra.spine_raw import call as _sr_call
 
@@ -71,7 +73,7 @@ def test_mm_cbm():
     Ap = torch.tensor(pack_A(Alog).reshape(-1))
     Bp = torch.tensor(pack_B(Blog).reshape(-1))
     C = torch.zeros(M, N, dtype=torch.float16)
-    host[(1,)](Ap.contiguous(), Bp.contiguous(), C)
+    host[(1, )](Ap.contiguous(), Bp.contiguous(), C)
     out = C.float().numpy().astype(np.float64)
     diff = np.abs(out - golden).max()
     assert diff < 5e-2, f"mm max_diff={diff:.4e}\nout[0,:4]={out[0,:4]}\ngold={golden[0,:4]}"

@@ -7,11 +7,13 @@ program_id, so calling it with a larger BLOCK shrinks grid = M//BLOCK -> fewer
 cpu_utils.launch C-calls. Total vector work is identical; only dispatch count
 changes. That isolates dispatch overhead from vector compute.
 """
-import os, time
+import os
+import time
 import numpy as np
 import torch
-import triton, triton.language as tl
+import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 import triton.language.extra.spine_raw as tle  # noqa: F401
 from importlib.machinery import SourceFileLoader
@@ -20,6 +22,7 @@ _TESTS = os.path.dirname(__file__)
 sv = SourceFileLoader("mv_sv", os.path.join(_TESTS, "test_raw_mv_svector.py")).load_module()
 
 WARMUP, REPS = 10, 30
+
 
 def bench(fn):
     for _ in range(WARMUP):
@@ -30,6 +33,7 @@ def bench(fn):
         fn()
         ts.append((time.perf_counter() - t0) * 1e6)
     return float(np.median(ts))
+
 
 def main():
     M, K = 1024, 512
@@ -49,9 +53,11 @@ def main():
             continue
         Bf = B.contiguous().reshape(-1)
         C = torch.zeros(M, dtype=torch.float32)
-        grid = (M // BLOCK,)
+        grid = (M // BLOCK, )
+
         def run(Bf=Bf, A=A, C=C, g=grid, k=K, m=M, bl=BLOCK):
             sv._mv_sv_host_style2[g](Bf, A.contiguous(), C, k, m, bl)
+
         us = bench(run)
         ok = (C - ref).abs().max().item() < 5e-2
         if base is None:
@@ -60,6 +66,7 @@ def main():
     print("-" * 64)
     print("If dispatch dominates: fewer programs (bigger BLOCK) -> faster,")
     print("even though total vector work is unchanged.")
+
 
 if __name__ == "__main__":
     main()

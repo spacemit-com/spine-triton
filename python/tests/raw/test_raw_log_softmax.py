@@ -8,7 +8,6 @@ Fused: avoids materializing softmax output and then re-reading it for log.
 """
 import torch
 import triton
-import triton.language as tl
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
@@ -68,7 +67,7 @@ def test_log_softmax_1d(N):
     torch.manual_seed(42)
     X = torch.randn(N, dtype=torch.float32)
     out = torch.zeros(N, dtype=torch.float32)
-    log_softmax_1d_host[(1,)](X, out, N)
+    log_softmax_1d_host[(1, )](X, out, N)
     ref = torch.log_softmax(X, dim=0)
     torch.testing.assert_close(out, ref, rtol=1e-5, atol=1e-6)
 
@@ -78,6 +77,6 @@ def test_log_softmax_1d_arb(N):
     torch.manual_seed(7)
     X = torch.randn(N, dtype=torch.float32)
     out = torch.zeros(N, dtype=torch.float32)
-    log_softmax_1d_host[(1,)](X, out, N)
+    log_softmax_1d_host[(1, )](X, out, N)
     ref = torch.log_softmax(X, dim=0)
     torch.testing.assert_close(out, ref, rtol=1e-5, atol=1e-6)

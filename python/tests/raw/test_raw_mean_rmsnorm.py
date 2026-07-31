@@ -5,7 +5,6 @@
 """
 import torch
 import triton
-import triton.language as tl
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
@@ -33,7 +32,7 @@ def mean_1d_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), N: tle.index):
         tx = tle.cast(tle.vload(X, i), f32)
         acc = acc + tx
     s = tle.vreduce_sum(acc)
-    tle.sstore(out, 0, s / N)      # ← L0: f32 scalar / index
+    tle.sstore(out, 0, s / N)  # ← L0: f32 scalar / index
 
 
 @triton.jit
@@ -45,7 +44,7 @@ def mean_1d_host(X, out, N):
 def test_mean_1d(N):
     X = torch.randn(N, dtype=torch.float16)
     out = torch.zeros(1, dtype=torch.float32)
-    mean_1d_host[(1,)](X, out, N)
+    mean_1d_host[(1, )](X, out, N)
     ref = X.to(torch.float32).mean()
     torch.testing.assert_close(out[0], ref, rtol=1e-2, atol=1e-2)
 
@@ -66,13 +65,13 @@ def rms_norm_1d_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), N: tle.inde
         nvl_tail = tle.vconfig(N - i, 1)
         tx = tle.cast(tle.vload(X, i), f32)
         acc = acc + tx * tx
-    ms = tle.vreduce_sum(acc) / N          # mean of squares (scalar)
-    scale = tle.rsqrt(ms)                   # rsqrt on scalar
+    ms = tle.vreduce_sum(acc) / N  # mean of squares (scalar)
+    scale = tle.rsqrt(ms)  # rsqrt on scalar
     # 归一化循环用独立临时名(nx/mx),避免与 reduce 循环的 vx/tx 同名 →
     # _find_reassigned 会把出作用域的 vx/tx 误当 iter_arg → 引用子 region SSA。
     for i in tle.range(0, Nfloor, nvl):
         nx = tle.cast(tle.vload(X, i), f32)
-        tle.vstore(out, i, nx * scale)      # scalar broadcast into vector
+        tle.vstore(out, i, nx * scale)  # scalar broadcast into vector
     for i in tle.range(Nfloor, N, nvl):
         nvl_tail2 = tle.vconfig(N - i, 1)
         mx = tle.cast(tle.vload(X, i), f32)
@@ -88,7 +87,7 @@ def rms_norm_1d_host(X, out, N):
 def test_rms_norm_1d(N):
     X = torch.randn(N, dtype=torch.float16)
     out = torch.zeros(N, dtype=torch.float32)
-    rms_norm_1d_host[(1,)](X, out, N)
+    rms_norm_1d_host[(1, )](X, out, N)
     xf = X.to(torch.float32)
     ref = xf / torch.sqrt((xf * xf).mean())
     torch.testing.assert_close(out, ref, rtol=1e-2, atol=1e-2)
