@@ -423,7 +423,8 @@ class SpineMLIRBuilderCodegen:
             raise NotImplementedError(f"Unsupported stmt: {ast.dump(node)}")
 
     def _gen_assign(self, node: ast.Assign):
-        assert len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            raise NotImplementedError(f"spine_raw: only single-name assignment supported, got {ast.dump(node)}")
         target = node.targets[0].id
         if isinstance(node.value, ast.Call) and \
                 _is_spine_raw_attr(node.value.func, "vconfig", self._aliases):

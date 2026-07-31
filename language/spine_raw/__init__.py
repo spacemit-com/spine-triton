@@ -3,11 +3,13 @@
 """spine_raw — Python eDSL for writing raw Linalg/memref/vector MLIR kernels.
 
 Public API:
-    spine_raw   : decorator to mark a function as a raw MLIR kernel
-    In          : read-only parameter annotation
-    InOut       : read-write parameter annotation
+    spine_raw   : decorator factory to mark a function as a raw MLIR kernel
+    raw_kernel  : convenience alias for spine_raw(name="linalg")
+    In, InOut   : read-only / read-write parameter annotations
     call        : inside @triton.jit, emit tle.dsl_region (C++ DSLRegionOpPattern
                   lowers it to spine_ext.raw_region)
+    proton_mark : profiling marker (rdtime + proton_record)
+    vload, vstore, vmacc, vreduce_sum, ... : vector-level built-in operators
 """
 
 from .types import In, InOut, mem, index

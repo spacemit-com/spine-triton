@@ -7,9 +7,6 @@ Usage:
         ...
 """
 from __future__ import annotations
-from typing import Generic, TypeVar
-
-T = TypeVar("T")
 
 
 class _TypedAnnotation:
@@ -24,15 +21,14 @@ class _TypedAnnotation:
         return f"{cls}[{self.mlir_type!r}]"
 
 
-class In(Generic[T]):
+class In:
     """Read-only input parameter. Maps to the given MLIR type (no return)."""
-    _instance: _TypedAnnotation | None = None
 
     def __class_getitem__(cls, mlir_type: str) -> _TypedAnnotation:
         return _TypedAnnotation(mlir_type, writable=False)
 
 
-class InOut(Generic[T]):
+class InOut:
     """Read-write parameter. The raw function receives it and may mutate it in place.
     For SSA-clean MLIR the caller passes a memref that the function writes into."""
 

@@ -42,7 +42,7 @@ class SpineLinalgJITFunction:
                         if node.func.attr.startswith("llvm_") or node.func.attr == "call_intrinsic":
                             return True
             return False
-        except Exception:
+        except (OSError, SyntaxError, TypeError):
             return False
 
     @property

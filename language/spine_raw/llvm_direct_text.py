@@ -138,7 +138,8 @@ class LLVMDirectTextCodegen:
     # ------------------------------------------------------------------
     def _gen_stmt(self, node) -> None:
         if isinstance(node, ast.Assign):
-            assert len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+            if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+                raise NotImplementedError(f"llvm-direct: only single-name assignment supported, got {ast.dump(node)}")
             ssa, typ = self._gen_expr(node.value)
             self._env[node.targets[0].id] = ssa
             self._types[ssa] = typ
@@ -313,6 +314,10 @@ class LLVMDirectTextCodegen:
         if axis not in (0, 1, 2):
             raise ValueError(f"program_id axis must be 0, 1, or 2; got {axis}")
 
+        if self._sibling_abi:
+            raise NotImplementedError("program_id is not available in sibling ABI mode "
+                                      "(no trailing grid/prog args are passed)")
+
         # Count user params to find where grid/prog args start
         # Each memref param takes 2 args (i64 rank, !llvm.ptr), scalar takes 1 (i64)
         n_user_args = sum(2 if p[1].mlir_type.startswith("memref") else 1 for p in self._params)
@@ -368,7 +373,8 @@ def emit_llvm_func_for_inline(fn) -> tuple[str, list[str]]:
         (func_text, param_types) where:
         - func_text is the complete llvm.func definition (no module wrapper)
         - param_types is a list of MLIR type strings for the call site
-          Format: ["i64", "!llvm.ptr", "i64", ...] (memref→i64+ptr, scalar→i64)
+          Format: ["i64", "i64", ...] (each param, whether memref or scalar,
+          arrives as a single i64 in sibling ABI)
     """
     codegen = LLVMDirectTextCodegen(sibling_abi=True)
     params = _parse_signature(fn)

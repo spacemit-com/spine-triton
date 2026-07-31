@@ -72,9 +72,9 @@ def _host_func_arg_types(linalgdir: str, func_name: str) -> list[str]:
     while i < len(linalgdir):
         c = linalgdir[i]
         if c == '<': ang += 1
-        elif c == '>': ang -= 1
+        elif c == '>': ang = max(0, ang - 1)
         elif c == '{': cur += 1
-        elif c == '}': cur -= 1
+        elif c == '}': cur = max(0, cur - 1)
         elif c == '(': par += 1
         elif c == ')':
             if par == 0:
@@ -176,7 +176,10 @@ def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_types, llvm_
     out = llmlir[:ret_m.start()] + "\n".join(bridge) + "\n" + llmlir[ret_m.start():]
 
     # Append the sibling llvm.func(s) before the module's closing brace.
-    close = out.rfind("}")
+    m = re.search(r'\}\s*$', out)
+    if not m:
+        raise RuntimeError("mixed-mode: cannot find module closing brace in ll.mlir")
+    close = m.start()
     out = out[:close] + "\n" + "\n".join(llvm_funcs) + "\n" + out[close:]
     return out
 
@@ -501,8 +504,8 @@ class CPUBackend(BaseBackend):
                 # smt_parallel_inside (read by the launcher + pipeline option).
                 # LLVM-direct kernels are single-program (no bind_sub_block), so False.
                 metadata["smt_parallel_inside"] = False
-        except Exception:
-            pass
+        except ImportError:
+            pass  # call_registry 模块不可用，回退到标准编译路径
 
         # Mixed-mode (coexistence): the host keeps its func.func body (tl +
         # spine_raw dsl_region) AND calls one or more llvm-direct siblings. Unlike
@@ -520,8 +523,8 @@ class CPUBackend(BaseBackend):
             if _mixed_funcs and _mixed_calls:
                 metadata["mixed_llvm_funcs"] = _mixed_funcs
                 metadata["mixed_llvm_calls"] = _mixed_calls
-        except Exception:
-            pass
+        except ImportError:
+            pass  # call_registry 模块不可用，回退到标准编译路径
 
         tt_pattern = r"tt\.func\s+public\s+@(\w+)\s*\("
         kernel_name = extract_kernel_name(tt_pattern, str(mod))
