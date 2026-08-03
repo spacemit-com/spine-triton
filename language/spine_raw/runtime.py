@@ -23,26 +23,45 @@ class SpineLinalgJITFunction:
 
     def __init__(self, fn: Callable) -> None:
         self._fn = fn
-        self._body_builder_cache = None  # (param_type_strs, body_builder) | None
+        self._body_builder_cache = None   # (param_type_strs, body_builder) | None
         self.__triton_builtin__ = True
         # LLVM-direct: mark functions using only llvm_* primitives for direct llvm.func emission
         self._llvm_direct = self._detect_llvm_direct(fn)
 
     def _detect_llvm_direct(self, fn: Callable) -> bool:
-        """Detect if fn uses only llvm-direct (llvm_*) primitives by scanning its source."""
+        """Detect if fn uses only llvm-direct (llvm_*) primitives by scanning its source.
+
+        Routes to LLVMDirectTextCodegen (sibling llvm.func, bypasses spine-opt)
+        ONLY when every primitive is llvm-direct — i.e. no svector DATA helpers
+        (vload/vzero/vmacc/vreduce_*/sstore/vconfig/...). `range` is path-agnostic
+        control-flow and used by both, so it doesn't count as a svector marker.
+        A mixed kernel (svector helpers + call_intrinsic) goes to
+        SpineMLIRBuilderCodegen, whose _gen_call_intrinsic handles
+        tle.call_intrinsic inline.
+        """
         import ast
         import inspect
+        from .codegen import _SPINE_RAW_BUILTIN_NAMES
+        # path-agnostic control-flow primitives used by BOTH codegens
+        _PATH_AGNOSTIC = {"range", "proton_mark"}
         try:
             src = inspect.getsource(fn)
             tree = ast.parse(src)
-            # Scan for calls to tle.llvm_* or sr.llvm_* (llvm-direct markers)
+            has_llvm_direct = False
+            has_svector = False
             for node in ast.walk(tree):
-                if isinstance(node, ast.Call):
-                    if isinstance(node.func, ast.Attribute):
-                        if node.func.attr.startswith("llvm_") or node.func.attr == "call_intrinsic":
-                            return True
-            return False
-        except (OSError, SyntaxError, TypeError):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    name = node.func.attr
+                    if name.startswith("llvm_") or name == "call_intrinsic":
+                        has_llvm_direct = True
+                    elif name in _PATH_AGNOSTIC:
+                        pass  # control-flow, not a svector marker
+                    elif name in _SPINE_RAW_BUILTIN_NAMES and not name.startswith("llvm_"):
+                        has_svector = True
+            # Pure llvm-direct kernel → LLVMDirectTextCodegen.
+            # Mixed or pure-svector → SpineMLIRBuilderCodegen (svector path).
+            return has_llvm_direct and not has_svector
+        except Exception:
             return False
 
     @property
