@@ -308,10 +308,14 @@ class LLVMDirectTextCodegen:
         if axis not in (0, 1, 2):
             raise ValueError(f"program_id axis must be 0, 1, or 2; got {axis}")
 
-        # Count user params to find where grid/prog args start
-        # Each memref param takes 2 args (i64 rank, !llvm.ptr), scalar takes 1 (i64)
-        n_user_args = sum(2 if p[1].mlir_type.startswith("memref") else 1
-                          for p in self._params)
+        # Count user params to find where grid/prog args start.
+        # sibling_abi: each param (memref or scalar) is 1 i64 arg.
+        # old ABI: memref=2 args (i64 rank + !llvm.ptr), scalar=1 arg.
+        if self._sibling_abi:
+            n_user_args = len(self._params)
+        else:
+            n_user_args = sum(2 if p[1].mlir_type.startswith("memref") else 1
+                              for p in self._params)
         # Trailing 6 args: gridX/Y/Z (indices n_user_args+0/1/2), progX/Y/Z (indices n_user_args+3/4/5)
         prog_arg_idx = n_user_args + 3 + axis  # progX at +3, progY at +4, progZ at +5
 
@@ -343,9 +347,13 @@ class LLVMDirectTextCodegen:
             sig = f"({', '.join(tys)}) -> {rt}"
             call = f'llvm.call_intrinsic "{intrin}"({", ".join(ops)}) : {sig}'
         else:
-            # Plain LLVM op: emit directly as "llvm.fadd %0, %1 : vector<[8]xf32>"
-            # For binary ops, signature is just the result type (operands already typed)
-            call = f'{intrin} {", ".join(ops)} : {rt}'
+            # Plain LLVM op: emit directly.
+            # For ops with a result (llvm.fadd etc.): "llvm.fadd %0, %1 : vector<[8]xf32>"
+            # For void ops (llvm.store): "llvm.store %val, %ptr : f32, !llvm.ptr"
+            if rt == "()":
+                call = f'{intrin} {", ".join(ops)} : {", ".join(tys)}'
+            else:
+                call = f'{intrin} {", ".join(ops)} : {rt}'
 
         if rt == "()":
             self._emit(call)
