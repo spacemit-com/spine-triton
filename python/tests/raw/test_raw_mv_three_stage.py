@@ -152,6 +152,23 @@ def post_scale_svector(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle
         tle.vstore(out, ni, tv_s)
 
 
+# ── stage 3(v2): call_intrinsic post-scale  out = scores * beta ─────────────
+# Sibling llvm.func (LLVM-direct). vle f32 → llvm.fmul (beta splat) → vse.
+# Fixed VL=8, N % 8 == 0. Bridge #2 in the fused single-launch host.
+@tle.raw_kernel
+def post_scale_call_intrinsic(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
+    vl = tle.llvm_const(8, "i64")
+    zero = tle.llvm_const(0, "i64")
+    beta = tle.llvm_const("5.000000e-01", "vector<[8]xf32>")
+    for i in tle.range(zero, N, vl):
+        p = tle.llvm_poison("vector<[8]xf32>")
+        gs = tle.llvm_gep(tle.llvm_base_ptr(scores), i, "f32")
+        v = tle.call_intrinsic("llvm.riscv.vle", [p, gs, vl], result_type="vector<[8]xf32>")
+        r = tle.call_intrinsic("llvm.fmul", [v, beta], result_type="vector<[8]xf32>")
+        go = tle.llvm_gep(tle.llvm_base_ptr(out), i, "f32")
+        tle.call_intrinsic("llvm.riscv.vse", [r, go, vl], result_type="()")
+
+
 # ── hosts: 2 launches (sibling call_intrinsic must be LAST in its launch) ──
 # The mixed-mode bridge (_inject_mixed_llvm_llmlir) injects all llvm.call
 # bridges right before the host's first llvm.return — so the sibling
@@ -169,6 +186,19 @@ def _mv_pre_and_gemm_host(Mat, vec, vec_s, scores, K, N):
 @triton.jit(do_not_specialize=["N"])
 def _mv_post_scale_host(scores, out, N):
     _sr_call(post_scale_svector, outputs=[], inputs=[scores, out, N])
+
+
+# ── single-launch fused host: svector → call_intrinsic → call_intrinsic ─────
+# pre_scale_svector        → dsl_region inline (runs first in host body)
+# mv_vfwmacc_call_intrinsic → bridge #1 (injected before llvm.return)
+# post_scale_call_intrinsic → bridge #2 (injected after #1, before llvm.return)
+# All three stages execute in ONE launch. Data flow:
+#   vec → vec_s (inline) → scores (bridge #1) → out (bridge #2)
+@triton.jit(do_not_specialize=["K", "N"])
+def _mv_fused_host(Mat, vec, vec_s, scores, out, K, N):
+    _sr_call(pre_scale_svector, outputs=[], inputs=[vec, vec_s, K])
+    _sr_call(mv_vfwmacc_call_intrinsic, outputs=[], inputs=[Mat, vec_s, scores, K, N])
+    _sr_call(post_scale_call_intrinsic, outputs=[], inputs=[scores, out, N])
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +278,27 @@ def _run_correctness(N, K):
     return max_diff
 
 
+def _run_fused_correctness(N, K):
+    assert K % 64 == 0 and N % 8 == 0, "fused: K%64==0, N%8==0"
+    Np = ((N + 7) // 8) * 8
+    torch.manual_seed(0)
+    Mat = torch.randn(N, K, dtype=torch.float16)
+    vec = torch.randn(K, dtype=torch.float16)
+    vec_s = torch.zeros(K, dtype=torch.float16)
+    scores = torch.zeros(Np, dtype=torch.float32)
+    out = torch.zeros(Np, dtype=torch.float32)
+
+    _mv_fused_host[(1,)](
+        Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, out, K, N)
+
+    got = out[:N]
+    ref = torch.mv(Mat.float(), (vec.float() * _ALPHA).half().float()) * _BETA
+    max_diff = (got - ref).abs().max().item()
+    assert torch.allclose(got, ref, rtol=1e-2, atol=1e-2), \
+        f"N={N} K={K} max_diff={max_diff:.4e}"
+    return max_diff
+
+
 def _measure_three_stage(N, K, iters=50, warmup=5):
     Np = ((N + 7) // 8) * 8
     Mat = torch.randn(N, K, dtype=torch.float16)
@@ -286,6 +337,11 @@ def _measure_svector(N, K, BLOCK=4, iters=50, warmup=5):
 @pytest.mark.parametrize("N, K", _SHAPES)
 def test_mv_three_stage_correctness(N, K):
     _run_correctness(N, K)
+
+
+@pytest.mark.parametrize("N, K", _SHAPES)
+def test_mv_fused_single_launch_correctness(N, K):
+    _run_fused_correctness(N, K)
 
 
 @pytest.mark.parametrize("N, K", _SHAPES)
