@@ -135,12 +135,23 @@ def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_types, llvm_
     Validated by mlir-translate on real gemv ll.mlir + emit_llvm_func_for_inline.
     """
     ll_start, _is_mem = _ttir_pos_to_ll_argidx(host_arg_types)
+    # The 6 grid args (gridX/Y/Z, progX/Y/Z) are the LAST 6 lowered params of the
+    # host llvm.func. triton-to-linalg already materializes them as explicit
+    # trailing i32 scalar params in the func.func signature, so host_arg_types
+    # ALREADY includes them — the total lowered width counts past them. Hence the
+    # grid block sits at [total-6, total-1], not appended after. (Verified from a
+    # dumped _mv_fused_host_par ll.mlir: 5 memref pairs + K,N + grid at %arg12-17.)
+    n_ll_total = 0
+    for t in host_arg_types:
+        n_ll_total += 2 if t.strip().startswith("memref") else 1
+    grid_args = [f"%arg{n_ll_total - 6 + k}" for k in range(6)]
 
     bridge = []
     uid = 0
     for spec in llvm_calls:
         callee = spec["callee"]
         operands = []
+        optys = []
         for item in spec["arg_bridge"]:
             pos, kind = item["pos"], item["kind"]
             base = ll_start[pos]
@@ -152,14 +163,17 @@ def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_types, llvm_
                 bridge.append(f"    {d} = llvm.load {desc_ptr} : !llvm.ptr -> {_LL_DESC}")
                 bridge.append(f"    {p} = llvm.extractvalue {d}[1] : {_LL_DESC}")
                 bridge.append(f"    {i} = llvm.ptrtoint {p} : !llvm.ptr to i64")
-                operands.append(i)
+                operands.append(i); optys.append("i64")
             else:  # scalar: host passes it as i32 → sext to i64
                 s = f"%mix{uid}_s"
                 bridge.append(f"    {s} = llvm.sext %arg{base} : i32 to i64")
-                operands.append(s)
+                operands.append(s); optys.append("i64")
             uid += 1
+        # Forward the host's 6 grid args (i32) so sibling program_id() works.
+        for g in grid_args:
+            operands.append(g); optys.append("i32")
         argstr = ", ".join(operands)
-        tystr = ", ".join("i64" for _ in operands)
+        tystr = ", ".join(optys)
         bridge.append(f"    llvm.call @{callee}({argstr}) : ({tystr}) -> ()")
 
     # Insert before the host func's FIRST llvm.return (host is single-block).

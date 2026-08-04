@@ -201,6 +201,140 @@ def _mv_fused_host(Mat, vec, vec_s, scores, out, K, N):
     _sr_call(post_scale_call_intrinsic, outputs=[], inputs=[scores, out, N])
 
 
+# ── PARALLEL fused: program_id-partitioned call_intrinsic (grid=(N//8,)) ─────
+# The single-launch fused host above runs grid=(1,) — one program does all N
+# rows serially, which loses to multi-core svector style2 on large shapes.
+# These variants partition the N rows across programs: each program handles ONE
+# 8-row tile at row_base = program_id(0)*8. The sibling ABI now carries the 6
+# trailing grid args (llvm_direct_text.emit_llvm_func_for_inline) and the bridge
+# forwards the host's grid args (compiler._inject_mixed_llvm_llmlir), so
+# tle.program_id(0) resolves inside the sibling llvm.func. Launch grid=(N//8,).
+#   stage 1 pre_scale_svector : runs on every program, redundantly writes the
+#     full vec_s (deterministic identical stores → benign; K-work ≪ N·K).
+#   stage 2 mv_vfwmacc_ci_parallel : this program's 8 rows only.
+#   stage 3 post_scale_ci_parallel : this program's 8 scores only.
+# Data flow is per-program-local (each touches only its own rows) → race-free.
+# BLK is a RUNTIME scalar (bridged as i64), swept for granularity tuning — each
+# program handles BLK rows via an inner loop of 8-row sub-tiles. grid=(N//BLK,).
+# Matching style2's block granularity is what closes the perf gap (BLOCK=8 alone
+# spawns too many tiny programs; dispatch overhead dominates on large shapes).
+# BLK % 8 == 0, N % BLK == 0.
+@tle.raw_kernel
+def mv_vfwmacc_ci_parallel(B: tle.mem(f16), A: tle.mem(f16),
+                           C: tle.mem(f32, out=True),
+                           K: tle.index, N: tle.index, BLK: tle.index):
+    vl = tle.llvm_const(64, "i64")
+    zero = tle.llvm_const(0, "i64")
+    zero_acc = tle.llvm_const("0.000000e+00", "vector<[4]xf32>")
+    zero_f = tle.llvm_const("0.000000e+00", "f32")
+    pt = tle.llvm_poison("vector<[4]xf16>")
+    cbase = tle.llvm_base_ptr(C)
+    abase = tle.llvm_base_ptr(A)
+    bbase = tle.llvm_base_ptr(B)
+
+    row_base = tle.program_id(0) * BLK    # this program's BLK-row tile base
+    row_end = row_base + BLK
+    for ni in tle.range(row_base, row_end, 8):
+        acc0 = zero_acc
+        acc1 = zero_acc
+        acc2 = zero_acc
+        acc3 = zero_acc
+        acc4 = zero_acc
+        acc5 = zero_acc
+        acc6 = zero_acc
+        acc7 = zero_acc
+        for ki in tle.range(zero, K, vl):
+            ga = tle.llvm_gep(abase, ki, "f16")
+            va = tle.call_intrinsic("llvm.riscv.vle", [pt, ga, vl],
+                                    result_type="vector<[4]xf16>")
+            gb0 = tle.llvm_gep(bbase, ni * K + ki, "f16")
+            gb1 = tle.llvm_gep(bbase, (ni + 1) * K + ki, "f16")
+            gb2 = tle.llvm_gep(bbase, (ni + 2) * K + ki, "f16")
+            gb3 = tle.llvm_gep(bbase, (ni + 3) * K + ki, "f16")
+            gb4 = tle.llvm_gep(bbase, (ni + 4) * K + ki, "f16")
+            gb5 = tle.llvm_gep(bbase, (ni + 5) * K + ki, "f16")
+            gb6 = tle.llvm_gep(bbase, (ni + 6) * K + ki, "f16")
+            gb7 = tle.llvm_gep(bbase, (ni + 7) * K + ki, "f16")
+            vb0 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb0, vl], result_type="vector<[4]xf16>")
+            vb1 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb1, vl], result_type="vector<[4]xf16>")
+            vb2 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb2, vl], result_type="vector<[4]xf16>")
+            vb3 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb3, vl], result_type="vector<[4]xf16>")
+            vb4 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb4, vl], result_type="vector<[4]xf16>")
+            vb5 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb5, vl], result_type="vector<[4]xf16>")
+            vb6 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb6, vl], result_type="vector<[4]xf16>")
+            vb7 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb7, vl], result_type="vector<[4]xf16>")
+            acc0 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc0, va, vb0, zero, vl, zero], result_type="vector<[4]xf32>")
+            acc1 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc1, va, vb1, zero, vl, zero], result_type="vector<[4]xf32>")
+            acc2 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc2, va, vb2, zero, vl, zero], result_type="vector<[4]xf32>")
+            acc3 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc3, va, vb3, zero, vl, zero], result_type="vector<[4]xf32>")
+            acc4 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc4, va, vb4, zero, vl, zero], result_type="vector<[4]xf32>")
+            acc5 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc5, va, vb5, zero, vl, zero], result_type="vector<[4]xf32>")
+            acc6 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc6, va, vb6, zero, vl, zero], result_type="vector<[4]xf32>")
+            acc7 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc7, va, vb7, zero, vl, zero], result_type="vector<[4]xf32>")
+        s0 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc0], result_type="f32")
+        s1 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc1], result_type="f32")
+        s2 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc2], result_type="f32")
+        s3 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc3], result_type="f32")
+        s4 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc4], result_type="f32")
+        s5 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc5], result_type="f32")
+        s6 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc6], result_type="f32")
+        s7 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc7], result_type="f32")
+        tle.call_intrinsic("llvm.store", [s0, tle.llvm_gep(cbase, ni, "f32")], result_type="()")
+        tle.call_intrinsic("llvm.store", [s1, tle.llvm_gep(cbase, ni + 1, "f32")], result_type="()")
+        tle.call_intrinsic("llvm.store", [s2, tle.llvm_gep(cbase, ni + 2, "f32")], result_type="()")
+        tle.call_intrinsic("llvm.store", [s3, tle.llvm_gep(cbase, ni + 3, "f32")], result_type="()")
+        tle.call_intrinsic("llvm.store", [s4, tle.llvm_gep(cbase, ni + 4, "f32")], result_type="()")
+        tle.call_intrinsic("llvm.store", [s5, tle.llvm_gep(cbase, ni + 5, "f32")], result_type="()")
+        tle.call_intrinsic("llvm.store", [s6, tle.llvm_gep(cbase, ni + 6, "f32")], result_type="()")
+        tle.call_intrinsic("llvm.store", [s7, tle.llvm_gep(cbase, ni + 7, "f32")], result_type="()")
+
+
+@tle.raw_kernel
+def post_scale_ci_parallel(scores: tle.mem(f32), out: tle.mem(f32, out=True),
+                           N: tle.index, BLK: tle.index):
+    vl = tle.llvm_const(8, "i64")
+    beta = tle.llvm_const("5.000000e-01", "vector<[8]xf32>")
+    base = tle.program_id(0) * BLK
+    bend = base + BLK
+    for i in tle.range(base, bend, vl):
+        p = tle.llvm_poison("vector<[8]xf32>")
+        gs = tle.llvm_gep(tle.llvm_base_ptr(scores), i, "f32")
+        v = tle.call_intrinsic("llvm.riscv.vle", [p, gs, vl], result_type="vector<[8]xf32>")
+        r = tle.call_intrinsic("llvm.fmul", [v, beta], result_type="vector<[8]xf32>")
+        go = tle.llvm_gep(tle.llvm_base_ptr(out), i, "f32")
+        tle.call_intrinsic("llvm.riscv.vse", [r, go, vl], result_type="()")
+
+
+# grid=(N//BLK,): one BLK-row tile per program → multi-core parallel.
+@triton.jit(do_not_specialize=["K", "N", "BLK"])
+def _mv_fused_host_par(Mat, vec, vec_s, scores, out, K, N, BLK):
+    _sr_call(pre_scale_svector, outputs=[], inputs=[vec, vec_s, K])
+    _sr_call(mv_vfwmacc_ci_parallel, outputs=[], inputs=[Mat, vec_s, scores, K, N, BLK])
+    _sr_call(post_scale_ci_parallel, outputs=[], inputs=[scores, out, N, BLK])
+
+
+def _run_fused_par_correctness(N, K, BLK=8):
+    assert K % 64 == 0 and N % 8 == 0, "fused_par: K%64==0, N%8==0"
+    assert BLK % 8 == 0 and N % BLK == 0, "fused_par: BLK%8==0, N%BLK==0"
+    Np = ((N + 7) // 8) * 8
+    torch.manual_seed(0)
+    Mat = torch.randn(N, K, dtype=torch.float16)
+    vec = torch.randn(K, dtype=torch.float16)
+    vec_s = torch.zeros(K, dtype=torch.float16)
+    scores = torch.zeros(Np, dtype=torch.float32)
+    out = torch.zeros(Np, dtype=torch.float32)
+
+    _mv_fused_host_par[(N // BLK,)](
+        Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, out, K, N, BLK)
+
+    got = out[:N]
+    ref = torch.mv(Mat.float(), (vec.float() * _ALPHA).half().float()) * _BETA
+    max_diff = (got - ref).abs().max().item()
+    assert torch.allclose(got, ref, rtol=1e-2, atol=1e-2), \
+        f"N={N} K={K} max_diff={max_diff:.4e}"
+    return max_diff
+
+
 # ---------------------------------------------------------------------------
 # svector style2 baseline (for perf comparison) — copied from test_raw_mv_mixed
 # ---------------------------------------------------------------------------
@@ -342,6 +476,11 @@ def test_mv_three_stage_correctness(N, K):
 @pytest.mark.parametrize("N, K", _SHAPES)
 def test_mv_fused_single_launch_correctness(N, K):
     _run_fused_correctness(N, K)
+
+
+@pytest.mark.parametrize("N, K", _SHAPES)
+def test_mv_fused_parallel_correctness(N, K):
+    _run_fused_par_correctness(N, K)
 
 
 @pytest.mark.parametrize("N, K", _SHAPES)

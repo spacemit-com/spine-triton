@@ -404,6 +404,14 @@ def emit_llvm_func_for_inline(fn) -> tuple[str, list[str]]:
             codegen._types[a] = "i64"
         ai += 1
 
+    # 6 trailing i32 grid args (gridX/Y/Z, progX/Y/Z), mirroring the driver ABI
+    # and emit_module. The host bridge forwards its own grid args here so
+    # tle.program_id(axis) works inside a mixed-mode sibling (multi-core grid>1).
+    # program_id reads %arg{n_user_args+3+axis} (see _p_program_id).
+    for _ in range(6):
+        sig.append(f"%arg{ai}: i32")
+        ai += 1
+
     # Generate body
     for stmt in func_node.body:
         if isinstance(stmt, ast.Pass):
