@@ -453,6 +453,25 @@ def _measure_fused(N, K, iters=50, warmup=5):
     return (t1 - t0) / iters
 
 
+def _measure_fused_sv3(N, K, iters=50, warmup=5):
+    """Measure fused_sv3: svector pre + vfwmacc bridge + svector post."""
+    Np = ((N + 7) // 8) * 8
+    Mat = torch.randn(N, K, dtype=torch.float16)
+    vec = torch.randn(K, dtype=torch.float16)
+    vec_s = torch.zeros(K, dtype=torch.float16)
+    scores = torch.zeros(Np, dtype=torch.float32)
+    out = torch.zeros(Np, dtype=torch.float32)
+    for _ in range(warmup):
+        _mv_fused_host_sv3[(1,)](
+            Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, out, K, N)
+    t0 = time.perf_counter()
+    for _ in range(iters):
+        _mv_fused_host_sv3[(1,)](
+            Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, out, K, N)
+    t1 = time.perf_counter()
+    return (t1 - t0) / iters
+
+
 def _measure_fused_par(N, K, BLK=8, iters=50, warmup=5):
     assert BLK % 8 == 0 and N % BLK == 0, "fused_par: BLK%8==0, N%BLK==0"
     Np = ((N + 7) // 8) * 8
@@ -527,6 +546,24 @@ def test_mv_fused_perf_vs_svector(N, K):
           f"fused_par[BLK={BLK}]={t_fp*1e6:8.1f}us ({gf_fp:.2f}GF)")
 
 
+@pytest.mark.parametrize("N, K", _SHAPES)
+def test_mv_fused_sv3_perf_vs_ci(N, K):
+    """Compare post_scale implementations: svector vs call_intrinsic.
+
+    fused (ci post)  : svector pre + bridge mv + call_intrinsic post
+    fused_sv3 (sv post) : svector pre + bridge mv + svector post
+
+    Both use the same pre_scale and mv kernels, only differ in post_scale.
+    """
+    t_ci = _measure_fused(N, K)
+    t_sv = _measure_fused_sv3(N, K)
+    gf_ci = 2.0 * N * K / t_ci / 1e9
+    gf_sv = 2.0 * N * K / t_sv / 1e9
+    ratio = t_ci / t_sv
+    print(f"N={N:4d} K={K:4d}  ci_post={t_ci*1e6:8.1f}us ({gf_ci:.2f}GF)  "
+          f"sv_post={t_sv*1e6:8.1f}us ({gf_sv:.2f}GF)  ratio={ratio:.3f}x")
+
+
 if __name__ == "__main__":
     print("=== single-launch fused mv: svector pre + vfwmacc + ci post ===")
     print("=== correctness: fused grid=(1,) ===")
@@ -563,5 +600,17 @@ if __name__ == "__main__":
             print(f"  N={N:4d} K={K:4d}  sv={t_sv*1e6:8.1f}us ({gf_sv:.2f}GF)  "
                   f"fused={t_f*1e6:8.1f}us ({gf_f:.2f}GF)  "
                   f"fused_par={t_fp*1e6:8.1f}us ({gf_fp:.2f}GF)")
+        except Exception as e:
+            print(f"  N={N:4d} K={K:4d}  FAIL: {type(e).__name__}: {str(e)[:200]}")
+    print("=== perf: sv3 (svector post) vs ci (call_intrinsic post) ===")
+    for N, K in _SHAPES:
+        try:
+            t_ci = _measure_fused(N, K)
+            t_sv = _measure_fused_sv3(N, K)
+            gf_ci = 2.0 * N * K / t_ci / 1e9
+            gf_sv = 2.0 * N * K / t_sv / 1e9
+            ratio = t_ci / t_sv
+            print(f"  N={N:4d} K={K:4d}  ci_post={t_ci*1e6:8.1f}us ({gf_ci:.2f}GF)  "
+                  f"sv_post={t_sv*1e6:8.1f}us ({gf_sv:.2f}GF)  ratio={ratio:.3f}x")
         except Exception as e:
             print(f"  N={N:4d} K={K:4d}  FAIL: {type(e).__name__}: {str(e)[:200]}")
