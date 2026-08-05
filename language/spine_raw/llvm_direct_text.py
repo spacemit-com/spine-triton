@@ -300,43 +300,6 @@ class LLVMDirectTextCodegen:
                 "i8": 8, "i16": 16, "i32": 32, "i64": 64}.get(elem, 8)
         return bits // 8
 
-    def _p_llvm_load(self, node):
-        """llvm_load(ptr, result_type) -> `%x = llvm.load %ptr {align} : !llvm.ptr -> T`.
-
-        Native vector load: on riscv64 a scalable-vector llvm.load lowers to vle.
-        alignment is set to the element size (f16->2) so an odd element offset
-        (2-byte aligned f16* addr) is not miscompiled as full-vector aligned.
-        """
-        ptr, _ = self._gen_expr(node.args[0])
-        rt = node.args[1].value
-        al = self._elem_align(rt)
-        rhs = f"llvm.load {ptr} {{alignment = {al} : i64}} : !llvm.ptr -> {rt}"
-        return self._def(rhs, rt), rt
-
-    def _p_llvm_reduce_fadd(self, node):
-        """llvm_reduce_fadd(start, vec) -> native `llvm.intr.vector.reduce.fadd`.
-
-        Same LLVM intrinsic as call_intrinsic "llvm.vector.reduce.fadd" once it
-        reaches LLVM IR (ordered, no fastmath) — just spelled as the native op so
-        only vfwmacc needs call_intrinsic.
-        """
-        start, st = self._gen_expr(node.args[0])
-        vec, vt = self._gen_expr(node.args[1])
-        # This mlir-translate build has no *custom* assembly form for the op —
-        # only the generic form parses. Plain (no reassoc) → ordered reduction,
-        # matching the prior call_intrinsic "llvm.vector.reduce.fadd" numerics.
-        rhs = (f'"llvm.intr.vector.reduce.fadd"({start}, {vec}) '
-               f': ({st}, {vt}) -> {st}')
-        return self._def(rhs, st), st
-
-    def _p_llvm_store(self, node):
-        """llvm_store(val, ptr) -> native `llvm.store %val, %ptr {align} : T, !llvm.ptr`."""
-        val, vt = self._gen_expr(node.args[0])
-        ptr, _ = self._gen_expr(node.args[1])
-        al = self._elem_align(vt)
-        self._emit(f"llvm.store {val}, {ptr} {{alignment = {al} : i64}} : {vt}, !llvm.ptr")
-        return None, "()"
-
     def _p_llvm_size(self, node):
         """llvm_size(mem[, dim]) — UNSUPPORTED in the llvm-direct driver ABI.
 
@@ -388,6 +351,23 @@ class LLVMDirectTextCodegen:
             s, t = self._arg(e)
             ops.append(s)
             tys.append(t if t is not None else self._types.get(s, "i64"))
+
+        # Native LLVM ops that have a real MLIR llvm-dialect op (NOT llvm.call_intrinsic).
+        # Only ops with no MLIR equivalent (llvm.riscv.vfwmacc/vle/vse) get wrapped in
+        # llvm.call_intrinsic. load/reduce/store are spelled as native ops so the emitted
+        # IR carries only the intended intrinsic calls (per design: only vfwmacc).
+        #   llvm.load  needs `: !llvm.ptr -> T` (the undotted-heuristic path can't spell it)
+        #   llvm.[intr.]vector.reduce.fadd needs the generic form — this mlir-translate
+        #     build has no custom assembly form; generic (no reassoc) → ordered reduction,
+        #     identical LLVM IR to the prior llvm.call_intrinsic "llvm.vector.reduce.fadd".
+        if intrin == "llvm.load":
+            al = self._elem_align(rt)
+            rhs = f"llvm.load {ops[0]} {{alignment = {al} : i64}} : !llvm.ptr -> {rt}"
+            return self._def(rhs, rt), rt
+        if intrin in ("llvm.vector.reduce.fadd", "llvm.intr.vector.reduce.fadd"):
+            rhs = (f'"llvm.intr.vector.reduce.fadd"({ops[0]}, {ops[1]}) '
+                   f': ({tys[0]}, {tys[1]}) -> {rt}')
+            return self._def(rhs, rt), rt
 
         # Detect: plain LLVM op (llvm.fadd) vs intrinsic (llvm.riscv.vle / llvm.sadd.with.overflow)
         # Heuristic: if name contains '.' after 'llvm', it's an intrinsic; otherwise plain op.
