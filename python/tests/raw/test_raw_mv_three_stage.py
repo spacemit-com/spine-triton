@@ -139,23 +139,6 @@ def mv_vfwmacc_call_intrinsic(B: tle.mem(f16), A: tle.mem(f16),
         tle.call_intrinsic("llvm.store", [s7, tle.llvm_gep(cbase, ni + 7, "f32")], result_type="()")
 
 
-# ── stage 3: svector post-scale  out = scores * beta ────────────────────────
-# f32 scores → mul beta (broadcast) → store. N arbitrary (tail-aware vconfig).
-@tle.raw_kernel
-def post_scale_svector(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
-    Nfloor = (N // nvl) * nvl
-    for ni in tle.range(0, Nfloor, nvl):
-        v = tle.vload(scores, ni, dtype=f32)     # vector<64xf32>
-        v_s = v * _BETA                          # vector<64xf32>  (arith.mulf, scalar bcast)
-        tle.vstore(out, ni, v_s)
-    # tail loop: distinct names (same reason as pre_scale_svector)
-    for ni in tle.range(Nfloor, N, nvl):
-        nvl = tle.vconfig(N - ni, 1)
-        tv = tle.vload(scores, ni, dtype=f32)
-        tv_s = tv * _BETA
-        tle.vstore(out, ni, tv_s)
-
 
 # ── stage 3(v2): call_intrinsic post-scale  out = scores * beta ─────────────
 # Sibling llvm.func (LLVM-direct). vle f32 → llvm.fmul (beta splat) → vse.
@@ -173,24 +156,6 @@ def post_scale_call_intrinsic(scores: tle.mem(f32), out: tle.mem(f32, out=True),
         go = tle.llvm_gep(tle.llvm_base_ptr(out), i, "f32")
         tle.call_intrinsic("llvm.riscv.vse", [r, go, vl], result_type="()")
 
-
-# ── hosts: 2 launches (sibling call_intrinsic must be LAST in its launch) ──
-# The mixed-mode bridge (_inject_mixed_llvm_llmlir) injects all llvm.call
-# bridges right before the host's first llvm.return — so the sibling
-# llvm.func effectively runs LAST in its launch host. A svector dsl_region
-# AFTER the sibling (single-launch 3-stage) hits a dominance error because
-# the bridge writes through `scores` after stage 3 already read it.
-# Splitting into 2 launches keeps the sibling last in launch 1 and gives
-# stage 3 its own launch where it's the only op.
-@triton.jit(do_not_specialize=["K", "N"])
-def _mv_pre_and_gemm_host(Mat, vec, vec_s, scores, K, N):
-    _sr_call(pre_scale_svector, outputs=[], inputs=[vec, vec_s, K])
-    _sr_call(mv_vfwmacc_call_intrinsic, outputs=[], inputs=[Mat, vec_s, scores, K, N])
-
-
-@triton.jit(do_not_specialize=["N"])
-def _mv_post_scale_host(scores, out, N):
-    _sr_call(post_scale_svector, outputs=[], inputs=[scores, out, N])
 
 
 # ── single-launch fused host: svector → call_intrinsic → call_intrinsic ─────
@@ -393,27 +358,6 @@ _SHAPES = [(8, 64), (16, 128), (32, 256), (64, 512), (128, 256),
            (64, 64), (32, 128), (16, 64)]
 
 
-def _run_correctness(N, K):
-    assert K % 64 == 0 and N % 8 == 0, "stage 1/2 need K%64==0, N%8==0"
-    Np = ((N + 7) // 8) * 8
-    torch.manual_seed(0)
-    Mat = torch.randn(N, K, dtype=torch.float16)
-    vec = torch.randn(K, dtype=torch.float16)
-    vec_s = torch.zeros(K, dtype=torch.float16)
-    scores = torch.zeros(Np, dtype=torch.float32)
-    out = torch.zeros(Np, dtype=torch.float32)
-
-    _mv_pre_and_gemm_host[(1,)](
-        Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, K, N)
-    _mv_post_scale_host[(1,)](scores, out, N)
-
-    got = out[:N]
-    ref = torch.mv(Mat.float(), (vec.float() * _ALPHA).half().float()) * _BETA
-    max_diff = (got - ref).abs().max().item()
-    assert torch.allclose(got, ref, rtol=1e-2, atol=1e-2), \
-        f"N={N} K={K} max_diff={max_diff:.4e}"
-    return max_diff
-
 
 def _run_fused_correctness(N, K):
     assert K % 64 == 0 and N % 8 == 0, "fused: K%64==0, N%8==0"
@@ -436,7 +380,7 @@ def _run_fused_correctness(N, K):
     return max_diff
 
 
-def _measure_three_stage(N, K, iters=50, warmup=5):
+def _measure_fused(N, K, iters=50, warmup=5):
     Np = ((N + 7) // 8) * 8
     Mat = torch.randn(N, K, dtype=torch.float16)
     vec = torch.randn(K, dtype=torch.float16)
@@ -444,14 +388,32 @@ def _measure_three_stage(N, K, iters=50, warmup=5):
     scores = torch.zeros(Np, dtype=torch.float32)
     out = torch.zeros(Np, dtype=torch.float32)
     for _ in range(warmup):
-        _mv_pre_and_gemm_host[(1,)](
-            Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, K, N)
-        _mv_post_scale_host[(1,)](scores, out, N)
+        _mv_fused_host[(1,)](
+            Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, out, K, N)
     t0 = time.perf_counter()
     for _ in range(iters):
-        _mv_pre_and_gemm_host[(1,)](
-            Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, K, N)
-        _mv_post_scale_host[(1,)](scores, out, N)
+        _mv_fused_host[(1,)](
+            Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, out, K, N)
+    t1 = time.perf_counter()
+    return (t1 - t0) / iters
+
+
+def _measure_fused_par(N, K, BLK=8, iters=50, warmup=5):
+    assert BLK % 8 == 0 and N % BLK == 0, "fused_par: BLK%8==0, N%BLK==0"
+    Np = ((N + 7) // 8) * 8
+    Mat = torch.randn(N, K, dtype=torch.float16)
+    vec = torch.randn(K, dtype=torch.float16)
+    vec_s = torch.zeros(K, dtype=torch.float16)
+    scores = torch.zeros(Np, dtype=torch.float32)
+    out = torch.zeros(Np, dtype=torch.float32)
+    grid = (N // BLK,)
+    for _ in range(warmup):
+        _mv_fused_host_par[grid](
+            Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, out, K, N, BLK)
+    t0 = time.perf_counter()
+    for _ in range(iters):
+        _mv_fused_host_par[grid](
+            Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, out, K, N, BLK)
     t1 = time.perf_counter()
     return (t1 - t0) / iters
 
@@ -471,10 +433,6 @@ def _measure_svector(N, K, BLOCK=4, iters=50, warmup=5):
     return (t1 - t0) / iters
 
 
-@pytest.mark.parametrize("N, K", _SHAPES)
-def test_mv_three_stage_correctness(N, K):
-    _run_correctness(N, K)
-
 
 @pytest.mark.parametrize("N, K", _SHAPES)
 def test_mv_fused_single_launch_correctness(N, K):
@@ -487,42 +445,55 @@ def test_mv_fused_parallel_correctness(N, K):
 
 
 @pytest.mark.parametrize("N, K", _SHAPES)
-def test_mv_three_stage_perf_vs_svector(N, K):
-    """3-stage (svector+call_intrinsic+svector) vs pure svector style2.
+def test_mv_fused_perf_vs_svector(N, K):
+    """Single-launch fused variants vs pure svector style2.
 
-    The 3-stage does EXTRA work (pre/post scale) the svector baseline doesn't,
-    so absolute time is higher — this is a report-only comparison showing the
-    overhead of the additional svector stages around the vfwmacc gemv. The
-    vfwmacc.vv in stage 2's assembly (verified separately) is the architectural
-    point: only vfwmacc uses call_intrinsic, everything else uses svector.
+    fused       : grid=(1,)       — one program handles all N rows serially
+    fused_par   : grid=(N//BLK,) — one BLK-row tile per program, multi-core
+
+    Both fused variants do EXTRA work (pre/post scale) the svector baseline
+    doesn't. fused_par recovers throughput at larger shapes via multi-core.
     """
+    BLK = 8
     t_sv = _measure_svector(N, K, BLOCK=4)
-    t_ts = _measure_three_stage(N, K)
+    t_f  = _measure_fused(N, K)
+    t_fp = _measure_fused_par(N, K, BLK=BLK)
     gf_sv = 2.0 * N * K / t_sv / 1e9
-    gf_ts = 2.0 * N * K / t_ts / 1e9
-    overhead_us = (t_ts - t_sv) * 1e6
+    gf_f  = 2.0 * N * K / t_f  / 1e9
+    gf_fp = 2.0 * N * K / t_fp / 1e9
     print(f"N={N:4d} K={K:4d}  svector={t_sv*1e6:8.1f}us ({gf_sv:.2f}GF)  "
-          f"three_stage={t_ts*1e6:8.1f}us ({gf_ts:.2f}GF)  "
-          f"overhead={overhead_us:6.1f}us")
+          f"fused={t_f*1e6:8.1f}us ({gf_f:.2f}GF)  "
+          f"fused_par[BLK={BLK}]={t_fp*1e6:8.1f}us ({gf_fp:.2f}GF)")
 
 
 if __name__ == "__main__":
-    print("=== 3-stage mv: svector -> call_intrinsic vfwmacc -> svector ===")
-    print("=== correctness ===")
+    print("=== single-launch fused mv: svector pre + vfwmacc + ci post ===")
+    print("=== correctness: fused grid=(1,) ===")
     for N, K in _SHAPES:
         try:
-            md = _run_correctness(N, K)
+            md = _run_fused_correctness(N, K)
             print(f"  N={N:4d} K={K:4d}  max_diff={md:.4e}  PASS")
         except Exception as e:
             print(f"  N={N:4d} K={K:4d}  FAIL: {type(e).__name__}: {str(e)[:200]}")
-    print("=== perf ===")
+    print("=== correctness: fused_par grid=(N//BLK,) ===")
+    for N, K in _SHAPES:
+        try:
+            md = _run_fused_par_correctness(N, K)
+            print(f"  N={N:4d} K={K:4d}  max_diff={md:.4e}  PASS")
+        except Exception as e:
+            print(f"  N={N:4d} K={K:4d}  FAIL: {type(e).__name__}: {str(e)[:200]}")
+    print("=== perf vs svector style2 ===")
+    BLK = 8
     for N, K in _SHAPES:
         try:
             t_sv = _measure_svector(N, K, BLOCK=4)
-            t_ts = _measure_three_stage(N, K)
+            t_f  = _measure_fused(N, K)
+            t_fp = _measure_fused_par(N, K, BLK=BLK)
             gf_sv = 2.0 * N * K / t_sv / 1e9
-            gf_ts = 2.0 * N * K / t_ts / 1e9
+            gf_f  = 2.0 * N * K / t_f  / 1e9
+            gf_fp = 2.0 * N * K / t_fp / 1e9
             print(f"  N={N:4d} K={K:4d}  sv={t_sv*1e6:8.1f}us ({gf_sv:.2f}GF)  "
-                  f"ts={t_ts*1e6:8.1f}us ({gf_ts:.2f}GF)  overhead={(t_ts-t_sv)*1e6:6.1f}us")
+                  f"fused={t_f*1e6:8.1f}us ({gf_f:.2f}GF)  "
+                  f"fused_par={t_fp*1e6:8.1f}us ({gf_fp:.2f}GF)")
         except Exception as e:
             print(f"  N={N:4d} K={K:4d}  FAIL: {type(e).__name__}: {str(e)[:200]}")
