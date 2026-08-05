@@ -196,6 +196,32 @@ struct DSLRegionOpPattern : public OpRewritePattern<tle::DSLRegionOp> {
 
   LogicalResult matchAndRewrite(tle::DSLRegionOp op,
                                 PatternRewriter &rewriter) const override {
+    // 0. Positional-anchor placeholder. call_registry.py emits an empty
+    //    tle.dsl_region named "__spine_bridge_pt_N" at the exact program point
+    //    of each llvm-direct _sr_call, so svector and bridge stages interleave
+    //    in any order. Lower it to a func.call to a private no-arg stub; the
+    //    stub survives to ll.mlir as `llvm.call @__spine_bridge_pt_N`, which
+    //    _inject_mixed_llvm_llmlir then text-replaces with the real bridge.
+    StringRef fnName = op.getFnNameAttr().getValue();
+    if (fnName.size() >= 18 && fnName.substr(0, 18) == "__spine_bridge_pt_") {
+      auto loc = op.getLoc();
+      auto mod = op->getParentOfType<ModuleOp>();
+      if (mod && !mod.lookupSymbol(fnName)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(mod.getBody());
+        auto fnType = FunctionType::get(rewriter.getContext(), {}, {});
+        auto decl = func::FuncOp::create(rewriter, loc, fnName, fnType);
+        decl.setSymVisibilityAttr(
+            StringAttr::get(rewriter.getContext(), "private"));
+        Block *body = decl.addEntryBlock();
+        OpBuilder declBuilder(body, body->end());
+        func::ReturnOp::create(declBuilder, loc);
+      }
+      func::CallOp::create(rewriter, loc, fnName, TypeRange{}, ValueRange{});
+      rewriter.eraseOp(op);
+      return success();
+    }
+
     // 1. The raw fn body is already a real region on the op; its block args are
     //    the raw fn parameters (memref<*> etc.).
     Region &srcRegion = op.getBody();

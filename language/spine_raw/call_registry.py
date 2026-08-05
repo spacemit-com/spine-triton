@@ -146,7 +146,20 @@ def call(fn, outputs=None, inputs=None, _semantic=None):
             "callee": raw_fn.__name__, "arg_bridge": arg_bridge,  # ordered per sibling param
         })
 
-        return  # skip dsl_region emission
+        # Positional anchor: emit an empty tle.dsl_region right HERE, at this
+        # call's program point, so the bridge lands in source order and svector
+        # stages can sit before AND after it. TLEToLinalg lowers the anchor to a
+        # func.call @__spine_bridge_pt_N (private no-arg stub); it survives to
+        # ll.mlir as `llvm.call @__spine_bridge_pt_N`, which
+        # compiler._inject_mixed_llvm_llmlir text-replaces with the real bridge.
+        # create_tle_dsl_region_direct auto-appends spine_ext.return, so an empty
+        # body_builder is valid. Without the anchor the bridge would be forced to
+        # llvm.return (all bridges last), forbidding svector-after-bridge.
+        bridge_idx = len(_PENDING_LLVM_DIRECT_MODULE["llvm_calls"]) - 1
+        anchor_name = f"__spine_bridge_pt_{bridge_idx}"
+        builder.create_tle_dsl_region_direct(
+            anchor_name, [], [], lambda b, ba: None)
+        return  # sibling llvm.func text recorded; anchor marks the call site
 
     # Normal path
     param_type_strs, body_builder = fn.make_body_builder()

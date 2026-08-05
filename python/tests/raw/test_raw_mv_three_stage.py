@@ -157,6 +157,26 @@ def post_scale_call_intrinsic(scores: tle.mem(f32), out: tle.mem(f32, out=True),
         tle.call_intrinsic("llvm.riscv.vse", [r, go, vl], result_type="()")
 
 
+# ── stage 3 (svector): out = scores * beta ──────────────────────────────────
+# f32 svector post-scale, placed AFTER the vfwmacc bridge in the fused host.
+# This is the case the positional-anchor mechanism unlocks: pre-anchor, all
+# bridges were forced before llvm.return, so a svector stage could never follow
+# a bridge (it would read `scores` before the bridge wrote it). vconfig derives
+# SEW from the f32 dtype, so VL here is half the f16 stage-1 VL.
+@tle.raw_kernel
+def post_scale_svector(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
+    nvl = tle.vconfig(-1, 1)
+    Nfloor = (N // nvl) * nvl
+    for ni in tle.range(0, Nfloor, nvl):
+        v = tle.vload(scores, ni, dtype=f32)      # vector<VL x f32>
+        v_s = v * _BETA                           # arith.mulf, scalar bcast
+        tle.vstore(out, ni, v_s)
+    for ni in tle.range(Nfloor, N, nvl):          # tail — distinct SSA names
+        nvl = tle.vconfig(N - ni, 1)
+        tv = tle.vload(scores, ni, dtype=f32)
+        tv_s = tv * _BETA
+        tle.vstore(out, ni, tv_s)
+
 
 # ── single-launch fused host: svector → call_intrinsic → call_intrinsic ─────
 # pre_scale_svector        → dsl_region inline (runs first in host body)
@@ -380,6 +400,41 @@ def _run_fused_correctness(N, K):
     return max_diff
 
 
+# ── fused host with svector stage 3 AFTER the bridge (anchor feature) ────────
+# pre_scale_svector         → dsl_region inline (svector, before the bridge)
+# mv_vfwmacc_call_intrinsic → bridge (injected AT its positional anchor)
+# post_scale_svector        → dsl_region inline (svector, AFTER the bridge)
+# Impossible before positional anchors: the bridge used to be forced to
+# llvm.return, so no svector could read `scores` after it. Now the bridge lands
+# at its anchor and the stage-3 svector body follows it in program order.
+@triton.jit(do_not_specialize=["K", "N"])
+def _mv_fused_host_sv3(Mat, vec, vec_s, scores, out, K, N):
+    _sr_call(pre_scale_svector, outputs=[], inputs=[vec, vec_s, K])
+    _sr_call(mv_vfwmacc_call_intrinsic, outputs=[], inputs=[Mat, vec_s, scores, K, N])
+    _sr_call(post_scale_svector, outputs=[], inputs=[scores, out, N])
+
+
+def _run_fused_sv3_correctness(N, K):
+    assert K % 64 == 0 and N % 8 == 0, "fused_sv3: K%64==0, N%8==0"
+    Np = ((N + 7) // 8) * 8
+    torch.manual_seed(0)
+    Mat = torch.randn(N, K, dtype=torch.float16)
+    vec = torch.randn(K, dtype=torch.float16)
+    vec_s = torch.zeros(K, dtype=torch.float16)
+    scores = torch.zeros(Np, dtype=torch.float32)
+    out = torch.zeros(Np, dtype=torch.float32)
+
+    _mv_fused_host_sv3[(1,)](
+        Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, out, K, N)
+
+    got = out[:N]
+    ref = torch.mv(Mat.float(), (vec.float() * _ALPHA).half().float()) * _BETA
+    max_diff = (got - ref).abs().max().item()
+    assert torch.allclose(got, ref, rtol=1e-2, atol=1e-2), \
+        f"N={N} K={K} max_diff={max_diff:.4e}"
+    return max_diff
+
+
 def _measure_fused(N, K, iters=50, warmup=5):
     Np = ((N + 7) // 8) * 8
     Mat = torch.randn(N, K, dtype=torch.float16)
@@ -445,6 +500,12 @@ def test_mv_fused_parallel_correctness(N, K):
 
 
 @pytest.mark.parametrize("N, K", _SHAPES)
+def test_mv_fused_svector_after_bridge_correctness(N, K):
+    """svector stage 3 placed AFTER the vfwmacc bridge (positional anchor)."""
+    _run_fused_sv3_correctness(N, K)
+
+
+@pytest.mark.parametrize("N, K", _SHAPES)
 def test_mv_fused_perf_vs_svector(N, K):
     """Single-launch fused variants vs pure svector style2.
 
@@ -479,6 +540,13 @@ if __name__ == "__main__":
     for N, K in _SHAPES:
         try:
             md = _run_fused_par_correctness(N, K)
+            print(f"  N={N:4d} K={K:4d}  max_diff={md:.4e}  PASS")
+        except Exception as e:
+            print(f"  N={N:4d} K={K:4d}  FAIL: {type(e).__name__}: {str(e)[:200]}")
+    print("=== correctness: fused sv3 (svector AFTER bridge) grid=(1,) ===")
+    for N, K in _SHAPES:
+        try:
+            md = _run_fused_sv3_correctness(N, K)
             print(f"  N={N:4d} K={K:4d}  max_diff={md:.4e}  PASS")
         except Exception as e:
             print(f"  N={N:4d} K={K:4d}  FAIL: {type(e).__name__}: {str(e)[:200]}")
