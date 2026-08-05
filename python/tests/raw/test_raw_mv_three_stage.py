@@ -4,8 +4,10 @@ Mirrors test_mixed_syntax_three_layer.py's multi-stage pattern, applied to mv:
 
   stage 1  pre_scale_sv   : vec_s[k] = vec[k] * alpha   —— svector helpers
                             (tle.vload / tle.cast / tle.vstore + BinOp)
-  stage 2  mv_vfwmacc_ci  : scores = Mat @ vec_s        —— call_intrinsic
-                            (llvm.riscv.vle + llvm.riscv.vfwmacc + llvm.store)
+  stage 2  mv_vfwmacc_ci  : scores = Mat @ vec_s        —— native LLVM ops +
+                            ONLY vfwmacc via call_intrinsic (llvm.load +
+                            llvm.riscv.vfwmacc + llvm.intr.vector.reduce.fadd +
+                            llvm.store)
   stage 3  post_scale_sv  : out[n] = scores[n] * beta   —— svector helpers
 
 WHY 3 STAGES: per design request, vfwmacc (the only op svector can't emit
@@ -61,9 +63,11 @@ def pre_scale_svector(vec: tle.mem(f16), vec_s: tle.mem(f16, out=True), K: tle.i
         tle.vstore(vec_s, ki, tv_s_h)
 
 
-# ── stage 2: call_intrinsic 8-row vfwmacc mv  scores = Mat @ vec_s ──────────
-# Pure llvm-direct (sibling llvm.func). 8-row unroll + vfwmacc.vv (6-arg policy
-# form). Reuses the proven design from commit e7f38fbed (test_raw_mv_mixed.py).
+# ── stage 2: 8-row vfwmacc mv  scores = Mat @ vec_s ─────────────────────────
+# Pure llvm-direct (sibling llvm.func, bypasses spine-opt bufferization). Only
+# vfwmacc.vv (6-arg policy form) uses call_intrinsic — it has no native MLIR op.
+# Loads are native llvm.load (→ vle on riscv64), reductions native
+# llvm.intr.vector.reduce.fadd, stores native llvm.store. 8-row unroll.
 @tle.raw_kernel
 def mv_vfwmacc_call_intrinsic(B: tle.mem(f16), A: tle.mem(f16),
                               C: tle.mem(f32, out=True),
@@ -73,7 +77,6 @@ def mv_vfwmacc_call_intrinsic(B: tle.mem(f16), A: tle.mem(f16),
     eight = tle.llvm_const(8, "i64")
     zero_acc = tle.llvm_const("0.000000e+00", "vector<[4]xf32>")
     zero_f = tle.llvm_const("0.000000e+00", "f32")
-    pt = tle.llvm_poison("vector<[4]xf16>")
     cbase = tle.llvm_base_ptr(C)
     abase = tle.llvm_base_ptr(A)
     bbase = tle.llvm_base_ptr(B)
@@ -89,8 +92,7 @@ def mv_vfwmacc_call_intrinsic(B: tle.mem(f16), A: tle.mem(f16),
         acc7 = zero_acc
         for ki in tle.range(zero, K, vl):
             ga = tle.llvm_gep(abase, ki, "f16")
-            va = tle.call_intrinsic("llvm.riscv.vle", [pt, ga, vl],
-                                    result_type="vector<[4]xf16>")
+            va = tle.llvm_load(ga, "vector<[4]xf16>")
             off0 = ni * K + ki
             gb0 = tle.llvm_gep(bbase, off0, "f16")
             gb1 = tle.llvm_gep(bbase, (ni + 1) * K + ki, "f16")
@@ -100,14 +102,14 @@ def mv_vfwmacc_call_intrinsic(B: tle.mem(f16), A: tle.mem(f16),
             gb5 = tle.llvm_gep(bbase, (ni + 5) * K + ki, "f16")
             gb6 = tle.llvm_gep(bbase, (ni + 6) * K + ki, "f16")
             gb7 = tle.llvm_gep(bbase, (ni + 7) * K + ki, "f16")
-            vb0 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb0, vl], result_type="vector<[4]xf16>")
-            vb1 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb1, vl], result_type="vector<[4]xf16>")
-            vb2 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb2, vl], result_type="vector<[4]xf16>")
-            vb3 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb3, vl], result_type="vector<[4]xf16>")
-            vb4 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb4, vl], result_type="vector<[4]xf16>")
-            vb5 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb5, vl], result_type="vector<[4]xf16>")
-            vb6 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb6, vl], result_type="vector<[4]xf16>")
-            vb7 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb7, vl], result_type="vector<[4]xf16>")
+            vb0 = tle.llvm_load(gb0, "vector<[4]xf16>")
+            vb1 = tle.llvm_load(gb1, "vector<[4]xf16>")
+            vb2 = tle.llvm_load(gb2, "vector<[4]xf16>")
+            vb3 = tle.llvm_load(gb3, "vector<[4]xf16>")
+            vb4 = tle.llvm_load(gb4, "vector<[4]xf16>")
+            vb5 = tle.llvm_load(gb5, "vector<[4]xf16>")
+            vb6 = tle.llvm_load(gb6, "vector<[4]xf16>")
+            vb7 = tle.llvm_load(gb7, "vector<[4]xf16>")
             acc0 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc0, va, vb0, zero, vl, zero], result_type="vector<[4]xf32>")
             acc1 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc1, va, vb1, zero, vl, zero], result_type="vector<[4]xf32>")
             acc2 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc2, va, vb2, zero, vl, zero], result_type="vector<[4]xf32>")
@@ -116,22 +118,22 @@ def mv_vfwmacc_call_intrinsic(B: tle.mem(f16), A: tle.mem(f16),
             acc5 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc5, va, vb5, zero, vl, zero], result_type="vector<[4]xf32>")
             acc6 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc6, va, vb6, zero, vl, zero], result_type="vector<[4]xf32>")
             acc7 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc7, va, vb7, zero, vl, zero], result_type="vector<[4]xf32>")
-        s0 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc0], result_type="f32")
-        s1 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc1], result_type="f32")
-        s2 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc2], result_type="f32")
-        s3 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc3], result_type="f32")
-        s4 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc4], result_type="f32")
-        s5 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc5], result_type="f32")
-        s6 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc6], result_type="f32")
-        s7 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc7], result_type="f32")
-        tle.call_intrinsic("llvm.store", [s0, tle.llvm_gep(cbase, ni, "f32")], result_type="()")
-        tle.call_intrinsic("llvm.store", [s1, tle.llvm_gep(cbase, ni + 1, "f32")], result_type="()")
-        tle.call_intrinsic("llvm.store", [s2, tle.llvm_gep(cbase, ni + 2, "f32")], result_type="()")
-        tle.call_intrinsic("llvm.store", [s3, tle.llvm_gep(cbase, ni + 3, "f32")], result_type="()")
-        tle.call_intrinsic("llvm.store", [s4, tle.llvm_gep(cbase, ni + 4, "f32")], result_type="()")
-        tle.call_intrinsic("llvm.store", [s5, tle.llvm_gep(cbase, ni + 5, "f32")], result_type="()")
-        tle.call_intrinsic("llvm.store", [s6, tle.llvm_gep(cbase, ni + 6, "f32")], result_type="()")
-        tle.call_intrinsic("llvm.store", [s7, tle.llvm_gep(cbase, ni + 7, "f32")], result_type="()")
+        s0 = tle.llvm_reduce_fadd(zero_f, acc0)
+        s1 = tle.llvm_reduce_fadd(zero_f, acc1)
+        s2 = tle.llvm_reduce_fadd(zero_f, acc2)
+        s3 = tle.llvm_reduce_fadd(zero_f, acc3)
+        s4 = tle.llvm_reduce_fadd(zero_f, acc4)
+        s5 = tle.llvm_reduce_fadd(zero_f, acc5)
+        s6 = tle.llvm_reduce_fadd(zero_f, acc6)
+        s7 = tle.llvm_reduce_fadd(zero_f, acc7)
+        tle.llvm_store(s0, tle.llvm_gep(cbase, ni, "f32"))
+        tle.llvm_store(s1, tle.llvm_gep(cbase, ni + 1, "f32"))
+        tle.llvm_store(s2, tle.llvm_gep(cbase, ni + 2, "f32"))
+        tle.llvm_store(s3, tle.llvm_gep(cbase, ni + 3, "f32"))
+        tle.llvm_store(s4, tle.llvm_gep(cbase, ni + 4, "f32"))
+        tle.llvm_store(s5, tle.llvm_gep(cbase, ni + 5, "f32"))
+        tle.llvm_store(s6, tle.llvm_gep(cbase, ni + 6, "f32"))
+        tle.llvm_store(s7, tle.llvm_gep(cbase, ni + 7, "f32"))
 
 
 # ── stage 3: svector post-scale  out = scores * beta ────────────────────────
@@ -227,7 +229,6 @@ def mv_vfwmacc_ci_parallel(B: tle.mem(f16), A: tle.mem(f16),
     zero = tle.llvm_const(0, "i64")
     zero_acc = tle.llvm_const("0.000000e+00", "vector<[4]xf32>")
     zero_f = tle.llvm_const("0.000000e+00", "f32")
-    pt = tle.llvm_poison("vector<[4]xf16>")
     cbase = tle.llvm_base_ptr(C)
     abase = tle.llvm_base_ptr(A)
     bbase = tle.llvm_base_ptr(B)
@@ -245,8 +246,7 @@ def mv_vfwmacc_ci_parallel(B: tle.mem(f16), A: tle.mem(f16),
         acc7 = zero_acc
         for ki in tle.range(zero, K, vl):
             ga = tle.llvm_gep(abase, ki, "f16")
-            va = tle.call_intrinsic("llvm.riscv.vle", [pt, ga, vl],
-                                    result_type="vector<[4]xf16>")
+            va = tle.llvm_load(ga, "vector<[4]xf16>")
             gb0 = tle.llvm_gep(bbase, ni * K + ki, "f16")
             gb1 = tle.llvm_gep(bbase, (ni + 1) * K + ki, "f16")
             gb2 = tle.llvm_gep(bbase, (ni + 2) * K + ki, "f16")
@@ -255,14 +255,14 @@ def mv_vfwmacc_ci_parallel(B: tle.mem(f16), A: tle.mem(f16),
             gb5 = tle.llvm_gep(bbase, (ni + 5) * K + ki, "f16")
             gb6 = tle.llvm_gep(bbase, (ni + 6) * K + ki, "f16")
             gb7 = tle.llvm_gep(bbase, (ni + 7) * K + ki, "f16")
-            vb0 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb0, vl], result_type="vector<[4]xf16>")
-            vb1 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb1, vl], result_type="vector<[4]xf16>")
-            vb2 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb2, vl], result_type="vector<[4]xf16>")
-            vb3 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb3, vl], result_type="vector<[4]xf16>")
-            vb4 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb4, vl], result_type="vector<[4]xf16>")
-            vb5 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb5, vl], result_type="vector<[4]xf16>")
-            vb6 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb6, vl], result_type="vector<[4]xf16>")
-            vb7 = tle.call_intrinsic("llvm.riscv.vle", [pt, gb7, vl], result_type="vector<[4]xf16>")
+            vb0 = tle.llvm_load(gb0, "vector<[4]xf16>")
+            vb1 = tle.llvm_load(gb1, "vector<[4]xf16>")
+            vb2 = tle.llvm_load(gb2, "vector<[4]xf16>")
+            vb3 = tle.llvm_load(gb3, "vector<[4]xf16>")
+            vb4 = tle.llvm_load(gb4, "vector<[4]xf16>")
+            vb5 = tle.llvm_load(gb5, "vector<[4]xf16>")
+            vb6 = tle.llvm_load(gb6, "vector<[4]xf16>")
+            vb7 = tle.llvm_load(gb7, "vector<[4]xf16>")
             acc0 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc0, va, vb0, zero, vl, zero], result_type="vector<[4]xf32>")
             acc1 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc1, va, vb1, zero, vl, zero], result_type="vector<[4]xf32>")
             acc2 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc2, va, vb2, zero, vl, zero], result_type="vector<[4]xf32>")
@@ -271,22 +271,22 @@ def mv_vfwmacc_ci_parallel(B: tle.mem(f16), A: tle.mem(f16),
             acc5 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc5, va, vb5, zero, vl, zero], result_type="vector<[4]xf32>")
             acc6 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc6, va, vb6, zero, vl, zero], result_type="vector<[4]xf32>")
             acc7 = tle.call_intrinsic("llvm.riscv.vfwmacc", [acc7, va, vb7, zero, vl, zero], result_type="vector<[4]xf32>")
-        s0 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc0], result_type="f32")
-        s1 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc1], result_type="f32")
-        s2 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc2], result_type="f32")
-        s3 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc3], result_type="f32")
-        s4 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc4], result_type="f32")
-        s5 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc5], result_type="f32")
-        s6 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc6], result_type="f32")
-        s7 = tle.call_intrinsic("llvm.vector.reduce.fadd", [zero_f, acc7], result_type="f32")
-        tle.call_intrinsic("llvm.store", [s0, tle.llvm_gep(cbase, ni, "f32")], result_type="()")
-        tle.call_intrinsic("llvm.store", [s1, tle.llvm_gep(cbase, ni + 1, "f32")], result_type="()")
-        tle.call_intrinsic("llvm.store", [s2, tle.llvm_gep(cbase, ni + 2, "f32")], result_type="()")
-        tle.call_intrinsic("llvm.store", [s3, tle.llvm_gep(cbase, ni + 3, "f32")], result_type="()")
-        tle.call_intrinsic("llvm.store", [s4, tle.llvm_gep(cbase, ni + 4, "f32")], result_type="()")
-        tle.call_intrinsic("llvm.store", [s5, tle.llvm_gep(cbase, ni + 5, "f32")], result_type="()")
-        tle.call_intrinsic("llvm.store", [s6, tle.llvm_gep(cbase, ni + 6, "f32")], result_type="()")
-        tle.call_intrinsic("llvm.store", [s7, tle.llvm_gep(cbase, ni + 7, "f32")], result_type="()")
+        s0 = tle.llvm_reduce_fadd(zero_f, acc0)
+        s1 = tle.llvm_reduce_fadd(zero_f, acc1)
+        s2 = tle.llvm_reduce_fadd(zero_f, acc2)
+        s3 = tle.llvm_reduce_fadd(zero_f, acc3)
+        s4 = tle.llvm_reduce_fadd(zero_f, acc4)
+        s5 = tle.llvm_reduce_fadd(zero_f, acc5)
+        s6 = tle.llvm_reduce_fadd(zero_f, acc6)
+        s7 = tle.llvm_reduce_fadd(zero_f, acc7)
+        tle.llvm_store(s0, tle.llvm_gep(cbase, ni, "f32"))
+        tle.llvm_store(s1, tle.llvm_gep(cbase, ni + 1, "f32"))
+        tle.llvm_store(s2, tle.llvm_gep(cbase, ni + 2, "f32"))
+        tle.llvm_store(s3, tle.llvm_gep(cbase, ni + 3, "f32"))
+        tle.llvm_store(s4, tle.llvm_gep(cbase, ni + 4, "f32"))
+        tle.llvm_store(s5, tle.llvm_gep(cbase, ni + 5, "f32"))
+        tle.llvm_store(s6, tle.llvm_gep(cbase, ni + 6, "f32"))
+        tle.llvm_store(s7, tle.llvm_gep(cbase, ni + 7, "f32"))
 
 
 @tle.raw_kernel

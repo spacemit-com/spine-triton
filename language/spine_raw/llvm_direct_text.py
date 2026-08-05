@@ -290,6 +290,53 @@ class LLVMDirectTextCodegen:
         rhs = f"llvm.getelementptr {base}[{off}] : (!llvm.ptr, i64) -> !llvm.ptr, {elem}"
         return self._def(rhs, "!llvm.ptr"), "!llvm.ptr"
 
+    @staticmethod
+    def _elem_align(typ: str) -> int:
+        """Byte alignment of a scalar/vector element type (e.g. vector<[4]xf16>->2)."""
+        import re
+        m = re.search(r'x([a-z0-9]+)>', typ)  # vector<[4]xf16> -> f16
+        elem = m.group(1) if m else typ
+        bits = {"f16": 16, "bf16": 16, "f32": 32, "f64": 64,
+                "i8": 8, "i16": 16, "i32": 32, "i64": 64}.get(elem, 8)
+        return bits // 8
+
+    def _p_llvm_load(self, node):
+        """llvm_load(ptr, result_type) -> `%x = llvm.load %ptr {align} : !llvm.ptr -> T`.
+
+        Native vector load: on riscv64 a scalable-vector llvm.load lowers to vle.
+        alignment is set to the element size (f16->2) so an odd element offset
+        (2-byte aligned f16* addr) is not miscompiled as full-vector aligned.
+        """
+        ptr, _ = self._gen_expr(node.args[0])
+        rt = node.args[1].value
+        al = self._elem_align(rt)
+        rhs = f"llvm.load {ptr} {{alignment = {al} : i64}} : !llvm.ptr -> {rt}"
+        return self._def(rhs, rt), rt
+
+    def _p_llvm_reduce_fadd(self, node):
+        """llvm_reduce_fadd(start, vec) -> native `llvm.intr.vector.reduce.fadd`.
+
+        Same LLVM intrinsic as call_intrinsic "llvm.vector.reduce.fadd" once it
+        reaches LLVM IR (ordered, no fastmath) — just spelled as the native op so
+        only vfwmacc needs call_intrinsic.
+        """
+        start, st = self._gen_expr(node.args[0])
+        vec, vt = self._gen_expr(node.args[1])
+        # This mlir-translate build has no *custom* assembly form for the op —
+        # only the generic form parses. Plain (no reassoc) → ordered reduction,
+        # matching the prior call_intrinsic "llvm.vector.reduce.fadd" numerics.
+        rhs = (f'"llvm.intr.vector.reduce.fadd"({start}, {vec}) '
+               f': ({st}, {vt}) -> {st}')
+        return self._def(rhs, st), st
+
+    def _p_llvm_store(self, node):
+        """llvm_store(val, ptr) -> native `llvm.store %val, %ptr {align} : T, !llvm.ptr`."""
+        val, vt = self._gen_expr(node.args[0])
+        ptr, _ = self._gen_expr(node.args[1])
+        al = self._elem_align(vt)
+        self._emit(f"llvm.store {val}, {ptr} {{alignment = {al} : i64}} : {vt}, !llvm.ptr")
+        return None, "()"
+
     def _p_llvm_size(self, node):
         """llvm_size(mem[, dim]) — UNSUPPORTED in the llvm-direct driver ABI.
 
