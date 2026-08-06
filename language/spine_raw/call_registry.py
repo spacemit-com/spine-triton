@@ -72,6 +72,19 @@ def take_pending_llvm_calls():
     return _PENDING_LLVM_DIRECT_MODULE.pop("llvm_calls", [])
 
 
+def take_pending_host_arg_kinds():
+    """Retrieve + clear the ordered per-host-arg is-memref flags for mixed mode.
+
+    Returns list[bool], one entry per host func.func parameter in signature
+    order: True = memref (a ptr param), False = scalar. Recorded structurally
+    from the host TTIR entry-block arg types (Value.get_type) at call() time,
+    so compiler.py can map each TTIR arg position → its lowered
+    (i64 rank, !llvm.ptr) descriptor slots WITHOUT re-parsing the func.func
+    signature text. Empty list if the kernel had no mixed llvm-direct calls.
+    """
+    return _PENDING_LLVM_DIRECT_MODULE.pop("host_arg_kinds", [])
+
+
 def call(fn, outputs=None, inputs=None, _semantic=None):
     """Inside @triton.jit: emit tle.dsl_region TTIR op holding the raw kernel body.
 
@@ -121,6 +134,15 @@ def call(fn, outputs=None, inputs=None, _semantic=None):
         # property — call it. Using the method object as a dict key silently never
         # matches, so every input would look like a non-host-arg. (K3-verified.)
         argid_to_pos = {entry.get_argument(i).id(): i for i in range(n_block_args)}
+
+        # Structurally record each host arg's is-memref flag from its TTIR type:
+        # ptr params (`!tt.ptr<...>`) lower to memref → (i64 rank, !llvm.ptr) pairs;
+        # scalars stay one lowered slot. compiler._inject_mixed_llvm_llmlir consumes
+        # this ordered bool list to map TTIR arg position → lowered arg index,
+        # instead of re-parsing the func.func signature text. The host entry block
+        # is identical across all _sr_call sites in one kernel, so overwrite freely.
+        host_arg_kinds = ["tt.ptr" in str(entry.get_argument(i).get_type()) for i in range(n_block_args)]
+        _PENDING_LLVM_DIRECT_MODULE["host_arg_kinds"] = host_arg_kinds
 
         params = _parse_signature(raw_fn)  # [(pname, ann), ...]
         arg_bridge = []  # per-input: {"pos": int, "kind": "ptr"|"scalar"}

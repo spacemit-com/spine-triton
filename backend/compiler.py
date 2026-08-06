@@ -57,51 +57,6 @@ def _optimize_linalgdir(linalgdir: str):
     return linalgdir
 
 
-def _host_func_arg_types(linalgdir: str, func_name: str) -> list[str]:
-    """Parse the host func.func arg types (in order) from linalgdir text.
-
-    Returns e.g. ["memref<*xf16, #ptr.generic_space>", ..., "i32", ...].
-    Splits the top-level arg list on commas that are NOT nested inside
-    <>/{}/() — MLIR types embed commas (strided<[1], offset: ?>).
-    """
-    m = re.search(rf"func\.func\s+@{re.escape(func_name)}\s*\(", linalgdir)
-    if not m:
-        raise RuntimeError(f"mixed-mode: host func @{func_name} not found in linalgdir")
-    i = m.end()
-    depth, start, args = 1, i, []
-    ang = cur = par = 0
-    while i < len(linalgdir):
-        c = linalgdir[i]
-        if c == '<': ang += 1
-        elif c == '>': ang -= 1
-        elif c == '{': cur += 1
-        elif c == '}': cur -= 1
-        elif c == '(': par += 1
-        elif c == ')':
-            if par == 0:
-                args.append(linalgdir[start:i])
-                break
-            par -= 1
-        elif c == ',' and ang == cur == par == 0:
-            args.append(linalgdir[start:i])
-            start = i + 1
-        i += 1
-    types = []
-    for a in args:
-        a = a.strip()
-        if not a:
-            continue
-        # "%argN: TYPE {attrs}" -> TYPE (strip name and trailing attr dict)
-        after = a.split(":", 1)[1].strip()
-        # drop a trailing " {...}" attribute dict at top level
-        if after.endswith("}"):
-            b = after.rfind(" {")
-            if b != -1:
-                after = after[:b].strip()
-        types.append(after)
-    return types
-
-
 # The lowered host memref descriptor: spine-opt lowers each memref<*xT> param
 # to (i64 rank, !llvm.ptr desc), where desc points to a StridedMemRefType
 # {allocated, aligned, offset, sizes[1], strides[1]}. The aligned data ptr is
@@ -109,21 +64,20 @@ def _host_func_arg_types(linalgdir: str, func_name: str) -> list[str]:
 _LL_DESC = "!llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>"
 
 
-def _ttir_pos_to_ll_argidx(host_arg_types):
-    """Map a TTIR host-arg position → its start index in the LOWERED ll.mlir
+def _ttir_pos_to_ll_argidx(host_arg_is_memref: list[bool]):
+    """Map each TTIR host-arg position → its start index in the LOWERED ll.mlir
     signature. Each memref param expands to 2 ll args (i64 rank, !llvm.ptr);
-    each scalar stays 1. Returns (ll_start_index_list, is_memref_list)."""
-    starts, is_mem = [], []
+    each scalar stays 1. Returns list[int] of start indices (ordered)."""
+    starts = []
     ll = 0
-    for t in host_arg_types:
+    for is_mem in host_arg_is_memref:
         starts.append(ll)
-        mem = t.strip().startswith("memref")
-        is_mem.append(mem)
-        ll += 2 if mem else 1
-    return starts, is_mem
+        ll += 2 if is_mem else 1
+    return starts
 
 
-def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_types, llvm_funcs, llvm_calls) -> str:
+def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_is_memref: list[bool], llvm_funcs,
+                              llvm_calls) -> str:
     """Graft llvm.func siblings + host→sibling bridge into the LOWERED ll.mlir.
 
     Done post-lowering (uniform llvm dialect) so spine-opt never sees llvm ops
@@ -137,19 +91,13 @@ def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_types, llvm_
     """
     # The new spine-runtime/spert ABI: kernels are marked __require_context__ and
     # spine-opt injects a leading `%arg0: i64` context handle at the ll.mlir layer
-    # (NOT present in the linalg func.func signature that host_arg_types is parsed
-    # from). So every lowered arg index is shifted by +1 relative to the linalg
-    # positions. The launcher passes spert::Context* first, then user args, then
-    # the 3 i32 num_programs (gridX/Y/Z).
+    # (NOT present in the linalg func.func signature that host_arg_is_memref is
+    # derived from). So every lowered arg index is shifted by +1 relative to the
+    # linalg positions. The launcher passes spert::Context* first, then user args,
+    # then the 3 i32 num_programs (gridX/Y/Z).
     _CTX = 1  # leading ctx arg occupies %arg0
-    ll_start, _is_mem = _ttir_pos_to_ll_argidx(host_arg_types)
+    ll_start = _ttir_pos_to_ll_argidx(host_arg_is_memref)
     ll_start = [s + _CTX for s in ll_start]
-    # 3 trailing i32 grid args (num_programs gridX/Y/Z) are the LAST 3 lowered
-    # params. Total lowered width = ctx + sum(user args). K/N are separate user
-    # scalars bridged as sibling i64 data params, so they are NOT in the grid block.
-    n_ll_total = _CTX
-    for t in host_arg_types:
-        n_ll_total += 2 if t.strip().startswith("memref") else 1
     # The host's ctx handle is %arg0 (spine-opt-injected). The sibling has no ctx
     # of its own, so we forward the host's %arg0 as the sibling's trailing i64 ctx
     # arg. Inside the sibling, tle.program_id lowers to spine_grid(ctx, axis) — the
@@ -298,7 +246,7 @@ def _spine_mlir_linalgdir_to_llir(linalgdir: str, metadata):
         # re-run path and the direct mlir-translate path see the injected module.
         if "mixed_llvm_funcs" in metadata and "mixed_llvm_calls" in metadata:
             _ll = Path(llmlir_path).read_text()
-            _ll = _inject_mixed_llvm_llmlir(_ll, metadata["name"], metadata["mixed_host_arg_types"],
+            _ll = _inject_mixed_llvm_llmlir(_ll, metadata["name"], metadata["mixed_host_arg_kinds"],
                                             metadata["mixed_llvm_funcs"], metadata["mixed_llvm_calls"])
             Path(llmlir_path).write_text(_ll)
 
@@ -577,12 +525,15 @@ class CPUBackend(BaseBackend):
         # llvm dialect with memrefs already descriptors, so the llvm.call + sibling
         # splice is legal. Independent of llvm_direct_module (unset in mixed).
         try:
-            from triton.language.extra.spine_raw.call_registry import (take_pending_llvm_funcs, take_pending_llvm_calls)
+            from triton.language.extra.spine_raw.call_registry import (take_pending_llvm_funcs, take_pending_llvm_calls,
+                                                                       take_pending_host_arg_kinds)
             _mixed_funcs = take_pending_llvm_funcs()
             _mixed_calls = take_pending_llvm_calls()
+            _host_arg_kinds = take_pending_host_arg_kinds()
             if _mixed_funcs and _mixed_calls:
                 metadata["mixed_llvm_funcs"] = _mixed_funcs
                 metadata["mixed_llvm_calls"] = _mixed_calls
+                metadata["mixed_host_arg_kinds"] = _host_arg_kinds
         except Exception:
             pass
 
@@ -605,15 +556,9 @@ class CPUBackend(BaseBackend):
             if "llvm_direct_module" in metadata:
                 return metadata["llvm_direct_module"]
             linalgdir = _optimize_linalgdir(_ttir_to_linalgdir(src, metadata))
-            # Mixed mode: record the host func.func arg TYPES (ordered) now, while
-            # they're still memref/scalar. The sibling llvm.call is grafted later
-            # at the *ll.mlir* stage (post-lowering, uniform llvm dialect) — NOT
-            # here: extract_aligned_pointer_as_index on a #ptr.generic_space memref
-            # crashes spine-opt (getMemorySpaceAsInt). We only need the type list
-            # to map each TTIR arg position → its (i64 rank, !llvm.ptr) descriptor
-            # slot in the lowered host signature.
-            if "mixed_llvm_calls" in metadata:
-                metadata["mixed_host_arg_types"] = _host_func_arg_types(linalgdir, metadata["name"])
+            # Mixed mode: host arg kinds (is-memref flags) are already stashed in
+            # metadata["mixed_host_arg_kinds"] by make_ttir (read from TTIR entry-block
+            # arg types), so no text-parsing of func.func signature needed here.
             return linalgdir
 
         stages["linalgdir"] = _linalgdir_stage
