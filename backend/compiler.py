@@ -79,10 +79,12 @@ def _host_func_arg_types(linalgdir: str, func_name: str) -> list[str]:
         elif c == '(': par += 1
         elif c == ')':
             if par == 0:
-                args.append(linalgdir[start:i]); break
+                args.append(linalgdir[start:i])
+                break
             par -= 1
         elif c == ',' and ang == cur == par == 0:
-            args.append(linalgdir[start:i]); start = i + 1
+            args.append(linalgdir[start:i])
+            start = i + 1
         i += 1
     types = []
     for a in args:
@@ -156,19 +158,24 @@ def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_is_memref: l
             base = ll_start[pos]
             if kind == "ptr":
                 desc_ptr = f"%arg{base + 1}"  # (rank=base, desc ptr=base+1)
-                d = f"%mix{uid}_d"; p = f"%mix{uid}_p"; i = f"%mix{uid}_i"
+                d = f"%mix{uid}_d"
+                p = f"%mix{uid}_p"
+                i = f"%mix{uid}_i"
                 lines.append(f"    {d} = llvm.load {desc_ptr} : !llvm.ptr -> {_LL_DESC}")
                 lines.append(f"    {p} = llvm.extractvalue {d}[1] : {_LL_DESC}")
                 lines.append(f"    {i} = llvm.ptrtoint {p} : !llvm.ptr to i64")
-                operands.append(i); optys.append("i64")
+                operands.append(i)
+                optys.append("i64")
             else:  # scalar: host passes it as i32 → sext to i64
                 s = f"%mix{uid}_s"
                 lines.append(f"    {s} = llvm.sext %arg{base} : i32 to i64")
-                operands.append(s); optys.append("i64")
+                operands.append(s)
+                optys.append("i64")
             uid += 1
         # Forward the host's ctx handle (i64 %arg0) so sibling program_id() works.
         # Sibling uses spine_grid(ctx, axis) for program_id, not explicit grid args.
-        operands.append("%arg0"); optys.append("i64")
+        operands.append("%arg0")
+        optys.append("i64")
         argstr = ", ".join(operands)
         tystr = ", ".join(optys)
         lines.append(f"    llvm.call @{callee}({argstr}) : ({tystr}) -> ()")
