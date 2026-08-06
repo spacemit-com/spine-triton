@@ -36,10 +36,10 @@ class LLVMDirectTextCodegen:
     """Walk a @spine_raw fn and emit a top-level `llvm.func` module as text."""
 
     def __init__(self, sibling_abi: bool = False) -> None:
-        self._ssa = 0            # %0, %1, ... counter
-        self._blk = 0            # ^bb0, ^bb1, ... counter
+        self._ssa = 0  # %0, %1, ... counter
+        self._blk = 0  # ^bb0, ^bb1, ... counter
         self._lines: list[str] = []
-        self._env: dict[str, str] = {}   # py var -> SSA name (e.g. "%3")
+        self._env: dict[str, str] = {}  # py var -> SSA name (e.g. "%3")
         self._types: dict[str, str] = {}  # SSA name -> mlir type
         self._desc_cache: dict[str, str] = {}  # pyname -> loaded-descriptor SSA
         self._arch = '0xA064'
@@ -91,12 +91,11 @@ class LLVMDirectTextCodegen:
         params = _parse_signature(fn)
         self._params = params  # Store for program_id computation
         src = textwrap.dedent(inspect.getsource(fn))
-        func_node = next(n for n in ast.walk(ast.parse(src))
-                         if isinstance(n, ast.FunctionDef))
+        func_node = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef))
 
         # --- signature: memref -> (i64 rank, !llvm.ptr); scalar -> i64;
         #     then 6 trailing i32 (gridX/Y/Z, progX/Y/Z, per driver ABI) ---
-        self._mem_ptr: dict[str, str] = {}   # pyname -> !llvm.ptr arg holding descriptor addr
+        self._mem_ptr: dict[str, str] = {}  # pyname -> !llvm.ptr arg holding descriptor addr
         self._mem_dtype: dict[str, str] = {}  # pyname -> element dtype (f16/f32)
         sig: list[str] = []
         ai = 0
@@ -163,9 +162,13 @@ class LLVMDirectTextCodegen:
         iv_name = node.target.id
         rargs = node.iter.args
         if len(rargs) == 1:
-            lb = self._const_i64(0); ub, _ = self._gen_expr(rargs[0]); step = self._const_i64(1)
+            lb = self._const_i64(0)
+            ub, _ = self._gen_expr(rargs[0])
+            step = self._const_i64(1)
         else:
-            lb, _ = self._gen_expr(rargs[0]); ub, _ = self._gen_expr(rargs[1]); step, _ = self._gen_expr(rargs[2])
+            lb, _ = self._gen_expr(rargs[0])
+            ub, _ = self._gen_expr(rargs[1])
+            step, _ = self._gen_expr(rargs[2])
 
         # iter-args: vars defined before the loop and reassigned inside it
         outer = set(self._env)
@@ -184,10 +187,12 @@ class LLVMDirectTextCodegen:
         self._emit(f"llvm.br {hdr}({init_vals} : {init_tys})")
 
         # header block: bind iv + iter-arg block args, test, cond_br
-        iv_ssa = self._fresh(); self._types[iv_ssa] = "i64"
+        iv_ssa = self._fresh()
+        self._types[iv_ssa] = "i64"
         ia_hdr = [(v, self._fresh(), ty) for v, (_, _, ty) in zip(reassigned, ia_init)]
         for v, s, ty in ia_hdr:
-            self._env[v] = s; self._types[s] = ty
+            self._env[v] = s
+            self._types[s] = ty
         self._env[iv_name] = iv_ssa
         hargs = ", ".join([f"{iv_ssa}: i64"] + [f"{s}: {ty}" for _, s, ty in ia_hdr])
         self._emit_label(f"{hdr}({hargs}):")
@@ -205,7 +210,8 @@ class LLVMDirectTextCodegen:
         # exit block: iter-args live on as their header block-arg values
         self._emit_label(f"{exit_}:")
         for v, s, ty in ia_hdr:
-            self._env[v] = s; self._types[s] = ty
+            self._env[v] = s
+            self._types[s] = ty
 
     # ------------------------------------------------------------------
     # Expressions -> (ssa_name, mlir_type)
@@ -289,8 +295,7 @@ class LLVMDirectTextCodegen:
         import re
         m = re.search(r'x([a-z0-9]+)>', typ)  # vector<[4]xf16> -> f16
         elem = m.group(1) if m else typ
-        bits = {"f16": 16, "bf16": 16, "f32": 32, "f64": 64,
-                "i8": 8, "i16": 16, "i32": 32, "i64": 64}.get(elem, 8)
+        bits = {"f16": 16, "bf16": 16, "f32": 32, "f64": 64, "i8": 8, "i16": 16, "i32": 32, "i64": 64}.get(elem, 8)
         return bits // 8
 
     def _p_llvm_size(self, node):
@@ -301,10 +306,9 @@ class LLVMDirectTextCodegen:
         size to read. Pass shape info as an explicit scalar kernel parameter
         (e.g. K: tle.index) and use that for loop bounds instead.
         """
-        raise NotImplementedError(
-            "llvm-direct: llvm_size is unavailable — the driver ABI passes rank-0 "
-            "memref descriptors with no shape. Pass sizes as scalar params "
-            "(e.g. K: tle.index) and use them for loop bounds.")
+        raise NotImplementedError("llvm-direct: llvm_size is unavailable — the driver ABI passes rank-0 "
+                                  "memref descriptors with no shape. Pass sizes as scalar params "
+                                  "(e.g. K: tle.index) and use them for loop bounds.")
 
     def _p_program_id(self, node):
         """program_id(axis) -> i64 index of this program along `axis`.
@@ -326,17 +330,14 @@ class LLVMDirectTextCodegen:
         if self._sibling_abi:
             ctx = getattr(self, "_ctx_arg", None)
             if ctx is None:
-                raise RuntimeError(
-                    "program_id in sibling mode requires a ctx arg; "
-                    "emit_llvm_func_for_inline must set codegen._ctx_arg.")
+                raise RuntimeError("program_id in sibling mode requires a ctx arg; "
+                                   "emit_llvm_func_for_inline must set codegen._ctx_arg.")
             ax = self._def(f"llvm.mlir.constant({axis} : i64) : i64", "i64")
-            pid_i64 = self._def(
-                f"llvm.call @spine_grid({ctx}, {ax}) : (i64, i64) -> i64", "i64")
+            pid_i64 = self._def(f"llvm.call @spine_grid({ctx}, {ax}) : (i64, i64) -> i64", "i64")
             return pid_i64, "i64"
 
         # Standalone module ABI: memref=2 args, scalar=1 arg; grid i32 trails.
-        n_user_args = sum(2 if p[1].mlir_type.startswith("memref") else 1
-                          for p in self._params)
+        n_user_args = sum(2 if p[1].mlir_type.startswith("memref") else 1 for p in self._params)
         prog_ssa = f"%arg{n_user_args + axis}"
         pid_i64 = self._def(f"llvm.sext {prog_ssa} : i32 to i64", "i64")
         return pid_i64, "i64"
@@ -412,8 +413,7 @@ def emit_llvm_func_for_inline(fn) -> tuple[str, list[str]]:
     params = _parse_signature(fn)
     codegen._params = params
     src = textwrap.dedent(inspect.getsource(fn))
-    func_node = next(n for n in ast.walk(ast.parse(src))
-                     if isinstance(n, ast.FunctionDef))
+    func_node = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef))
 
     # Sibling ABI (called from func.func, see test_manual_mixed_ir.py):
     #   memref param → single i64 (aligned data ptr, cast from index by host)

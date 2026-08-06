@@ -16,17 +16,18 @@ import time
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 
 # fused single-launch host (stage1 svector → stage2/3 call_intrinsic bridges)
-from test_raw_mv_three_stage import _mv_fused_host, _mv_fused_host_par, _ALPHA, _BETA
+from test_raw_mv_three_stage import _mv_fused_host, _mv_fused_host_par
 # svector baselines (multi-core parallel, program_id-strided)
 from test_raw_mv_svector import _mv_sv_host_style2, _mv_sv_host_style3
 
 _SHAPES = [(8, 64), (64, 512), (128, 256),
            # large shapes: compute should dominate the ~125us launch-overhead floor
            (256, 1024), (512, 1024), (1024, 1024), (512, 2048), (1024, 4096)]
-_BLOCKS = [4, 8, 16, 32, 64, 128]   # swept per shape; must be multiple of 4 (inner 4-row group)
+_BLOCKS = [4, 8, 16, 32, 64, 128]  # swept per shape; must be multiple of 4 (inner 4-row group)
 
 
 def _measure_fused(N, K, iters=50, warmup=5):
@@ -38,10 +39,10 @@ def _measure_fused(N, K, iters=50, warmup=5):
     out = torch.zeros(Np, dtype=torch.float32)
     args = (Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, out, K, N)
     for _ in range(warmup):
-        _mv_fused_host[(1,)](*args)
+        _mv_fused_host[(1, )](*args)
     t0 = time.perf_counter()
     for _ in range(iters):
-        _mv_fused_host[(1,)](*args)
+        _mv_fused_host[(1, )](*args)
     return (time.perf_counter() - t0) / iters
 
 
@@ -57,7 +58,7 @@ def _measure_fused_par(N, K, BLK, iters=50, warmup=5):
     scores = torch.zeros(Np, dtype=torch.float32)
     out = torch.zeros(Np, dtype=torch.float32)
     args = (Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, out, K, N, BLK)
-    grid = (Np // BLK,)
+    grid = (Np // BLK, )
     for _ in range(warmup):
         _mv_fused_host_par[grid](*args)
     t0 = time.perf_counter()
@@ -87,7 +88,7 @@ def _measure_svector(host, N, K, BLOCK, iters=50, warmup=5):
     B = torch.randn(N, K, dtype=torch.float16)
     A = torch.randn(K, dtype=torch.float16)
     C = torch.empty(Np, dtype=torch.float32)
-    grid = (Np // BLOCK,)
+    grid = (Np // BLOCK, )
     args = (B.contiguous().reshape(-1), A.contiguous(), C, K, N)
     for _ in range(warmup):
         host[grid](*args, BLOCK=BLOCK)
@@ -112,8 +113,9 @@ def _best_svector(host, N, K):
 if __name__ == "__main__":
     print("=== fused_par (BLK-swept best) vs svector style2/style3 (BLOCK-swept best) ===")
     print("(also shows fused grid=1 baseline for reference)")
-    print(f"{'N':>4} {'K':>5} | {'par_us':>8} {'b':>3} | {'g1_us':>8} | {'sv2_us':>8} {'b':>3} | {'sv3_us':>8} {'b':>3} "
-          f"| {'par/sv2':>8} {'par/sv3':>8}")
+    print(
+        f"{'N':>4} {'K':>5} | {'par_us':>8} {'b':>3} | {'g1_us':>8} | {'sv2_us':>8} {'b':>3} | {'sv3_us':>8} {'b':>3} "
+        f"| {'par/sv2':>8} {'par/sv3':>8}")
     for N, K in _SHAPES:
         try:
             tp, bp = _best_fused_par(N, K)
@@ -123,8 +125,9 @@ if __name__ == "__main__":
             # speedup >1.0 means parallel fused faster than svector
             sp2 = t2 / tp if tp > 0 else 0.0
             sp3 = t3 / tp if tp > 0 else 0.0
-            print(f"{N:>4} {K:>5} | {tp*1e6:8.1f} {str(bp):>3} | {tf*1e6:8.1f} | {t2*1e6:8.1f} {b2:>3} | {t3*1e6:8.1f} {b3:>3} "
-                  f"| {sp2:8.2f} {sp3:8.2f}")
+            print(
+                f"{N:>4} {K:>5} | {tp*1e6:8.1f} {str(bp):>3} | {tf*1e6:8.1f} | {t2*1e6:8.1f} {b2:>3} | {t3*1e6:8.1f} {b3:>3} "
+                f"| {sp2:8.2f} {sp3:8.2f}")
         except Exception as e:
             print(f"{N:>4} {K:>5} | FAIL: {type(e).__name__}: {str(e)[:120]}")
     print("par/sv >1.0 = parallel fused faster than svector; <1.0 = svector faster")

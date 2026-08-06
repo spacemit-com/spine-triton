@@ -23,7 +23,7 @@ class SpineLinalgJITFunction:
 
     def __init__(self, fn: Callable) -> None:
         self._fn = fn
-        self._body_builder_cache = None   # (param_type_strs, body_builder) | None
+        self._body_builder_cache = None  # (param_type_strs, body_builder) | None
         self.__triton_builtin__ = True
         # LLVM-direct: mark functions using only llvm_* primitives for direct llvm.func emission
         self._llvm_direct = self._detect_llvm_direct(fn)

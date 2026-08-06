@@ -157,8 +157,7 @@ def call(fn, outputs=None, inputs=None, _semantic=None):
         # llvm.return (all bridges last), forbidding svector-after-bridge.
         bridge_idx = len(_PENDING_LLVM_DIRECT_MODULE["llvm_calls"]) - 1
         anchor_name = f"__spine_bridge_pt_{bridge_idx}"
-        builder.create_tle_dsl_region_direct(
-            anchor_name, [], [], lambda b, ba: None)
+        builder.create_tle_dsl_region_direct(anchor_name, [], [], lambda b, ba: None)
         return  # sibling llvm.func text recorded; anchor marks the call site
 
     # Normal path

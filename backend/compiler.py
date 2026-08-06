@@ -79,10 +79,12 @@ def _host_func_arg_types(linalgdir: str, func_name: str) -> list[str]:
         elif c == '(': par += 1
         elif c == ')':
             if par == 0:
-                args.append(linalgdir[start:i]); break
+                args.append(linalgdir[start:i])
+                break
             par -= 1
         elif c == ',' and ang == cur == par == 0:
-            args.append(linalgdir[start:i]); start = i + 1
+            args.append(linalgdir[start:i])
+            start = i + 1
         i += 1
     types = []
     for a in args:
@@ -121,8 +123,7 @@ def _ttir_pos_to_ll_argidx(host_arg_types):
     return starts, is_mem
 
 
-def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_types,
-                              llvm_funcs, llvm_calls) -> str:
+def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_types, llvm_funcs, llvm_calls) -> str:
     """Graft llvm.func siblings + host→sibling bridge into the LOWERED ll.mlir.
 
     Done post-lowering (uniform llvm dialect) so spine-opt never sees llvm ops
@@ -172,19 +173,24 @@ def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_types,
             base = ll_start[pos]
             if kind == "ptr":
                 desc_ptr = f"%arg{base + 1}"  # (rank=base, desc ptr=base+1)
-                d = f"%mix{uid}_d"; p = f"%mix{uid}_p"; i = f"%mix{uid}_i"
+                d = f"%mix{uid}_d"
+                p = f"%mix{uid}_p"
+                i = f"%mix{uid}_i"
                 lines.append(f"    {d} = llvm.load {desc_ptr} : !llvm.ptr -> {_LL_DESC}")
                 lines.append(f"    {p} = llvm.extractvalue {d}[1] : {_LL_DESC}")
                 lines.append(f"    {i} = llvm.ptrtoint {p} : !llvm.ptr to i64")
-                operands.append(i); optys.append("i64")
+                operands.append(i)
+                optys.append("i64")
             else:  # scalar: host passes it as i32 → sext to i64
                 s = f"%mix{uid}_s"
                 lines.append(f"    {s} = llvm.sext %arg{base} : i32 to i64")
-                operands.append(s); optys.append("i64")
+                operands.append(s)
+                optys.append("i64")
             uid += 1
         # Forward the host's ctx (%arg0) as the sibling's trailing i64 ctx arg so
         # tle.program_id resolves via spine_grid(ctx, axis) inside the sibling.
-        operands.append(ctx_arg); optys.append("i64")
+        operands.append(ctx_arg)
+        optys.append("i64")
         argstr = ", ".join(operands)
         tystr = ", ".join(optys)
         lines.append(f"    llvm.call @{callee}({argstr}) : ({tystr}) -> ()")
@@ -198,15 +204,13 @@ def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_types,
     anchors_replaced = 0
     for n, lines in enumerate(per_spec_bridges):
         anchor = f"__spine_bridge_pt_{n}"
-        m = re.search(rf"^[ \t]*llvm\.call @{re.escape(anchor)}\(\)[^\n]*$",
-                      out, re.MULTILINE)
+        m = re.search(rf"^[ \t]*llvm\.call @{re.escape(anchor)}\(\)[^\n]*$", out, re.MULTILINE)
         if m is None:
             continue
         out = out[:m.start()] + "\n".join(lines) + out[m.end():]
         # Drop the private no-arg stub: `llvm.func @anchor() { llvm.return }`.
-        out = re.sub(
-            rf"\n[ \t]*llvm\.func[^\n]*@{re.escape(anchor)}\(\)[^\n]*\{{[^}}]*?llvm\.return[^}}]*?\}}",
-            "", out, count=1, flags=re.DOTALL)
+        out = re.sub(rf"\n[ \t]*llvm\.func[^\n]*@{re.escape(anchor)}\(\)[^\n]*\{{[^}}]*?llvm\.return[^}}]*?\}}", "",
+                     out, count=1, flags=re.DOTALL)
         anchors_replaced += 1
 
     if anchors_replaced == 0:
@@ -294,9 +298,8 @@ def _spine_mlir_linalgdir_to_llir(linalgdir: str, metadata):
         # re-run path and the direct mlir-translate path see the injected module.
         if "mixed_llvm_funcs" in metadata and "mixed_llvm_calls" in metadata:
             _ll = Path(llmlir_path).read_text()
-            _ll = _inject_mixed_llvm_llmlir(
-                _ll, metadata["name"], metadata["mixed_host_arg_types"],
-                metadata["mixed_llvm_funcs"], metadata["mixed_llvm_calls"])
+            _ll = _inject_mixed_llvm_llmlir(_ll, metadata["name"], metadata["mixed_host_arg_types"],
+                                            metadata["mixed_llvm_funcs"], metadata["mixed_llvm_calls"])
             Path(llmlir_path).write_text(_ll)
 
         dump_ir_if_needed([llmlir_path], metadata["name"])
@@ -574,8 +577,7 @@ class CPUBackend(BaseBackend):
         # llvm dialect with memrefs already descriptors, so the llvm.call + sibling
         # splice is legal. Independent of llvm_direct_module (unset in mixed).
         try:
-            from triton.language.extra.spine_raw.call_registry import (
-                take_pending_llvm_funcs, take_pending_llvm_calls)
+            from triton.language.extra.spine_raw.call_registry import (take_pending_llvm_funcs, take_pending_llvm_calls)
             _mixed_funcs = take_pending_llvm_funcs()
             _mixed_calls = take_pending_llvm_calls()
             if _mixed_funcs and _mixed_calls:
@@ -611,8 +613,7 @@ class CPUBackend(BaseBackend):
             # to map each TTIR arg position → its (i64 rank, !llvm.ptr) descriptor
             # slot in the lowered host signature.
             if "mixed_llvm_calls" in metadata:
-                metadata["mixed_host_arg_types"] = _host_func_arg_types(
-                    linalgdir, metadata["name"])
+                metadata["mixed_host_arg_types"] = _host_func_arg_types(linalgdir, metadata["name"])
             return linalgdir
 
         stages["linalgdir"] = _linalgdir_stage
