@@ -57,6 +57,49 @@ def _optimize_linalgdir(linalgdir: str):
     return linalgdir
 
 
+def _host_func_arg_types(linalgdir: str, func_name: str) -> list[str]:
+    """Parse the host func.func arg types (in order) from linalgdir text.
+
+    Returns e.g. ["memref<*xf16, #ptr.generic_space>", ..., "i32", ...].
+    Splits the top-level arg list on commas that are NOT nested inside
+    <>/{}/() — MLIR types embed commas (strided<[1], offset: ?>).
+    """
+    m = re.search(rf"func\.func\s+@{re.escape(func_name)}\s*\(", linalgdir)
+    if not m:
+        raise RuntimeError(f"mixed-mode: host func @{func_name} not found in linalgdir")
+    i = m.end()
+    depth, start, args = 1, i, []
+    ang = cur = par = 0
+    while i < len(linalgdir):
+        c = linalgdir[i]
+        if c == '<': ang += 1
+        elif c == '>': ang -= 1
+        elif c == '{': cur += 1
+        elif c == '}': cur -= 1
+        elif c == '(': par += 1
+        elif c == ')':
+            if par == 0:
+                args.append(linalgdir[start:i]); break
+            par -= 1
+        elif c == ',' and ang == cur == par == 0:
+            args.append(linalgdir[start:i]); start = i + 1
+        i += 1
+    types = []
+    for a in args:
+        a = a.strip()
+        if not a:
+            continue
+        # "%argN: TYPE {attrs}" -> TYPE (strip name and trailing attr dict)
+        after = a.split(":", 1)[1].strip()
+        # drop a trailing " {...}" attribute dict at top level
+        if after.endswith("}"):
+            b = after.rfind(" {")
+            if b != -1:
+                after = after[:b].strip()
+        types.append(after)
+    return types
+
+
 # The lowered host memref descriptor: spine-opt lowers each memref<*xT> param
 # to (i64 rank, !llvm.ptr desc), where desc points to a StridedMemRefType
 # {allocated, aligned, offset, sizes[1], strides[1]}. The aligned data ptr is
@@ -76,8 +119,8 @@ def _ttir_pos_to_ll_argidx(host_arg_is_memref: list[bool]):
     return starts
 
 
-def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_is_memref: list[bool], llvm_funcs,
-                              llvm_calls) -> str:
+def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_is_memref: list[bool],
+                              llvm_funcs, llvm_calls) -> str:
     """Graft llvm.func siblings + host→sibling bridge into the LOWERED ll.mlir.
 
     Done post-lowering (uniform llvm dialect) so spine-opt never sees llvm ops
@@ -91,20 +134,12 @@ def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_is_memref: l
     """
     # The new spine-runtime/spert ABI: kernels are marked __require_context__ and
     # spine-opt injects a leading `%arg0: i64` context handle at the ll.mlir layer
-    # (NOT present in the linalg func.func signature that host_arg_is_memref is
-    # derived from). So every lowered arg index is shifted by +1 relative to the
-    # linalg positions. The launcher passes spert::Context* first, then user args,
-    # then the 3 i32 num_programs (gridX/Y/Z).
+    # (NOT present in the linalg func.func signature that host_arg_is_memref is from).
+    # So every lowered arg index is shifted by +1 relative to the linalg positions.
+    # The launcher passes spert::Context* first, then user args.
     _CTX = 1  # leading ctx arg occupies %arg0
     ll_start = _ttir_pos_to_ll_argidx(host_arg_is_memref)
     ll_start = [s + _CTX for s in ll_start]
-    # The host's ctx handle is %arg0 (spine-opt-injected). The sibling has no ctx
-    # of its own, so we forward the host's %arg0 as the sibling's trailing i64 ctx
-    # arg. Inside the sibling, tle.program_id lowers to spine_grid(ctx, axis) — the
-    # same runtime call the host uses for tl.program_id. (Superseding the old
-    # design that forwarded the 3 trailing num_programs i32, which are grid TOTALS
-    # not this program's index → the sibling read out-of-bounds and crashed.)
-    ctx_arg = "%arg0"
 
     # Build each call's bridge lines separately, so each can be dropped at its
     # own positional anchor (svector/bridge interleaving). uid stays globally
@@ -121,24 +156,19 @@ def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_is_memref: l
             base = ll_start[pos]
             if kind == "ptr":
                 desc_ptr = f"%arg{base + 1}"  # (rank=base, desc ptr=base+1)
-                d = f"%mix{uid}_d"
-                p = f"%mix{uid}_p"
-                i = f"%mix{uid}_i"
+                d = f"%mix{uid}_d"; p = f"%mix{uid}_p"; i = f"%mix{uid}_i"
                 lines.append(f"    {d} = llvm.load {desc_ptr} : !llvm.ptr -> {_LL_DESC}")
                 lines.append(f"    {p} = llvm.extractvalue {d}[1] : {_LL_DESC}")
                 lines.append(f"    {i} = llvm.ptrtoint {p} : !llvm.ptr to i64")
-                operands.append(i)
-                optys.append("i64")
+                operands.append(i); optys.append("i64")
             else:  # scalar: host passes it as i32 → sext to i64
                 s = f"%mix{uid}_s"
                 lines.append(f"    {s} = llvm.sext %arg{base} : i32 to i64")
-                operands.append(s)
-                optys.append("i64")
+                operands.append(s); optys.append("i64")
             uid += 1
-        # Forward the host's ctx (%arg0) as the sibling's trailing i64 ctx arg so
-        # tle.program_id resolves via spine_grid(ctx, axis) inside the sibling.
-        operands.append(ctx_arg)
-        optys.append("i64")
+        # Forward the host's ctx handle (i64 %arg0) so sibling program_id() works.
+        # Sibling uses spine_grid(ctx, axis) for program_id, not explicit grid args.
+        operands.append("%arg0"); optys.append("i64")
         argstr = ", ".join(operands)
         tystr = ", ".join(optys)
         lines.append(f"    llvm.call @{callee}({argstr}) : ({tystr}) -> ()")
@@ -152,13 +182,15 @@ def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_is_memref: l
     anchors_replaced = 0
     for n, lines in enumerate(per_spec_bridges):
         anchor = f"__spine_bridge_pt_{n}"
-        m = re.search(rf"^[ \t]*llvm\.call @{re.escape(anchor)}\(\)[^\n]*$", out, re.MULTILINE)
+        m = re.search(rf"^[ \t]*llvm\.call @{re.escape(anchor)}\(\)[^\n]*$",
+                      out, re.MULTILINE)
         if m is None:
             continue
         out = out[:m.start()] + "\n".join(lines) + out[m.end():]
         # Drop the private no-arg stub: `llvm.func @anchor() { llvm.return }`.
-        out = re.sub(rf"\n[ \t]*llvm\.func[^\n]*@{re.escape(anchor)}\(\)[^\n]*\{{[^}}]*?llvm\.return[^}}]*?\}}", "",
-                     out, count=1, flags=re.DOTALL)
+        out = re.sub(
+            rf"\n[ \t]*llvm\.func[^\n]*@{re.escape(anchor)}\(\)[^\n]*\{{[^}}]*?llvm\.return[^}}]*?\}}",
+            "", out, count=1, flags=re.DOTALL)
         anchors_replaced += 1
 
     if anchors_replaced == 0:
@@ -176,16 +208,6 @@ def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_is_memref: l
             raise RuntimeError("mixed-mode: no llvm.return in host func to anchor llvm.call")
         flat = [ln for lines in per_spec_bridges for ln in lines]
         out = out[:ret_m.start()] + "\n".join(flat) + "\n" + out[ret_m.start():]
-
-    # Guarantee the spine_grid declaration exists: siblings may call it for
-    # program_id, and if the host itself never used tl.program_id, spine-opt won't
-    # have emitted the decl. Insert it right after the module header if absent.
-    if "@spine_grid" not in out:
-        hdr_m = re.search(r"^module\b[^\n]*\{[ \t]*$", out, re.MULTILINE)
-        if hdr_m is None:
-            raise RuntimeError("mixed-mode: module header not found to inject spine_grid decl")
-        decl = "\n  llvm.func @spine_grid(i64, i64) -> i64"
-        out = out[:hdr_m.end()] + decl + out[hdr_m.end():]
 
     # Append the sibling llvm.func(s) before the module's closing brace.
     close = out.rfind("}")
@@ -246,8 +268,9 @@ def _spine_mlir_linalgdir_to_llir(linalgdir: str, metadata):
         # re-run path and the direct mlir-translate path see the injected module.
         if "mixed_llvm_funcs" in metadata and "mixed_llvm_calls" in metadata:
             _ll = Path(llmlir_path).read_text()
-            _ll = _inject_mixed_llvm_llmlir(_ll, metadata["name"], metadata["mixed_host_arg_kinds"],
-                                            metadata["mixed_llvm_funcs"], metadata["mixed_llvm_calls"])
+            _ll = _inject_mixed_llvm_llmlir(
+                _ll, metadata["name"], metadata["mixed_host_arg_kinds"],
+                metadata["mixed_llvm_funcs"], metadata["mixed_llvm_calls"])
             Path(llmlir_path).write_text(_ll)
 
         dump_ir_if_needed([llmlir_path], metadata["name"])
@@ -525,15 +548,15 @@ class CPUBackend(BaseBackend):
         # llvm dialect with memrefs already descriptors, so the llvm.call + sibling
         # splice is legal. Independent of llvm_direct_module (unset in mixed).
         try:
-            from triton.language.extra.spine_raw.call_registry import (take_pending_llvm_funcs, take_pending_llvm_calls,
-                                                                       take_pending_host_arg_kinds)
+            from triton.language.extra.spine_raw.call_registry import (
+                take_pending_llvm_funcs, take_pending_llvm_calls, take_pending_host_arg_kinds)
             _mixed_funcs = take_pending_llvm_funcs()
             _mixed_calls = take_pending_llvm_calls()
-            _host_arg_kinds = take_pending_host_arg_kinds()
+            _mixed_arg_kinds = take_pending_host_arg_kinds()
             if _mixed_funcs and _mixed_calls:
                 metadata["mixed_llvm_funcs"] = _mixed_funcs
                 metadata["mixed_llvm_calls"] = _mixed_calls
-                metadata["mixed_host_arg_kinds"] = _host_arg_kinds
+                metadata["mixed_host_arg_kinds"] = _mixed_arg_kinds
         except Exception:
             pass
 
@@ -556,9 +579,9 @@ class CPUBackend(BaseBackend):
             if "llvm_direct_module" in metadata:
                 return metadata["llvm_direct_module"]
             linalgdir = _optimize_linalgdir(_ttir_to_linalgdir(src, metadata))
-            # Mixed mode: host arg kinds (is-memref flags) are already stashed in
-            # metadata["mixed_host_arg_kinds"] by make_ttir (read from TTIR entry-block
-            # arg types), so no text-parsing of func.func signature needed here.
+            # Mixed mode: host_arg_kinds already stashed in metadata by make_ttir
+            # (populated from TTIR entry-block arg types at call() time). No
+            # text-parsing needed here.
             return linalgdir
 
         stages["linalgdir"] = _linalgdir_stage
