@@ -293,12 +293,47 @@ def post_scale_ci_parallel(scores: tle.mem(f32), out: tle.mem(f32, out=True),
         tle.call_intrinsic("llvm.riscv.vse", [r, go, vl], result_type="()")
 
 
+# ── stage 3 (svector, parallel): out[base:bend] = scores[base:bend] * beta ───
+# Pure svector (vload/mul/vstore) tiled variant of post_scale, for the parallel
+# fused host. Unlike post_scale_ci_parallel (call_intrinsic), this needs no
+# program_id inside the body: the HOST computes base/bend from tl.program_id and
+# passes them as plain index params (normal _sr_call allows computed values —
+# only the mixed-mode llvm-direct _sr_call requires host entry-block args). Same
+# multi-core capability, expressed in svector. dtype=f32 required on vload.
+@tle.raw_kernel
+def post_scale_svector_par(scores: tle.mem(f32), out: tle.mem(f32, out=True),
+                           base: tle.index, bend: tle.index):
+    nvl = tle.vconfig(-1, 1)
+    Nfloor = ((bend - base) // nvl) * nvl + base
+    for ni in tle.range(base, Nfloor, nvl):
+        v = tle.vload(scores, ni, dtype=f32)
+        v_s = v * _BETA
+        tle.vstore(out, ni, v_s)
+    for ni in tle.range(Nfloor, bend, nvl):           # tail — distinct SSA names
+        nvl = tle.vconfig(bend - ni, 1)
+        tv = tle.vload(scores, ni, dtype=f32)
+        tv_s = tv * _BETA
+        tle.vstore(out, ni, tv_s)
+
+
 # grid=(N//BLK,): one BLK-row tile per program → multi-core parallel.
 @triton.jit(do_not_specialize=["K", "N", "BLK"])
 def _mv_fused_host_par(Mat, vec, vec_s, scores, out, K, N, BLK):
     _sr_call(pre_scale_svector, outputs=[], inputs=[vec, vec_s, K])
     _sr_call(mv_vfwmacc_ci_parallel, outputs=[], inputs=[Mat, vec_s, scores, K, N, BLK])
     _sr_call(post_scale_ci_parallel, outputs=[], inputs=[scores, out, N, BLK])
+
+
+# Parallel fused host, stage 3 via SVECTOR (not call_intrinsic). host computes
+# base/bend from program_id and passes them as index params to the svector kernel.
+@triton.jit(do_not_specialize=["K", "N", "BLK"])
+def _mv_fused_host_par_sv3(Mat, vec, vec_s, scores, out, K, N, BLK):
+    pid = tl.program_id(0)
+    base = pid * BLK
+    bend = base + BLK
+    _sr_call(pre_scale_svector, outputs=[], inputs=[vec, vec_s, K])
+    _sr_call(mv_vfwmacc_ci_parallel, outputs=[], inputs=[Mat, vec_s, scores, K, N, BLK])
+    _sr_call(post_scale_svector_par, outputs=[], inputs=[scores, out, base, bend])
 
 
 def _run_fused_par_correctness(N, K, BLK=8):
@@ -313,6 +348,28 @@ def _run_fused_par_correctness(N, K, BLK=8):
     out = torch.zeros(Np, dtype=torch.float32)
 
     _mv_fused_host_par[(N // BLK,)](
+        Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, out, K, N, BLK)
+
+    got = out[:N]
+    ref = torch.mv(Mat.float(), (vec.float() * _ALPHA).half().float()) * _BETA
+    max_diff = (got - ref).abs().max().item()
+    assert torch.allclose(got, ref, rtol=1e-2, atol=1e-2), \
+        f"N={N} K={K} max_diff={max_diff:.4e}"
+    return max_diff
+
+
+def _run_fused_par_sv3_correctness(N, K, BLK=8):
+    assert K % 64 == 0 and N % 8 == 0, "fused_par_sv3: K%64==0, N%8==0"
+    assert BLK % 8 == 0 and N % BLK == 0, "fused_par_sv3: BLK%8==0, N%BLK==0"
+    Np = ((N + 7) // 8) * 8
+    torch.manual_seed(0)
+    Mat = torch.randn(N, K, dtype=torch.float16)
+    vec = torch.randn(K, dtype=torch.float16)
+    vec_s = torch.zeros(K, dtype=torch.float16)
+    scores = torch.zeros(Np, dtype=torch.float32)
+    out = torch.zeros(Np, dtype=torch.float32)
+
+    _mv_fused_host_par_sv3[(N // BLK,)](
         Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, out, K, N, BLK)
 
     got = out[:N]
@@ -492,6 +549,26 @@ def _measure_fused_par(N, K, BLK=8, iters=50, warmup=5):
     return (t1 - t0) / iters
 
 
+def _measure_fused_par_sv3(N, K, BLK=8, iters=50, warmup=5):
+    assert BLK % 8 == 0 and N % BLK == 0, "fused_par_sv3: BLK%8==0, N%BLK==0"
+    Np = ((N + 7) // 8) * 8
+    Mat = torch.randn(N, K, dtype=torch.float16)
+    vec = torch.randn(K, dtype=torch.float16)
+    vec_s = torch.zeros(K, dtype=torch.float16)
+    scores = torch.zeros(Np, dtype=torch.float32)
+    out = torch.zeros(Np, dtype=torch.float32)
+    grid = (N // BLK,)
+    for _ in range(warmup):
+        _mv_fused_host_par_sv3[grid](
+            Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, out, K, N, BLK)
+    t0 = time.perf_counter()
+    for _ in range(iters):
+        _mv_fused_host_par_sv3[grid](
+            Mat.contiguous().reshape(-1), vec.contiguous(), vec_s, scores, out, K, N, BLK)
+    t1 = time.perf_counter()
+    return (t1 - t0) / iters
+
+
 def _measure_svector(N, K, BLOCK=4, iters=50, warmup=5):
     Np = ((N + BLOCK - 1) // BLOCK) * BLOCK
     B = torch.randn(N, K, dtype=torch.float16)
@@ -522,6 +599,12 @@ def test_mv_fused_parallel_correctness(N, K):
 def test_mv_fused_svector_after_bridge_correctness(N, K):
     """svector stage 3 placed AFTER the vfwmacc bridge (positional anchor)."""
     _run_fused_sv3_correctness(N, K)
+
+
+@pytest.mark.parametrize("N, K", _SHAPES)
+def test_mv_fused_parallel_sv3_correctness(N, K):
+    """Parallel fused, stage 3 via svector (host-computed base/bend), grid>1."""
+    _run_fused_par_sv3_correctness(N, K)
 
 
 @pytest.mark.parametrize("N, K", _SHAPES)
@@ -557,6 +640,25 @@ def test_mv_fused_sv3_perf_vs_ci(N, K):
     """
     t_ci = _measure_fused(N, K)
     t_sv = _measure_fused_sv3(N, K)
+    gf_ci = 2.0 * N * K / t_ci / 1e9
+    gf_sv = 2.0 * N * K / t_sv / 1e9
+    ratio = t_ci / t_sv
+    print(f"N={N:4d} K={K:4d}  ci_post={t_ci*1e6:8.1f}us ({gf_ci:.2f}GF)  "
+          f"sv_post={t_sv*1e6:8.1f}us ({gf_sv:.2f}GF)  ratio={ratio:.3f}x")
+
+
+@pytest.mark.parametrize("N, K", _SHAPES)
+def test_mv_fused_parallel_sv3_perf_vs_ci(N, K):
+    """Parallel (grid>1) post_scale: svector vs call_intrinsic.
+
+    fused_par (ci post)  : svector pre + bridge mv + call_intrinsic post
+    fused_par_sv3 (sv post) : svector pre + bridge mv + svector post
+
+    Both multi-core; only the stage-3 implementation differs.
+    """
+    BLK = 8
+    t_ci = _measure_fused_par(N, K, BLK=BLK)
+    t_sv = _measure_fused_par_sv3(N, K, BLK=BLK)
     gf_ci = 2.0 * N * K / t_ci / 1e9
     gf_sv = 2.0 * N * K / t_sv / 1e9
     ratio = t_ci / t_sv

@@ -134,17 +134,28 @@ def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_types,
     Then `llvm.call @callee(...) : (i64,...) -> ()` before the host llvm.return.
     Validated by mlir-translate on real gemv ll.mlir + emit_llvm_func_for_inline.
     """
+    # The new spine-runtime/spert ABI: kernels are marked __require_context__ and
+    # spine-opt injects a leading `%arg0: i64` context handle at the ll.mlir layer
+    # (NOT present in the linalg func.func signature that host_arg_types is parsed
+    # from). So every lowered arg index is shifted by +1 relative to the linalg
+    # positions. The launcher passes spert::Context* first, then user args, then
+    # the 3 i32 num_programs (gridX/Y/Z).
+    _CTX = 1  # leading ctx arg occupies %arg0
     ll_start, _is_mem = _ttir_pos_to_ll_argidx(host_arg_types)
-    # The 6 grid args (gridX/Y/Z, progX/Y/Z) are the LAST 6 lowered params of the
-    # host llvm.func. triton-to-linalg already materializes them as explicit
-    # trailing i32 scalar params in the func.func signature, so host_arg_types
-    # ALREADY includes them — the total lowered width counts past them. Hence the
-    # grid block sits at [total-6, total-1], not appended after. (Verified from a
-    # dumped _mv_fused_host_par ll.mlir: 5 memref pairs + K,N + grid at %arg12-17.)
-    n_ll_total = 0
+    ll_start = [s + _CTX for s in ll_start]
+    # 3 trailing i32 grid args (num_programs gridX/Y/Z) are the LAST 3 lowered
+    # params. Total lowered width = ctx + sum(user args). K/N are separate user
+    # scalars bridged as sibling i64 data params, so they are NOT in the grid block.
+    n_ll_total = _CTX
     for t in host_arg_types:
         n_ll_total += 2 if t.strip().startswith("memref") else 1
-    grid_args = [f"%arg{n_ll_total - 6 + k}" for k in range(6)]
+    # The host's ctx handle is %arg0 (spine-opt-injected). The sibling has no ctx
+    # of its own, so we forward the host's %arg0 as the sibling's trailing i64 ctx
+    # arg. Inside the sibling, tle.program_id lowers to spine_grid(ctx, axis) — the
+    # same runtime call the host uses for tl.program_id. (Superseding the old
+    # design that forwarded the 3 trailing num_programs i32, which are grid TOTALS
+    # not this program's index → the sibling read out-of-bounds and crashed.)
+    ctx_arg = "%arg0"
 
     # Build each call's bridge lines separately, so each can be dropped at its
     # own positional anchor (svector/bridge interleaving). uid stays globally
@@ -171,9 +182,9 @@ def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_types,
                 lines.append(f"    {s} = llvm.sext %arg{base} : i32 to i64")
                 operands.append(s); optys.append("i64")
             uid += 1
-        # Forward the host's 6 grid args (i32) so sibling program_id() works.
-        for g in grid_args:
-            operands.append(g); optys.append("i32")
+        # Forward the host's ctx (%arg0) as the sibling's trailing i64 ctx arg so
+        # tle.program_id resolves via spine_grid(ctx, axis) inside the sibling.
+        operands.append(ctx_arg); optys.append("i64")
         argstr = ", ".join(operands)
         tystr = ", ".join(optys)
         lines.append(f"    llvm.call @{callee}({argstr}) : ({tystr}) -> ()")
@@ -213,6 +224,16 @@ def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_types,
             raise RuntimeError("mixed-mode: no llvm.return in host func to anchor llvm.call")
         flat = [ln for lines in per_spec_bridges for ln in lines]
         out = out[:ret_m.start()] + "\n".join(flat) + "\n" + out[ret_m.start():]
+
+    # Guarantee the spine_grid declaration exists: siblings may call it for
+    # program_id, and if the host itself never used tl.program_id, spine-opt won't
+    # have emitted the decl. Insert it right after the module header if absent.
+    if "@spine_grid" not in out:
+        hdr_m = re.search(r"^module\b[^\n]*\{[ \t]*$", out, re.MULTILINE)
+        if hdr_m is None:
+            raise RuntimeError("mixed-mode: module header not found to inject spine_grid decl")
+        decl = "\n  llvm.func @spine_grid(i64, i64) -> i64"
+        out = out[:hdr_m.end()] + decl + out[hdr_m.end():]
 
     # Append the sibling llvm.func(s) before the module's closing brace.
     close = out.rfind("}")

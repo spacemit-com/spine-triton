@@ -36,10 +36,10 @@ class LLVMDirectTextCodegen:
     """Walk a @spine_raw fn and emit a top-level `llvm.func` module as text."""
 
     def __init__(self, sibling_abi: bool = False) -> None:
-        self._ssa = 0  # %0, %1, ... counter
-        self._blk = 0  # ^bb0, ^bb1, ... counter
+        self._ssa = 0            # %0, %1, ... counter
+        self._blk = 0            # ^bb0, ^bb1, ... counter
         self._lines: list[str] = []
-        self._env: dict[str, str] = {}  # py var -> SSA name (e.g. "%3")
+        self._env: dict[str, str] = {}   # py var -> SSA name (e.g. "%3")
         self._types: dict[str, str] = {}  # SSA name -> mlir type
         self._desc_cache: dict[str, str] = {}  # pyname -> loaded-descriptor SSA
         self._arch = '0xA064'
@@ -91,11 +91,12 @@ class LLVMDirectTextCodegen:
         params = _parse_signature(fn)
         self._params = params  # Store for program_id computation
         src = textwrap.dedent(inspect.getsource(fn))
-        func_node = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef))
+        func_node = next(n for n in ast.walk(ast.parse(src))
+                         if isinstance(n, ast.FunctionDef))
 
         # --- signature: memref -> (i64 rank, !llvm.ptr); scalar -> i64;
         #     then 6 trailing i32 (gridX/Y/Z, progX/Y/Z, per driver ABI) ---
-        self._mem_ptr: dict[str, str] = {}  # pyname -> !llvm.ptr arg holding descriptor addr
+        self._mem_ptr: dict[str, str] = {}   # pyname -> !llvm.ptr arg holding descriptor addr
         self._mem_dtype: dict[str, str] = {}  # pyname -> element dtype (f16/f32)
         sig: list[str] = []
         ai = 0
@@ -112,7 +113,7 @@ class LLVMDirectTextCodegen:
                 self._env[pname] = a
                 self._types[a] = "i64"
                 ai += 1
-        for _ in range(6):  # gridX,gridY,gridZ, progX,progY,progZ
+        for _ in range(3):  # num_programs gridX,gridY,gridZ (new spert ABI)
             sig.append(f"%arg{ai}: i32")
             ai += 1
 
@@ -138,8 +139,7 @@ class LLVMDirectTextCodegen:
     # ------------------------------------------------------------------
     def _gen_stmt(self, node) -> None:
         if isinstance(node, ast.Assign):
-            if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
-                raise NotImplementedError(f"llvm-direct: only single-name assignment supported, got {ast.dump(node)}")
+            assert len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
             ssa, typ = self._gen_expr(node.value)
             self._env[node.targets[0].id] = ssa
             self._types[ssa] = typ
@@ -163,13 +163,9 @@ class LLVMDirectTextCodegen:
         iv_name = node.target.id
         rargs = node.iter.args
         if len(rargs) == 1:
-            lb = self._const_i64(0)
-            ub, _ = self._gen_expr(rargs[0])
-            step = self._const_i64(1)
+            lb = self._const_i64(0); ub, _ = self._gen_expr(rargs[0]); step = self._const_i64(1)
         else:
-            lb, _ = self._gen_expr(rargs[0])
-            ub, _ = self._gen_expr(rargs[1])
-            step, _ = self._gen_expr(rargs[2])
+            lb, _ = self._gen_expr(rargs[0]); ub, _ = self._gen_expr(rargs[1]); step, _ = self._gen_expr(rargs[2])
 
         # iter-args: vars defined before the loop and reassigned inside it
         outer = set(self._env)
@@ -188,12 +184,10 @@ class LLVMDirectTextCodegen:
         self._emit(f"llvm.br {hdr}({init_vals} : {init_tys})")
 
         # header block: bind iv + iter-arg block args, test, cond_br
-        iv_ssa = self._fresh()
-        self._types[iv_ssa] = "i64"
+        iv_ssa = self._fresh(); self._types[iv_ssa] = "i64"
         ia_hdr = [(v, self._fresh(), ty) for v, (_, _, ty) in zip(reassigned, ia_init)]
         for v, s, ty in ia_hdr:
-            self._env[v] = s
-            self._types[s] = ty
+            self._env[v] = s; self._types[s] = ty
         self._env[iv_name] = iv_ssa
         hargs = ", ".join([f"{iv_ssa}: i64"] + [f"{s}: {ty}" for _, s, ty in ia_hdr])
         self._emit_label(f"{hdr}({hargs}):")
@@ -211,8 +205,7 @@ class LLVMDirectTextCodegen:
         # exit block: iter-args live on as their header block-arg values
         self._emit_label(f"{exit_}:")
         for v, s, ty in ia_hdr:
-            self._env[v] = s
-            self._types[s] = ty
+            self._env[v] = s; self._types[s] = ty
 
     # ------------------------------------------------------------------
     # Expressions -> (ssa_name, mlir_type)
@@ -308,34 +301,43 @@ class LLVMDirectTextCodegen:
         size to read. Pass shape info as an explicit scalar kernel parameter
         (e.g. K: tle.index) and use that for loop bounds instead.
         """
-        raise NotImplementedError("llvm-direct: llvm_size is unavailable — the driver ABI passes rank-0 "
-                                  "memref descriptors with no shape. Pass sizes as scalar params "
-                                  "(e.g. K: tle.index) and use them for loop bounds.")
+        raise NotImplementedError(
+            "llvm-direct: llvm_size is unavailable — the driver ABI passes rank-0 "
+            "memref descriptors with no shape. Pass sizes as scalar params "
+            "(e.g. K: tle.index) and use them for loop bounds.")
 
     def _p_program_id(self, node):
-        """program_id(axis) -> i64 index of current program in the grid.
+        """program_id(axis) -> i64 index of this program along `axis`.
 
-        The driver ABI passes 6 trailing i32 args: gridX/Y/Z, progX/Y/Z.
-        program_id(0) -> progX, program_id(1) -> progY, program_id(2) -> progZ.
-        These are at indices [N, N+1, ..., N+5] where N = len(user params).
-        Grid args start at arg index N+3 (after gridX/Y/Z).
+        Sibling ABI (mixed mode): resolved at runtime via spine_grid(ctx, axis),
+        the SAME lowering the host uses for tl.program_id (verified from a dumped
+        _mv_sv_host_style2 ll.mlir: `%p = llvm.call @spine_grid(%arg0, %axis)`).
+        The ctx handle is the trailing i64 arg the host bridge forwards (%arg0 of
+        the host). Requires `llvm.func @spine_grid(i64, i64) -> i64` in the module;
+        compiler._inject_mixed_llvm_llmlir guarantees the declaration is present.
+
+        Standalone-module ABI (emit_module, no ctx): falls back to the trailing
+        i32 grid arg (legacy single-module path, not multi-core mixed mode).
         """
         axis = node.args[0].value
         if axis not in (0, 1, 2):
             raise ValueError(f"program_id axis must be 0, 1, or 2; got {axis}")
 
         if self._sibling_abi:
-            raise NotImplementedError("program_id is not available in sibling ABI mode "
-                                      "(no trailing grid/prog args are passed)")
+            ctx = getattr(self, "_ctx_arg", None)
+            if ctx is None:
+                raise RuntimeError(
+                    "program_id in sibling mode requires a ctx arg; "
+                    "emit_llvm_func_for_inline must set codegen._ctx_arg.")
+            ax = self._def(f"llvm.mlir.constant({axis} : i64) : i64", "i64")
+            pid_i64 = self._def(
+                f"llvm.call @spine_grid({ctx}, {ax}) : (i64, i64) -> i64", "i64")
+            return pid_i64, "i64"
 
-        # Count user params to find where grid/prog args start
-        # Each memref param takes 2 args (i64 rank, !llvm.ptr), scalar takes 1 (i64)
-        n_user_args = sum(2 if p[1].mlir_type.startswith("memref") else 1 for p in self._params)
-        # Trailing 6 args: gridX/Y/Z (indices n_user_args+0/1/2), progX/Y/Z (indices n_user_args+3/4/5)
-        prog_arg_idx = n_user_args + 3 + axis  # progX at +3, progY at +4, progZ at +5
-
-        prog_ssa = f"%arg{prog_arg_idx}"
-        # Driver passes as i32, need to extend to i64 for arithmetic
+        # Standalone module ABI: memref=2 args, scalar=1 arg; grid i32 trails.
+        n_user_args = sum(2 if p[1].mlir_type.startswith("memref") else 1
+                          for p in self._params)
+        prog_ssa = f"%arg{n_user_args + axis}"
         pid_i64 = self._def(f"llvm.sext {prog_ssa} : i32 to i64", "i64")
         return pid_i64, "i64"
 
@@ -379,9 +381,13 @@ class LLVMDirectTextCodegen:
             sig = f"({', '.join(tys)}) -> {rt}"
             call = f'llvm.call_intrinsic "{intrin}"({", ".join(ops)}) : {sig}'
         else:
-            # Plain LLVM op: emit directly as "llvm.fadd %0, %1 : vector<[8]xf32>"
-            # For binary ops, signature is just the result type (operands already typed)
-            call = f'{intrin} {", ".join(ops)} : {rt}'
+            # Plain LLVM op: emit directly.
+            # For ops with a result (llvm.fadd etc.): "llvm.fadd %0, %1 : vector<[8]xf32>"
+            # For void ops (llvm.store): "llvm.store %val, %ptr : f32, !llvm.ptr"
+            if rt == "()":
+                call = f'{intrin} {", ".join(ops)} : {", ".join(tys)}'
+            else:
+                call = f'{intrin} {", ".join(ops)} : {rt}'
 
         if rt == "()":
             self._emit(call)
@@ -400,19 +406,20 @@ def emit_llvm_func_for_inline(fn) -> tuple[str, list[str]]:
         (func_text, param_types) where:
         - func_text is the complete llvm.func definition (no module wrapper)
         - param_types is a list of MLIR type strings for the call site
-          Format: ["i64", "i64", ...] (each param, whether memref or scalar,
-          arrives as a single i64 in sibling ABI)
+          Format: ["i64", "!llvm.ptr", "i64", ...] (memref→i64+ptr, scalar→i64)
     """
     codegen = LLVMDirectTextCodegen(sibling_abi=True)
     params = _parse_signature(fn)
     codegen._params = params
     src = textwrap.dedent(inspect.getsource(fn))
-    func_node = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef))
+    func_node = next(n for n in ast.walk(ast.parse(src))
+                     if isinstance(n, ast.FunctionDef))
 
     # Sibling ABI (called from func.func, see test_manual_mixed_ir.py):
     #   memref param → single i64 (aligned data ptr, cast from index by host)
     #   scalar param → single i64
-    # No 6 trailing grid args. base_ptr recovered via llvm.inttoptr inside body.
+    #   + one trailing ctx i64 (for program_id via spine_grid; see below).
+    # base_ptr recovered via llvm.inttoptr inside body.
     codegen._mem_ptr: dict[str, str] = {}
     codegen._mem_dtype: dict[str, str] = {}
     sig: list[str] = []
@@ -431,13 +438,16 @@ def emit_llvm_func_for_inline(fn) -> tuple[str, list[str]]:
             codegen._types[a] = "i64"
         ai += 1
 
-    # 6 trailing i32 grid args (gridX/Y/Z, progX/Y/Z), mirroring the driver ABI
-    # and emit_module. The host bridge forwards its own grid args here so
-    # tle.program_id(axis) works inside a mixed-mode sibling (multi-core grid>1).
-    # program_id reads %arg{n_user_args+3+axis} (see _p_program_id).
-    for _ in range(6):
-        sig.append(f"%arg{ai}: i32")
-        ai += 1
+    # Trailing ctx handle (i64), appended after the user args. A sibling llvm.func
+    # has no spine-opt-injected %arg0 ctx of its own, so the host bridge
+    # (compiler._inject_mixed_llvm_llmlir) forwards the host's own ctx (%arg0) here.
+    # tle.program_id(axis) then resolves as spine_grid(ctx, axis) at runtime —
+    # the same lowering the host uses for tl.program_id. (The old design read the
+    # trailing i32 num_programs as the program index, which is the grid TOTAL, not
+    # this program's index → out-of-bounds. Fixed by going through spine_grid.)
+    codegen._ctx_arg = f"%arg{ai}"
+    sig.append(f"{codegen._ctx_arg}: i64")
+    ai += 1
 
     # Generate body
     for stmt in func_node.body:
