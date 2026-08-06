@@ -29,7 +29,6 @@ from . import (
 def _ttir_to_linalgdir(mod, metadata):
     # Get Triton-MLIR as string
     ttir_code = str(mod)
-    metadata["smt_parallel_inside"] = ("bind_sub_block = true" in ttir_code)
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, "tt.mlir")
         dst_path = os.path.join(tmpdir, "linalg.mlir")
@@ -57,51 +56,6 @@ def _optimize_linalgdir(linalgdir: str):
     return linalgdir
 
 
-def _host_func_arg_types(linalgdir: str, func_name: str) -> list[str]:
-    """Parse the host func.func arg types (in order) from linalgdir text.
-
-    Returns e.g. ["memref<*xf16, #ptr.generic_space>", ..., "i32", ...].
-    Splits the top-level arg list on commas that are NOT nested inside
-    <>/{}/() — MLIR types embed commas (strided<[1], offset: ?>).
-    """
-    m = re.search(rf"func\.func\s+@{re.escape(func_name)}\s*\(", linalgdir)
-    if not m:
-        raise RuntimeError(f"mixed-mode: host func @{func_name} not found in linalgdir")
-    i = m.end()
-    start, args = i, []
-    ang = cur = par = 0
-    while i < len(linalgdir):
-        c = linalgdir[i]
-        if c == '<': ang += 1
-        elif c == '>': ang -= 1
-        elif c == '{': cur += 1
-        elif c == '}': cur -= 1
-        elif c == '(': par += 1
-        elif c == ')':
-            if par == 0:
-                args.append(linalgdir[start:i])
-                break
-            par -= 1
-        elif c == ',' and ang == cur == par == 0:
-            args.append(linalgdir[start:i])
-            start = i + 1
-        i += 1
-    types = []
-    for a in args:
-        a = a.strip()
-        if not a:
-            continue
-        # "%argN: TYPE {attrs}" -> TYPE (strip name and trailing attr dict)
-        after = a.split(":", 1)[1].strip()
-        # drop a trailing " {...}" attribute dict at top level
-        if after.endswith("}"):
-            b = after.rfind(" {")
-            if b != -1:
-                after = after[:b].strip()
-        types.append(after)
-    return types
-
-
 # The lowered host memref descriptor: spine-opt lowers each memref<*xT> param
 # to (i64 rank, !llvm.ptr desc), where desc points to a StridedMemRefType
 # {allocated, aligned, offset, sizes[1], strides[1]}. The aligned data ptr is
@@ -121,8 +75,8 @@ def _ttir_pos_to_ll_argidx(host_arg_is_memref: list[bool]):
     return starts
 
 
-def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_is_memref: list[bool],
-                              llvm_funcs, llvm_calls) -> str:
+def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_is_memref: list[bool], llvm_funcs,
+                              llvm_calls) -> str:
     """Graft llvm.func siblings + host→sibling bridge into the LOWERED ll.mlir.
 
     Done post-lowering (uniform llvm dialect) so spine-opt never sees llvm ops
@@ -189,15 +143,13 @@ def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_is_memref: l
     anchors_replaced = 0
     for n, lines in enumerate(per_spec_bridges):
         anchor = f"__spine_bridge_pt_{n}"
-        m = re.search(rf"^[ \t]*llvm\.call @{re.escape(anchor)}\(\)[^\n]*$",
-                      out, re.MULTILINE)
+        m = re.search(rf"^[ \t]*llvm\.call @{re.escape(anchor)}\(\)[^\n]*$", out, re.MULTILINE)
         if m is None:
             continue
         out = out[:m.start()] + "\n".join(lines) + out[m.end():]
         # Drop the private no-arg stub: `llvm.func @anchor() { llvm.return }`.
-        out = re.sub(
-            rf"\n[ \t]*llvm\.func[^\n]*@{re.escape(anchor)}\(\)[^\n]*\{{[^}}]*?llvm\.return[^}}]*?\}}",
-            "", out, count=1, flags=re.DOTALL)
+        out = re.sub(rf"\n[ \t]*llvm\.func[^\n]*@{re.escape(anchor)}\(\)[^\n]*\{{[^}}]*?llvm\.return[^}}]*?\}}", "",
+                     out, count=1, flags=re.DOTALL)
         anchors_replaced += 1
 
     if anchors_replaced == 0:
@@ -233,7 +185,7 @@ def _spine_mlir_linalgdir_to_llir_ref(linalgdir: str, metadata):
 
         pipeline_option_str = get_spine_mlir_opt_options()
         if pipeline_option_str == "":
-            pipeline_option_str = "enable-always-tls={}".format("0" if metadata["smt_parallel_inside"] else "1")
+            pipeline_option_str = "enable-always-tls=1"
 
         cmd_str = '{} {} --spine-triton-e2e-ref-pipeline="{}" -o {}'.format(spine_mlir_path, linalg_path,
                                                                             pipeline_option_str, llmlir_path)
@@ -259,8 +211,7 @@ def _spine_mlir_linalgdir_to_llir(linalgdir: str, metadata):
 
         pipeline_option_str = get_spine_mlir_opt_options()
         if pipeline_option_str == "":
-            pipeline_option_str = "enable-always-tls={} enable-fuse-group=false".format(
-                "0" if metadata["smt_parallel_inside"] else "1")
+            pipeline_option_str = "enable-always-tls=1 enable-fuse-group=false"
 
         cmd_str = '{} {} --spine-triton-e2e-pipeline="{}" -o {}'.format(spine_mlir_path, linalg_path,
                                                                         pipeline_option_str, llmlir_path)
@@ -275,9 +226,8 @@ def _spine_mlir_linalgdir_to_llir(linalgdir: str, metadata):
         # re-run path and the direct mlir-translate path see the injected module.
         if "mixed_llvm_funcs" in metadata and "mixed_llvm_calls" in metadata:
             _ll = Path(llmlir_path).read_text()
-            _ll = _inject_mixed_llvm_llmlir(
-                _ll, metadata["name"], metadata["mixed_host_arg_kinds"],
-                metadata["mixed_llvm_funcs"], metadata["mixed_llvm_calls"])
+            _ll = _inject_mixed_llvm_llmlir(_ll, metadata["name"], metadata["mixed_host_arg_kinds"],
+                                            metadata["mixed_llvm_funcs"], metadata["mixed_llvm_calls"])
             Path(llmlir_path).write_text(_ll)
 
         dump_ir_if_needed([llmlir_path], metadata["name"])
@@ -353,8 +303,10 @@ def _llir_to_so(llir: str, metadata):
             mattr_list = ["64bit", "a", "b", "c", "d", "f", "i", "m", "v", "zfh", "zvfh", "zicbop", "zicbom", "zicboz"]
             if ai_cpu_arch in {"spacemit-a200", "spacemit-a200m"}:
                 mattr_list.extend(["xsmtvsfu", "zmatrix"])
-            elif ai_cpu_arch in {"spacemit-a100", "spacemit-x100", "spacemit-x60", "spacemit-a60"}:
+            elif ai_cpu_arch in {"spacemit-a100"}:
                 mattr_list.append("xsmtvdotii")
+            elif ai_cpu_arch in {"spacemit-x100", "spacemit-x60", "spacemit-a60"}:
+                mattr_list.append("xsmtvdoti")
 
             llc_flags.extend(["--march=riscv64", "--mattr=" + ",".join(mattr_list)])
 
@@ -366,11 +318,11 @@ def _llir_to_so(llir: str, metadata):
             shutil.copy(asm_path, asm_dump_path)
 
         subprocess.check_call([llc_path, src_opt_path, *llc_flags, "-filetype=obj", "-o", dst_path])
-        rpc_host = os.environ.get("SPINE_TRITON_RPC_HOST", "")
-        if rpc_host:
-            # For RPC mode, we don't need to create a shared library
-            with open(dst_path, "rb") as f:
-                return f.read()
+        # rpc_host = os.environ.get("SPINE_TRITON_RPC_HOST", "")
+        # if rpc_host:
+        #     # For RPC mode, we don't need to create a shared library
+        #     with open(dst_path, "rb") as f:
+        #         return f.read()
 
         dump_ir_if_needed([dst_path], metadata["name"])
 
@@ -538,10 +490,6 @@ class CPUBackend(BaseBackend):
             _llvm_direct_text, _llvm_direct_name = take_pending_llvm_direct_module()
             if _llvm_direct_text:
                 metadata["llvm_direct_module"] = _llvm_direct_text
-                # LLVM-direct bypasses _ttir_to_linalgdir, which normally seeds
-                # smt_parallel_inside (read by the launcher + pipeline option).
-                # LLVM-direct kernels are single-program (no bind_sub_block), so False.
-                metadata["smt_parallel_inside"] = False
         except Exception:
             pass
 
@@ -555,8 +503,8 @@ class CPUBackend(BaseBackend):
         # llvm dialect with memrefs already descriptors, so the llvm.call + sibling
         # splice is legal. Independent of llvm_direct_module (unset in mixed).
         try:
-            from triton.language.extra.spine_raw.call_registry import (
-                take_pending_llvm_funcs, take_pending_llvm_calls, take_pending_host_arg_kinds)
+            from triton.language.extra.spine_raw.call_registry import (take_pending_llvm_funcs, take_pending_llvm_calls,
+                                                                       take_pending_host_arg_kinds)
             _mixed_funcs = take_pending_llvm_funcs()
             _mixed_calls = take_pending_llvm_calls()
             _mixed_arg_kinds = take_pending_host_arg_kinds()
