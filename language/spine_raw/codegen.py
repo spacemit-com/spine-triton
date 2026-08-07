@@ -780,6 +780,10 @@ class SpineMLIRBuilderCodegen:
                 return vv, vt
             if vt == "index" and _is_float_elem(dst_elem):
                 return self._scalar_index_to_float(vv, dst_elem), dst_elem
+            if _is_float_elem(vt) and _is_float_elem(dst_elem):
+                fn = self._b.create_arith_extf if _elem_bits(dst_elem) > _elem_bits(vt) \
+                    else self._b.create_arith_truncf
+                return fn(vv, self._tf(dst_elem)), dst_elem
             raise NotImplementedError(f"scalar cast {vt!r} → {dst_elem!r} not supported")
         # Element token: _vec_elem_last handles rank-N (vector<16x32xf32>→f32);
         # fall back to index detection since _vec_elem_last's regex omits index.
