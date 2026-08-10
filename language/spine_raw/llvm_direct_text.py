@@ -371,6 +371,11 @@ class LLVMDirectTextCodegen:
             rhs = (f'"llvm.intr.vector.reduce.fadd"({ops[0]}, {ops[1]}) '
                    f': ({tys[0]}, {tys[1]}) -> {rt}')
             return self._def(rhs, rt), rt
+        # llvm.fptrunc: needs "src_ty to dst_ty" syntax (not just ": dst_ty").
+        # Used for f32→f16 vector narrowing inside llvm-direct kernels.
+        if intrin == "llvm.fptrunc":
+            rhs = f"llvm.fptrunc {ops[0]} : {tys[0]} to {rt}"
+            return self._def(rhs, rt), rt
 
         # Detect: plain LLVM op (llvm.fadd) vs intrinsic (llvm.riscv.vle / llvm.sadd.with.overflow)
         # Heuristic: if name contains '.' after 'llvm', it's an intrinsic; otherwise plain op.
