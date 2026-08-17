@@ -139,20 +139,20 @@ void init_triton_xsmt_ir(py::module &&m) {
            })
       .def("create_alloc",
            [](TritonOpBuilder &self, std::vector<int32_t> &shape,
-              mlir::Type type, std::string storage) -> Value {
+              mlir::Type type, std::string scope) -> Value {
              if (shape.empty()) {
                throw std::runtime_error("alloc shape cannot be empty");
              }
-             auto op = self.create<xsmt::AllocOp>(type, shape, storage);
+             auto op = self.create<xsmt::AllocOp>(type, shape, scope);
              return op;
            })
       .def("create_alloc_copies",
            [](TritonOpBuilder &self, std::vector<int64_t> &shape,
-              mlir::Type elementType, std::string storage) -> mlir::Value {
+              mlir::Type elementType, std::string scope) -> mlir::Value {
              if (shape.empty())
                throw std::runtime_error("alloc_copies shape cannot be empty");
              auto op =
-                 self.create<xsmt::AllocCopiesOp>(shape, elementType, storage);
+                 self.create<xsmt::AllocCopiesOp>(shape, elementType, scope);
              return op;
            })
       .def("create_mmt4d",
@@ -242,9 +242,9 @@ void init_triton_xsmt_ir(py::module &&m) {
            })
       .def("create_smt_buffer_type",
            [](TritonOpBuilder &self, std::vector<int64_t> shape,
-              Type &elementType, int copies, std::string storageKind) -> Type {
+              Type &elementType, int copies, std::string scopeKind) -> Type {
              return xsmt::BufferType::get(shape, elementType, copies,
-                                          storageKind);
+                                          scopeKind);
            })
       .def("create_buffer_tensor_subview",
            [](TritonOpBuilder &self, Value buffer, Value bufferIdx) -> Value {

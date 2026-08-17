@@ -11,6 +11,7 @@
 #include "triton-shared/Conversion/UnstructuredToMemref/UnstructuredToMemref.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "triton-shared/Utils/MemorySpaceUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -47,18 +48,15 @@ namespace mlir::triton {
 
 namespace {
 
-static ptr::MemorySpaceAttrInterface getPtrBridgeMemorySpace(MLIRContext *ctx) {
-  return ptr::GenericSpaceAttr::get(ctx);
-}
-
 class PtrToUnrankedMemrefConverter : public TypeConverter {
 public:
   PtrToUnrankedMemrefConverter() {
     addConversion([](Type type) { return type; });
     addConversion([](triton::PointerType ptrType) {
       auto *ctx = ptrType.getContext();
-      return UnrankedMemRefType::get(ptrType.getPointeeType(),
-                                     getPtrBridgeMemorySpace(ctx));
+      return UnrankedMemRefType::get(
+          ptrType.getPointeeType(),
+          mlir::triton::getDefaultBridgeMemorySpace(ctx));
     });
     addTargetMaterialization([&](OpBuilder &builder,
                                  UnrankedMemRefType resultType,
@@ -76,7 +74,8 @@ static MemRefType getMemrefTypeForScalarPtr(triton::PointerType ptrType,
   auto layout = StridedLayoutAttr::get(context, ShapedType::kDynamic, strides);
   auto elemType = ptrType.getPointeeType();
   auto memrefType =
-      MemRefType::get({1}, elemType, layout, getPtrBridgeMemorySpace(context));
+      MemRefType::get({1}, elemType, layout,
+                      mlir::triton::getDefaultBridgeMemorySpace(context));
   return memrefType;
 }
 
@@ -236,7 +235,8 @@ struct GatherConverter : public OpConversionPattern<tts::GatherOp> {
             rewriter, loc,
             MemRefType::get({ShapedType::kDynamic}, resultType.getElementType(),
                             AffineMap(),
-                            getPtrBridgeMemorySpace(rewriter.getContext())),
+                            mlir::triton::getDefaultBridgeMemorySpace(
+                                rewriter.getContext())),
             ptr)
             .getResult();
 
@@ -361,7 +361,8 @@ struct ScatterConverter : public OpConversionPattern<tts::ScatterOp> {
             rewriter, loc,
             MemRefType::get({ShapedType::kDynamic}, valueType.getElementType(),
                             AffineMap(),
-                            getPtrBridgeMemorySpace(rewriter.getContext())),
+                            mlir::triton::getDefaultBridgeMemorySpace(
+                                rewriter.getContext())),
             ptr)
             .getResult();
 

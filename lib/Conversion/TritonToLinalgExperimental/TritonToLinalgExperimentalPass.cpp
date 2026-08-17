@@ -28,6 +28,7 @@
 #include "triton-shared/Conversion/XSMTToLinalg/XSMTToLinalg.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "triton-shared/Utils/MemorySpaceUtils.h"
 
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"

@@ -13,6 +13,7 @@
 #include "triton-shared/Conversion/StructuredToMemref/StructuredToMemref.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
+#include "triton-shared/Utils/MemorySpaceUtils.h"
 #include "triton-shared/Utils/Utils.h"
 
 #include "mlir/Dialect/MemRef/Utils/MemRefUtils.h"
@@ -891,9 +892,13 @@ private:
 
     auto tensorType = cast<RankedTensorType>(op.getType());
     auto elemType = tensorType.getElementType();
+    auto memorySpace =
+        mlir::triton::getDefaultBridgeMemorySpace(rewriter.getContext());
 
-    auto alloc = memref::AllocOp::create(
-        rewriter, loc, MemRefType::get(tensorType.getShape(), elemType));
+    auto alloc =
+        memref::AllocOp::create(rewriter, loc,
+                                MemRefType::get(tensorType.getShape(), elemType,
+                                                AffineMap(), memorySpace));
 
     // No mask
     assert(!other && "other value used in non-masked load");
@@ -1097,9 +1102,13 @@ private:
 
     auto tensorType = cast<RankedTensorType>(op.getType());
     auto elemType = tensorType.getElementType();
+    auto memorySpace =
+        mlir::triton::getDefaultBridgeMemorySpace(rewriter.getContext());
 
-    auto alloc = memref::AllocOp::create(
-        rewriter, loc, MemRefType::get(tensorType.getShape(), elemType));
+    auto alloc =
+        memref::AllocOp::create(rewriter, loc,
+                                MemRefType::get(tensorType.getShape(), elemType,
+                                                AffineMap(), memorySpace));
 
     // Keep masked-load default semantics: masked-out lanes read as zero
     // when `other` is not provided. Place fill immediately after alloc.
@@ -1216,8 +1225,9 @@ private:
 
     // Create alloc to save the result.
     auto resultType = dyn_cast<RankedTensorType>(op.getResult().getType());
-    auto allocType =
-        MemRefType::get(resultType.getShape(), resultType.getElementType());
+    auto allocType = MemRefType::get(
+        resultType.getShape(), resultType.getElementType(), AffineMap(),
+        mlir::triton::getDefaultBridgeMemorySpace(rewriter.getContext()));
     auto alloc = memref::AllocOp::create(rewriter, loc, allocType);
 
     auto allocStrides = mlir::getMixedValues(
@@ -1813,22 +1823,19 @@ public:
       return failure();
     }
 
-    auto storageAttr = op->getAttr("storage");
-    if (!storageAttr) {
-      emitWarning(loc)
-          << "'storage' attribute not found on xsmt.alloc, using default";
-    }
-
-    MemRefType memrefType = MemRefType::get(shape, elementType);
+    auto scopeName = op.getScope();
+    Attribute memSpace =
+        mlir::triton::scopeToMemorySpace(scopeName, op->getContext());
+    MemRefType memrefType = MemRefType::get(
+        shape, elementType, MemRefLayoutAttrInterface{}, memSpace);
 
     auto allocOp = memref::AllocOp::create(rewriter, loc, memrefType,
                                            /*dynamicSizes=*/ValueRange{},
                                            /*symbolOperands=*/ValueRange{},
                                            /*alignment=*/nullptr);
 
-    if (storageAttr) {
-      allocOp->setAttr("storage", storageAttr);
-    }
+    // scope semantic is encoded in memref type memory space; no string
+    // passthrough.
 
     rewriter.replaceOp(op, allocOp.getResult());
     return success();
@@ -2134,17 +2141,17 @@ struct FoldAllocSubviewPackToAlloc final
     if (failed(newShapeAttr))
       return failure();
 
-    StringAttr storageAttr = oldAlloc.getStorageAttr();
+    StringAttr scopeAttr = oldAlloc.getScopeAttr();
 
     rewriter.setInsertionPoint(view);
 
     auto newAlloc = xsmt::AllocOp::create(rewriter, view.getLoc(), outTy,
-                                          *newShapeAttr, storageAttr);
+                                          *newShapeAttr, scopeAttr);
 
     {
       NamedAttrList extra(oldAlloc->getAttrs());
       extra.erase(StringAttr::get(rewriter.getContext(), "shape"));
-      extra.erase(StringAttr::get(rewriter.getContext(), "storage"));
+      extra.erase(StringAttr::get(rewriter.getContext(), "scope"));
       for (auto it : extra)
         newAlloc->setAttr(it.getName(), it.getValue());
     }

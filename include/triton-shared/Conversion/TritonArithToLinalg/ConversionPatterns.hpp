@@ -15,6 +15,7 @@
 #include "triton-shared/Analysis/PtrAnalysis.h"
 #include "triton-shared/Conversion/TritonArithToLinalg/ConversionTools.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "triton-shared/Utils/MemorySpaceUtils.h"
 #include "triton-shared/Utils/Utils.h"
 
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
@@ -528,8 +529,12 @@ public:
 
     auto tensorType =
         RankedTensorType::get(type.getShape(), type.getElementType());
+    auto memorySpace =
+        mlir::triton::getDefaultBridgeMemorySpace(rewriter.getContext());
     auto alloc = memref::AllocOp::create(
-        rewriter, loc, MemRefType::get(type.getShape(), type.getElementType()));
+        rewriter, loc,
+        MemRefType::get(type.getShape(), type.getElementType(), AffineMap(),
+                        memorySpace));
 
     // Initialize masked-load temporary buffer eagerly when `other` is absent.
     // This preserves Triton semantics where masked-out lanes read as zero.
@@ -3863,7 +3868,8 @@ private:
     auto ctx = rewriter.getContext();
     auto i32Type = IntegerType::get(ctx, 32);
     auto ptrType = LLVM::LLVMPointerType::get(ctx);
-    auto unrankedType = UnrankedMemRefType::get(elemType, /*memorySpace=*/0);
+    auto unrankedType = UnrankedMemRefType::get(
+        elemType, mlir::triton::getDefaultBridgeMemorySpace(ctx));
 
     SmallVector<Type> argsType = {
         i32Type,      i32Type, i32Type, // pid_x, pid_y, pid_z
@@ -3962,7 +3968,9 @@ private:
       elemType = IntegerType::get(ctx, 64);
 
     // 1. Allocate memref
-    auto memrefType = MemRefType::get(tensorType.getShape(), elemType);
+    auto memrefType =
+        MemRefType::get(tensorType.getShape(), elemType, AffineMap(),
+                        mlir::triton::getDefaultBridgeMemorySpace(ctx));
     Value alloc = memref::AllocOp::create(rewriter, loc, memrefType);
 
     // 2. Copy tensor → memref: materialize tensor to buffer first, then copy
