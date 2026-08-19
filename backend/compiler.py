@@ -264,6 +264,15 @@ def _llir_to_so(llir: str, metadata):
         so_path = os.path.join(tmpdir, ".so")
         runtime_lib_dir = os.path.join(cpu_backend_path.parent.parent, "_C")
 
+        # Statically link the spine_malloc/spine_free shim into every kernel
+        # .so so the kernel is self-contained — no external .so required.
+        # Passing the .cpp source directly works because g++/clang++ compile
+        # then link in one invocation; the resulting .o matches the kernel's
+        # target arch automatically (cross clang++ → riscv64, native g++ → x86_64).
+        # The linker only pulls in referenced symbols, so kernels that don't
+        # call spine_malloc pay no size cost.
+        shim_src = os.path.join(include_dir, "ExecutionEngine", "SpineRuntimeShim.cpp")
+
         if target_arch == "riscv64" and cpu_arch != "riscv64":
             assert os.path.exists(cross_toolchain), "Cross-compilation toolchain path does not exist: {}".format(
                 cross_toolchain)
@@ -279,6 +288,7 @@ def _llir_to_so(llir: str, metadata):
                 "-mabi=lp64d",
                 "-O3",
                 dst_path,
+                shim_src,
                 f"-I{include_dir}",
                 "-shared",
                 "-fPIC",
@@ -306,6 +316,7 @@ def _llir_to_so(llir: str, metadata):
                 "-std=c++17",
                 *gcc_flags,
                 dst_path,
+                shim_src,
                 f"-I{py_include_dir}",
                 f"-I{include_dir}",
                 f"-L{py_lib_dir}",
