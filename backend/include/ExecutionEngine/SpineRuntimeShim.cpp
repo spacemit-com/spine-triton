@@ -14,8 +14,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 
 #if defined(_MSC_VER)
 #define EXPORT __declspec(dllexport)
@@ -37,8 +37,6 @@ EXPORT void *spine_malloc(uint64_t size) noexcept {
   return ptr;
 }
 
-EXPORT void spine_free(void *ptr) noexcept {
-  free(ptr);
-}
+EXPORT void spine_free(void *ptr) noexcept { free(ptr); }
 
 } // extern "C"
