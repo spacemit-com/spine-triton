@@ -1905,6 +1905,15 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
   Operation *newOp = nullptr;
 
   if (mask) {
+    // A scalar i1 mask is an arbitrary predicate (e.g. `pid == 0`), not a
+    // range over a tensor dimension. MaskState.dims cannot represent it and
+    // tts.load has no predicate operand, so parsing it would silently drop
+    // the mask and make the load unconditional. Leave the op unrewritten so
+    // the unstructured path (tts.gather) keeps the predicate and lowers it
+    // to a guarded load.
+    if (!isa<ShapedType>(mask.getType())) {
+      return failure();
+    }
     if (mstate.parse(mask, loc, builder).failed()) {
       op->emitRemark("MaskAnalysis failed");
       return failure();
@@ -2203,6 +2212,15 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
   // Analyze the mask operand to determine at runtime the size of the data
   // are moving.
   if (mask) {
+    // A scalar i1 mask is an arbitrary predicate (e.g. `pid == 0`), not a
+    // range over a tensor dimension. MaskState.dims cannot represent it and
+    // tts.store has no predicate operand, so parsing it would silently drop
+    // the mask and make the store unconditional. Leave the op unrewritten so
+    // the unstructured path (tts.scatter) keeps the predicate and lowers it
+    // to a guarded store.
+    if (!isa<ShapedType>(mask.getType())) {
+      return failure();
+    }
     if (mstate.parse(mask, loc, builder).failed()) {
       op->emitRemark("MaskAnalysis failed");
       return failure();
