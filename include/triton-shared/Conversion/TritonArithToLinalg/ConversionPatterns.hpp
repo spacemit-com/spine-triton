@@ -3098,6 +3098,51 @@ private:
     return buildFloatDivOp(b, loc, lhs, rhs, mode);
   }
 
+  static bool isUnaryMathSymbol(StringRef symbol) {
+    return symbol == "math.acos" || symbol == "math.asin" ||
+           symbol == "math.atan" || symbol == "math.acosh" ||
+           symbol == "math.asinh" || symbol == "math.atanh" ||
+           symbol == "math.cbrt" || symbol == "math.cosh" ||
+           symbol == "math.exp2" || symbol == "math.expm1" ||
+           symbol == "math.log2" || symbol == "math.log10" ||
+           symbol == "math.log1p" || symbol == "math.sinh" ||
+           symbol == "math.tan";
+  }
+
+  static Value buildUnaryMathOp(OpBuilder &b, Location loc, StringRef symbol,
+                                Value input) {
+    if (symbol == "math.acos")
+      return math::AcosOp::create(b, loc, input);
+    if (symbol == "math.asin")
+      return math::AsinOp::create(b, loc, input);
+    if (symbol == "math.atan")
+      return math::AtanOp::create(b, loc, input);
+    if (symbol == "math.acosh")
+      return math::AcoshOp::create(b, loc, input);
+    if (symbol == "math.asinh")
+      return math::AsinhOp::create(b, loc, input);
+    if (symbol == "math.atanh")
+      return math::AtanhOp::create(b, loc, input);
+    if (symbol == "math.cbrt")
+      return math::CbrtOp::create(b, loc, input);
+    if (symbol == "math.cosh")
+      return math::CoshOp::create(b, loc, input);
+    if (symbol == "math.exp2")
+      return math::Exp2Op::create(b, loc, input);
+    if (symbol == "math.expm1")
+      return math::ExpM1Op::create(b, loc, input);
+    if (symbol == "math.log2")
+      return math::Log2Op::create(b, loc, input);
+    if (symbol == "math.log10")
+      return math::Log10Op::create(b, loc, input);
+    if (symbol == "math.log1p")
+      return math::Log1pOp::create(b, loc, input);
+    if (symbol == "math.sinh")
+      return math::SinhOp::create(b, loc, input);
+    assert(symbol == "math.tan" && "expected math.tan path");
+    return math::TanOp::create(b, loc, input);
+  }
+
   LogicalResult
   matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -3111,11 +3156,13 @@ private:
     bool isTrunc = (symbol == "math.trunc");
     bool isAtan2 = (symbol == "math.atan2");
     bool isFmod = (symbol == "linalg.fmod");
+    bool isUnaryMath = isUnaryMathSymbol(symbol);
+    bool isFfs = (symbol == "math.ffs");
     auto divRoundingMode = getDivRoundingMode(symbol);
     bool isDivLike = divRoundingMode.has_value();
 
     if (!isIsNaN && !isIsInf && !isFinite && !isCos && !isSin && !isTrunc &&
-        !isAtan2 && !isFmod && !isDivLike) {
+        !isAtan2 && !isFmod && !isDivLike && !isUnaryMath && !isFfs) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
         diag << "unsupported extern operation: " << symbol;
       });
@@ -3136,11 +3183,23 @@ private:
     auto inputElemType = inputType.getElementType();
     auto floatType = dyn_cast<FloatType>(inputElemType);
 
-    if (!isDivLike && !floatType) {
+    if (!isDivLike && !isFfs && !floatType) {
       return rewriter.notifyMatchFailure(op, "element type is not float");
     }
 
-    if ((isCos || isSin || isTrunc) &&
+    if (isFfs) {
+      if (!isa<IntegerType>(inputElemType)) {
+        return rewriter.notifyMatchFailure(
+            op, "math.ffs lowering requires integer element type");
+      }
+      if (outputElemType != inputElemType) {
+        return rewriter.notifyMatchFailure(
+            op, "math.ffs lowering requires output element type matching "
+                "input element type");
+      }
+    }
+
+    if ((isCos || isSin || isTrunc || isUnaryMath) &&
         (!isa<FloatType>(outputElemType) ||
          outputElemType != inputType.getElementType())) {
       return rewriter.notifyMatchFailure(
@@ -3245,6 +3304,23 @@ private:
             }
           } else if (isCos) {
             outputVal = math::CosOp::create(b, loc, inputVal);
+          } else if (isUnaryMath) {
+            outputVal = buildUnaryMathOp(b, loc, symbol, inputVal);
+          } else if (isFfs) {
+            // CUDA ffs semantics: 1-based index of the least significant set
+            // bit, 0 if the input is zero.
+            auto intTy = cast<IntegerType>(inputVal.getType());
+            Value zero = arith::ConstantOp::create(
+                b, loc, intTy, b.getIntegerAttr(intTy, 0));
+            Value one = arith::ConstantOp::create(b, loc, intTy,
+                                                  b.getIntegerAttr(intTy, 1));
+            Value tz = math::CountTrailingZerosOp::create(b, loc, inputVal);
+            Value tzPlusOne = arith::AddIOp::create(b, loc, tz, one);
+            Value isZero = arith::CmpIOp::create(b, loc,
+                                                 arith::CmpIPredicate::eq,
+                                                 inputVal, zero);
+            outputVal =
+                arith::SelectOp::create(b, loc, isZero, zero, tzPlusOne);
           } else if (isTrunc) {
             outputVal = math::TruncOp::create(b, loc, inputVal);
           } else if (isAtan2) {
