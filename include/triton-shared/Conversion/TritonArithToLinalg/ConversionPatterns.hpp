@@ -1489,16 +1489,11 @@ struct MatmulConverter : public OpConversionPattern<triton::DotOp> {
     bool integers = dstElemType.isInteger();
     bool skipC = isZeroTensor(opc, integers);
 
-    // When the dot op lives inside an scf.for loop with f16 inputs but an f32
-    // accumulator, perform the matmul in f16 and extend the result back to f32.
-    auto opaType = dyn_cast<RankedTensorType>(opa.getType());
-    auto opbType = dyn_cast<RankedTensorType>(opb.getType());
-    bool inputsAreF16 = opaType && opbType &&
-                        opaType.getElementType().isF16() &&
-                        opbType.getElementType().isF16();
-    bool useF16Matmul = (op->getParentOfType<scf::ForOp>() != nullptr) &&
-                        inputsAreF16 && dstElemType.isF32();
-    Type matmulElemType = useF16Matmul ? opaType.getElementType() : dstElemType;
+    // tt.dot must accumulate in the result element type: f16 inputs with an
+    // f32 result keep f32 accumulation via a mixed linalg.matmul (f16 ins,
+    // f32 outs), which spine-opt lowers to the matrix engine. Truncating the
+    // per-iteration result to f16 loses K-reduction precision.
+    Type matmulElemType = dstElemType;
 
     Value res;
 
@@ -1527,11 +1522,6 @@ struct MatmulConverter : public OpConversionPattern<triton::DotOp> {
       }
 
       res = matmulOp.getResult(0);
-
-      // Extend the f16 accumulator result back to the f32 destination type.
-      if (useF16Matmul) {
-        res = arith::ExtFOp::create(rewriter, loc, dstType, res);
-      }
 
       if (!skipC) {
         if (integers) {
