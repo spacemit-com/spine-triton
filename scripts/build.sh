@@ -59,6 +59,16 @@ export SPINE_MLIR_INSTALL_DIR=${SPINE_MLIR_INSTALL_DIR}
 export SPINE_TRITON_VERSION_NUMBER=${VERSION_NUMBER}
 export TRITON_APPEND_CMAKE_ARGS="-DLLVM_LIBRARY_DIR=${LLVM_INSTALL_DIR}/lib -DLLVM_DIR=${LLVM_INSTALL_DIR}/lib/cmake/llvm -DLLD_DIR=${LLVM_INSTALL_DIR}/lib/cmake/lld -DMLIR_DIR=${LLVM_INSTALL_DIR}/lib/cmake/mlir -DCMAKE_TOOLCHAIN_FILE=${CUR_DIR}/cmake/linux_riscv64.toolchain.cmake"
 
+# Cross builds: the host interpreter's Python3 headers are x86; point cmake at
+# the target-arch Python headers instead (only headers are needed, Linux python
+# modules do not link libpython). zlib is not in the toolchain sysroot either;
+# a cross-built static libz.a must be made visible via -L. Both are passed as
+# extra cmake args, e.g.:
+#   SPINE_TRITON_EXTRA_CMAKE_ARGS="-DPython3_INCLUDE_DIR=<riscv-python>/include/python3.12 -DCMAKE_SHARED_LINKER_FLAGS=-L<riscv-deps>/zlib/lib -DCMAKE_EXE_LINKER_FLAGS=-L<riscv-deps>/zlib/lib"
+if [ -n "${SPINE_TRITON_EXTRA_CMAKE_ARGS:-}" ]; then
+    export TRITON_APPEND_CMAKE_ARGS="${TRITON_APPEND_CMAKE_ARGS} ${SPINE_TRITON_EXTRA_CMAKE_ARGS}"
+fi
+
 export CC=${RISCV_ROOT_PATH}/bin/riscv64-unknown-linux-gnu-gcc
 export CXX=${RISCV_ROOT_PATH}/bin/riscv64-unknown-linux-gnu-g++
 
