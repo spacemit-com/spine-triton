@@ -126,11 +126,11 @@ def _generate_launcher(constants, signature, kernel_name="unknown_kernel"):
 #include "ExecutionEngine/CRunnerUtils.cpp"
 #include "SpineRuntime/spert.hpp"
 
-{'''extern "C" {{
+{'''extern "C" {
 // Proton kernel-level profiling APIs
 void proton_enter_kernel(const char *kernel_name, int gridX, int gridY, int gridZ);
 void proton_exit_kernel(const char *kernel_name, int gridX, int gridY, int gridZ);
-}}''' if enable_proton_kernel_capture else ''}
+}''' if enable_proton_kernel_capture else ''}
 
 // New spert::Stream::launch ABI: kernel first param is spert::Context*,
 // followed by user args (pointers as StridedMemRefType*), then 3 i32 num_programs.
