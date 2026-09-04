@@ -169,8 +169,17 @@ def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_is_memref: l
         out = out[:ret_m.start()] + "\n".join(flat) + "\n" + out[ret_m.start():]
 
     # Append the sibling llvm.func(s) before the module's closing brace.
+    # Sibling kernels call runtime symbols (spine_grid, spine_parallel_dispatch_Nd,
+    # ...) provided by libspert.so at dlopen time. Emit declarations so spine-opt
+    # verification passes (llvm.call requires callee visible in module).
+    # NOTE: spine-opt's e2e pipeline may already declare @spine_grid when the host
+    # uses tl.program_id (lowered to spine_grid(ctx, axis)). Declaring it again
+    # here → "redefinition of symbol named 'spine_grid'". Only emit if absent.
+    runtime_decls = []
+    if "spine_grid" not in out:
+        runtime_decls.append("llvm.func @spine_grid(i64, i64) -> i64")
     close = out.rfind("}")
-    out = out[:close] + "\n" + "\n".join(llvm_funcs) + "\n" + out[close:]
+    out = out[:close] + "\n" + "\n".join(runtime_decls) + "\n" + "\n".join(llvm_funcs) + "\n" + out[close:]
     return out
 
 
