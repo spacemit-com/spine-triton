@@ -462,6 +462,12 @@ class SpineMLIRBuilderCodegen:
         # not dominate ... neither in a parent nor in a child region').
         saved_active_vl = self._active_vl
         saved_active_valid = self._active_valid
+        # Snapshot full env before body: variables assigned inside the body but
+        # not yielded (e.g. loop-local temporaries like `v = vload(...)`) would
+        # otherwise leak into the outer scope with SSA values defined in the
+        # child region → dominance violations when a later loop picks them up as
+        # iter_arg inits.
+        saved_env = dict(self._env)
 
         def for_body(b, iv, region_iter_args):
             # Rebind iter_args to their region block args
@@ -474,12 +480,10 @@ class SpineMLIRBuilderCodegen:
             for stmt in node.body:
                 self._gen_stmt(stmt)
             yield_vals = [self._get(v)[0] for v in reassigned]
-            # Restore (for_body is called once; restore for post-loop rebind below)
-            for v, old in saved.items():
-                if old is None:
-                    self._env.pop(v, None)
-                else:
-                    self._env[v] = old
+            # Restore env to pre-body state: drop loop-local temporaries, restore
+            # iter_arg names to their pre-loop values (re-bound below to results).
+            self._env.clear()
+            self._env.update(saved_env)
             return yield_vals
 
         result_vals = self._b.create_scf_for(lb, ub, step, ia_vals, for_body)
@@ -496,6 +500,10 @@ class SpineMLIRBuilderCodegen:
     def _gen_call_stmt(self, node: ast.Call):
         if _is_spine_raw_attr(node.func, "proton_mark", self._aliases):
             pass  # skip profiling marks in builder path
+        elif _is_spine_raw_attr(node.func, "vconfig", self._aliases):
+            # Bare `tle.vconfig(avl, lmul)` statement: set active VL/valid
+            # without binding a name (same semantics as the assignment form).
+            self._apply_vconfig(node)
         elif _is_spine_raw_attr(node.func, "vstore", self._aliases):
             self._gen_vstore(node)
         elif _is_spine_raw_attr(node.func, "sstore", self._aliases):
@@ -656,9 +664,12 @@ class SpineMLIRBuilderCodegen:
     # ------------------------------------------------------------------
 
     def _gen_vconfig_assign(self, target: str, node: ast.Call):
+        self._apply_vconfig(node)
+        self._constexpr_ints[target] = self._active_vl
+
+    def _apply_vconfig(self, node: ast.Call):
         lmul = ast.literal_eval(node.args[1]) if len(node.args) > 1 else 1
         vl = _vlmax(int(lmul))
-        self._constexpr_ints[target] = vl
         self._active_vl = vl
         try:
             avl_const = ast.literal_eval(node.args[0])
@@ -898,7 +909,11 @@ class SpineMLIRBuilderCodegen:
         # Softmax exp-accumulation needs fill=-1e38 so exp(fill-xmax)≈0.
         fill_node = kwargs.get("fill")
         if fill_node is not None:
-            fill_v, _ = self._gen_expr(fill_node)
+            fill_v, fill_t = self._gen_expr(fill_node)
+            # Cast fill to match dtype (e.g. f32 literal -1e38 → f16 for f16 vload).
+            # linalg.fill requires fill value type to match output element type.
+            if fill_t != dtype:
+                fill_v = self._b.create_arith_truncf(fill_v, self._tf(dtype))
             pad = fill_v
         else:
             pad = self._const_float(0.0, dtype)
@@ -1074,7 +1089,11 @@ class SpineMLIRBuilderCodegen:
         """llvm_gep(base_ptr, offset, elem="f16") → llvm.getelementptr."""
         kwargs = {kw.arg: kw.value for kw in node.keywords}
         base_v, _ = self._gen_expr(node.args[0])
-        off_v, _ = self._gen_expr(node.args[1])
+        off_v, off_t = self._gen_expr(node.args[1])
+        # llvm.getelementptr requires i64 offset, not index. Default-path
+        # range/arithmetic produces index; cast when needed.
+        if off_t == "index":
+            off_v = self._b.create_arith_index_cast(off_v, self._t("i64"))
         elem = _resolve_dtype(kwargs.get("elem"), "f16")
         res = self._b.create_op_textattr("llvm.getelementptr", [base_v, off_v],
                                          {"rawConstantIndices": "array<i32: -2147483648>", "elem_type": elem},
