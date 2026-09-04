@@ -16,6 +16,7 @@
 #include "triton-shared/Conversion/TritonPtrToMemref/TritonPtrToMemref.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/CollapseShape.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ConvertScanOp.h"
+#include "triton-shared/Conversion/TritonToLinalgExperimental/LoopPtrCarryToOffset.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcileLlvmPtrCasts.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcilePtrCasts.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ScfbufferStandardized.h"
@@ -123,6 +124,12 @@ public:
     // This also avoids relying on later passes to legalize scans after the
     // structured-pointer pipeline has already seen them.
     pm.addPass(createConvertScanOpPass());
+
+    // Rewrite while-loops that carry scalar tt.ptr values (ptr += stride)
+    // into offset-carrying loops before pointer analysis runs: PtrAnalysis
+    // and the downstream spine-opt pipeline cannot legalize loop-carried raw
+    // pointers (cf.br with !ptr.ptr operands fails conversion).
+    pm.addPass(createLoopPtrCarryToOffsetPass());
 
     pm.addPass(createTritonToStructuredPass(enableMakeGatherScatterTensorPtr));
 
