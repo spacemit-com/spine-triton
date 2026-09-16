@@ -50,8 +50,10 @@ static ptr::PtrType getPtrTypeForMemref(BaseMemRefType memrefType) {
 }
 
 static MemRefType getRankedMemrefTypeForPtrCast(BaseMemRefType memrefType) {
-  return MemRefType::get({1}, memrefType.getElementType(), AffineMap(),
-                         getMemorySpaceForMemref(memrefType));
+  // BUGFIX: Use dynamic size instead of hardcoded size=1 to fix masked_select bug
+  // where tensor<256xi8> was incorrectly treated as having only 1 element.
+  return MemRefType::get({ShapedType::kDynamic}, memrefType.getElementType(),
+                         AffineMap(), getMemorySpaceForMemref(memrefType));
 }
 
 static MemRefType cloneMemRefWithMemorySpace(MemRefType memrefType,
@@ -128,9 +130,10 @@ struct MemrefCastConverter
             rankedResultTy.getElementType()) {
           auto loc = op.getLoc();
           auto rankedInputType = getRankedMemrefTypeForPtrCast(unrankedInputTy);
+          // BUGFIX: Use large size instead of 1 to allow access to all elements
           auto rankedInput = memref::ReinterpretCastOp::create(
               rewriter, loc, rankedInputType, input, rewriter.getIndexAttr(0),
-              ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)},
+              ArrayRef<OpFoldResult>{rewriter.getIndexAttr(0x7FFFFFFF)},
               ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)});
           auto ptrType = getPtrTypeForMemref(rankedInputType);
           auto toPtr =
@@ -182,11 +185,12 @@ struct MemrefCastConverter
         if (unrankedInputTy.getElementType() !=
             unrankedResultTy.getElementType()) {
           auto loc = op.getLoc();
-          // Cast unranked input to ranked memref<1 x srcElem>
+          // Cast unranked input to ranked memref with dynamic size
           auto rankedInputType = getRankedMemrefTypeForPtrCast(unrankedInputTy);
+          // BUGFIX: Use large size instead of 1
           auto rankedInput = memref::ReinterpretCastOp::create(
               rewriter, loc, rankedInputType, input, rewriter.getIndexAttr(0),
-              ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)},
+              ArrayRef<OpFoldResult>{rewriter.getIndexAttr(0x7FFFFFFF)},
               ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)});
           // Convert to opaque ptr
           auto ptrType = getPtrTypeForMemref(rankedInputType);
@@ -269,8 +273,19 @@ struct FromMemrefConverter
 
       // from_memref only takes ranked memref, cast the unranked memref to
       // ranked memref first.
-      auto rankedType = getRankedMemrefTypeForPtrCast(unrankedInput);
-      SmallVector<OpFoldResult> sizes = {rewriter.getIndexAttr(1)};
+      // BUGFIX: Use dynamic size instead of hardcoded size=1 to fix masked_select bug
+      // where tensor<256xi8> was incorrectly treated as having only 1 element.
+      auto elemType = unrankedInput.getElementType();
+      auto memSpace = unrankedInput.getMemorySpace();
+
+      // Create a ranked memref type with dynamic size
+      auto rankedType = MemRefType::get({ShapedType::kDynamic}, elemType,
+                                        AffineMap(), memSpace);
+
+      // CRITICAL FIX: Use a very large size (INT32_MAX) instead of 1, so the memref
+      // can be accessed at any valid index. The actual bounds checking happens
+      // in the linalg.generic based on n_elements parameter.
+      SmallVector<OpFoldResult> sizes = {rewriter.getIndexAttr(0x7FFFFFFF)};
       SmallVector<OpFoldResult> strides = {rewriter.getIndexAttr(1)};
       auto rankedMemref = memref::ReinterpretCastOp::create(
           rewriter, op.getLoc(), rankedType, input, rewriter.getIndexAttr(0),
@@ -317,8 +332,16 @@ struct ToMemrefConverter : public OpRewritePattern<UnrealizedConversionCastOp> {
       auto elemType = getMemrefElementTypeForPtrCast(
           inType, outRankedMemrefType.getElementType());
       Attribute outMemSpace = outRankedMemrefType.getMemorySpace();
-      auto ptrToMemrefType =
-          MemRefType::get({1}, elemType, AffineMap(), outMemSpace);
+
+      // BUGFIX: If target type has dynamic dimensions, create FromPtrOp with
+      // dynamic size to avoid hardcoding size=1 (masked_select bug fix)
+      bool hasDynamicDims = llvm::any_of(outRankedMemrefType.getShape(),
+          [](int64_t dim) { return ShapedType::isDynamic(dim); });
+
+      auto ptrToMemrefType = hasDynamicDims
+          ? MemRefType::get({ShapedType::kDynamic}, elemType, AffineMap(), outMemSpace)
+          : MemRefType::get({1}, elemType, AffineMap(), outMemSpace);
+
       auto ptrToMemref = ptr::FromPtrOp::create(
           rewriter, op->getLoc(), ptrToMemrefType, input, Value());
 
@@ -327,7 +350,7 @@ struct ToMemrefConverter : public OpRewritePattern<UnrealizedConversionCastOp> {
       for (int64_t i = 0, e = outRankedMemrefType.getRank(); i < e; ++i) {
         sizes.push_back(
             ShapedType::isDynamic(outRankedMemrefType.getDimSize(i))
-                ? rewriter.getIndexAttr(1)
+                ? rewriter.getIndexAttr(0x7FFFFFFF)  // BUGFIX: Use large size instead of 1
                 : rewriter.getIndexAttr(outRankedMemrefType.getDimSize(i)));
         newStrides.push_back(rewriter.getIndexAttr(1));
       }
@@ -367,12 +390,15 @@ struct ToMemrefConverter : public OpRewritePattern<UnrealizedConversionCastOp> {
       auto elemType = getMemrefElementTypeForPtrCast(
           inType, outUnrankedMemrefType.getElementType());
       Attribute outMemSpace = outUnrankedMemrefType.getMemorySpace();
+
+      // BUGFIX: Use dynamic size for unranked output (masked_select bug fix)
       auto ptrToMemrefType =
-          MemRefType::get({1}, elemType, AffineMap(), outMemSpace);
+          MemRefType::get({ShapedType::kDynamic}, elemType, AffineMap(), outMemSpace);
       auto ptrToMemref = ptr::FromPtrOp::create(
           rewriter, op->getLoc(), ptrToMemrefType, input, Value());
 
-      SmallVector<OpFoldResult> sizes = {rewriter.getIndexAttr(1)};
+      // BUGFIX: Use large size instead of 1
+      SmallVector<OpFoldResult> sizes = {rewriter.getIndexAttr(0x7FFFFFFF)};
       SmallVector<OpFoldResult> newStrides = {rewriter.getIndexAttr(1)};
       auto rankedDynamicMemrefType = MemRefType::get(
           {ShapedType::kDynamic}, elemType, AffineMap(), outMemSpace);

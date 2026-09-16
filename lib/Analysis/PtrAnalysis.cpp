@@ -1404,6 +1404,39 @@ Value PtrAnalysis::getScalarMemRef(Value ptr, Value memRef, const Location loc,
 
   assert(isa<BlockArgument>(ptr) &&
          "pointer is neither produced by addptr nor a block argument");
+
+  // BUGFIX: For block arguments (function parameters), check if memRef is an
+  // unranked memref that should preserve its actual size. This fixes the
+  // masked_select bug where tensor<256xi8> was incorrectly reinterpreted as
+  // memref<1xi8> instead of memref<256xi8>.
+  //
+  // If memRef is unranked, we cannot know the actual size at this point,
+  // but we should NOT hardcode size=1. Instead, use a large size (INT32_MAX)
+  // to allow access to all valid elements.
+  if (auto unrankedType = dyn_cast<UnrankedMemRefType>(memRef.getType())) {
+    // Create a ranked memref with dynamic size
+    auto elemType = unrankedType.getElementType();
+    auto memSpace = unrankedType.getMemorySpace();
+
+    // For type, use ShapedType::kDynamic to indicate this is a dynamic dimension
+    auto rankedType = MemRefType::get({ShapedType::kDynamic}, elemType,
+                                      AffineMap(), memSpace);
+
+    // CRITICAL: Use INT32_MAX instead of 1 so all valid accesses work
+    SmallVector<OpFoldResult> sizes;
+    sizes.push_back(rewriter.getIndexAttr(0x7FFFFFFF));
+    SmallVector<OpFoldResult> strides;
+    strides.push_back(rewriter.getIndexAttr(1));
+
+    auto castOp = memref::ReinterpretCastOp::create(
+        rewriter, loc, rankedType, memRef,
+        /*offset=*/rewriter.getIndexAttr(0),
+        /*sizes=*/sizes,
+        /*strides=*/strides);
+    return castOp.getResult();
+  }
+
+  // Original code path for ranked memref or truly scalar pointers
   PtrState state;
   state.source = memRef;
   state.offsets.push_back(rewriter.getIndexAttr(0));
