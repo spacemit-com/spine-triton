@@ -65,7 +65,6 @@ def mem(dtype: str, out: bool = False) -> _TypedAnnotation:
 # Scalar index parameter annotation, e.g.  K: tle.index
 index = _TypedAnnotation("index", writable=False, kind="scalar")
 
-
 # ---------------------------------------------------------------------------
 # Structured MLIR type metadata (Ty hierarchy).
 #
@@ -81,8 +80,16 @@ index = _TypedAnnotation("index", writable=False, kind="scalar")
 # Exact widths for the scalar types the DSL documents; ``ScalarTy.bits``
 # extends this with the regular iN/fN/bfN pattern for anything else.
 _SCALAR_BITS = {
-    "i1": 1, "i4": 4, "i8": 8, "i16": 16, "i32": 32, "i64": 64,
-    "f16": 16, "bf16": 16, "f32": 32, "f64": 64,
+    "i1": 1,
+    "i4": 4,
+    "i8": 8,
+    "i16": 16,
+    "i32": 32,
+    "i64": 64,
+    "f16": 16,
+    "bf16": 16,
+    "f32": 32,
+    "f64": 64,
 }
 _FLOAT_SCALARS = {"f16", "bf16", "f32", "f64"}
 
@@ -119,7 +126,7 @@ class Ty:
 class ScalarTy(Ty):
     """A builtin scalar type: ``index``, ``i1``..``i64``, ``f16``/``bf16``/``f32``/``f64``."""
 
-    __slots__ = ("name",)
+    __slots__ = ("name", )
 
     def __init__(self, name: str):
         self.name = name
@@ -228,8 +235,8 @@ class StridedLayout:
         return f"strided<[{inner}]{off}>"
 
     def __eq__(self, other) -> bool:
-        return (isinstance(other, StridedLayout)
-                and other.strides == self.strides and other.has_offset == self.has_offset)
+        return (isinstance(other, StridedLayout) and other.strides == self.strides
+                and other.has_offset == self.has_offset)
 
     def __hash__(self) -> int:
         return hash(("StridedLayout", self.strides, self.has_offset))
@@ -249,8 +256,7 @@ class MemTy(Ty):
 
     __slots__ = ("dims", "elem", "layout", "space")
 
-    def __init__(self, dims, elem: Ty, layout: StridedLayout | None = None,
-                 space: str | None = None):
+    def __init__(self, dims, elem: Ty, layout: StridedLayout | None = None, space: str | None = None):
         self.dims = None if dims is None else tuple(dims)
         self.elem = elem
         self.layout = layout
@@ -264,8 +270,7 @@ class MemTy(Ty):
         if self.dims is None:
             s = "memref<*x" + self.elem.mlir()
         else:
-            s = ("memref<" + "x".join(_dim_text(d) for d in self.dims)
-                 + "x" + self.elem.mlir())
+            s = ("memref<" + "x".join(_dim_text(d) for d in self.dims) + "x" + self.elem.mlir())
         if self.layout is not None:
             s += ", " + self.layout.mlir()
         if self.space is not None:
@@ -276,12 +281,11 @@ class MemTy(Ty):
         """The _ranked_cast transform: memref<*xT, ...> -> memref<?xT, ...>."""
         if not self.unranked:
             raise ValueError(f"as_dynamic_ranked on a ranked type {self.mlir()!r}")
-        return MemTy((None,), self.elem, self.layout, self.space)
+        return MemTy((None, ), self.elem, self.layout, self.space)
 
     def __eq__(self, other) -> bool:
-        return (isinstance(other, MemTy) and other.dims == self.dims
-                and other.elem == self.elem and other.layout == self.layout
-                and other.space == self.space)
+        return (isinstance(other, MemTy) and other.dims == self.dims and other.elem == self.elem
+                and other.layout == self.layout and other.space == self.space)
 
     def __hash__(self) -> int:
         return hash(("MemTy", self.dims, self.elem, self.layout, self.space))
@@ -295,7 +299,7 @@ class OpaqueTy(Ty):
     void). Never constructed by codegen; never inspected beyond passthrough.
     """
 
-    __slots__ = ("text",)
+    __slots__ = ("text", )
 
     def __init__(self, text: str):
         self.text = text
@@ -326,13 +330,13 @@ LLVM_PTR = OpaqueTy("!llvm.ptr")
 LLVM_DESC = OpaqueTy("!llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>")
 VOID = OpaqueTy("()")
 
-
 # ---------------------------------------------------------------------------
 # parse_ty — the single boundary text parser (hand scanner, no regex).
 # Grammar subset: scalar | vector<dims xT> | tensor<dims xT> |
 #                 memref<(*|dims) xT [, strided<[strides][, offset: ?]>] [, #space]>
 # dims: int | "?" (memref/tensor) | "[N]" (vector scalable, parse-only).
 # ---------------------------------------------------------------------------
+
 
 def _skip_ws(s: str, i: int) -> int:
     while i < len(s) and s[i].isspace():
