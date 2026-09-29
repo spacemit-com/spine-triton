@@ -1418,7 +1418,8 @@ Value PtrAnalysis::getScalarMemRef(Value ptr, Value memRef, const Location loc,
     auto elemType = unrankedType.getElementType();
     auto memSpace = unrankedType.getMemorySpace();
 
-    // For type, use ShapedType::kDynamic to indicate this is a dynamic dimension
+    // For type, use ShapedType::kDynamic to indicate this is a dynamic
+    // dimension
     auto rankedType = MemRefType::get({ShapedType::kDynamic}, elemType,
                                       AffineMap(), memSpace);
 
@@ -1428,11 +1429,11 @@ Value PtrAnalysis::getScalarMemRef(Value ptr, Value memRef, const Location loc,
     SmallVector<OpFoldResult> strides;
     strides.push_back(rewriter.getIndexAttr(1));
 
-    auto castOp = memref::ReinterpretCastOp::create(
-        rewriter, loc, rankedType, memRef,
-        /*offset=*/rewriter.getIndexAttr(0),
-        /*sizes=*/sizes,
-        /*strides=*/strides);
+    auto castOp =
+        memref::ReinterpretCastOp::create(rewriter, loc, rankedType, memRef,
+                                          /*offset=*/rewriter.getIndexAttr(0),
+                                          /*sizes=*/sizes,
+                                          /*strides=*/strides);
     return castOp.getResult();
   }
 
