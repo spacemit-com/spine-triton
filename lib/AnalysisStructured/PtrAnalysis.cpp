@@ -1784,6 +1784,28 @@ LogicalResult PtrAnalysis::rewriteForOp(scf::ForOp op) {
   return success();
 }
 
+// The TritonToStructured prepass wraps every integer/index-tensor loop iter-arg
+// with tts.get_structured_state and decomposes the 1->N tuple, so the
+// offsets/origiOffsets/strides results feed scf.for init args and yields.
+// When rewriting fails, remapping only result #0 leaves those uses live: the
+// op cannot be erased and leaks into the final linalg output, where spine-opt
+// rejects it as an unregistered dialect. Fully revert instead: replace
+// result #0 with the original value, every offset/stride with a zero
+// constant, then erase the op. The carried loop state becomes dead constants,
+// which is semantically the original IR (the value was never a pointer).
+static void revertGetStructuredStateOp(tts::GetStructuredStateOp op,
+                                       Value tritonValue) {
+  OpBuilder builder(op);
+  SmallVector<Value> replacements;
+  replacements.push_back(tritonValue);
+  for (size_t i = 1, e = op->getNumResults(); i < e; i++) {
+    replacements.push_back(arith::ConstantOp::create(builder, op.getLoc(),
+                                                     builder.getIndexAttr(0)));
+  }
+  op->replaceAllUsesWith(replacements);
+  op->erase();
+}
+
 LogicalResult
 PtrAnalysis::rewriteGetStructuredStateOp(tts::GetStructuredStateOp op) {
   auto tritonValue = op->getOperand(0);
@@ -1794,7 +1816,7 @@ PtrAnalysis::rewriteGetStructuredStateOp(tts::GetStructuredStateOp op) {
   if (!knownPtrs.contains(tritonValue)) {
     op.emitRemark(
         "Rewrite GetStructuredStateOp failed. Could not find PtrState.");
-    op.getResult(0).replaceAllUsesWith(tritonValue);
+    revertGetStructuredStateOp(op, tritonValue);
     return failure();
   }
 
@@ -1802,7 +1824,7 @@ PtrAnalysis::rewriteGetStructuredStateOp(tts::GetStructuredStateOp op) {
   if (!state.isStructured()) {
     op.emitRemark(
         "Rewrite GetStructuredStateOp failed. PtrState is not structured.");
-    op.getResult(0).replaceAllUsesWith(tritonValue);
+    revertGetStructuredStateOp(op, tritonValue);
     return failure();
   }
   Value remappedValue =
