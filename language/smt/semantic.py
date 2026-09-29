@@ -64,7 +64,24 @@ def view(base: tl.tensor, offsets, shape, packed_size, destination=None, _semant
 
     if is_block_ptr:
         element_ty = pointee_type.element_ty
-        handle = _semantic.builder.create_viewptr(base.handle, offsets, shape, packed_size)
+        # Dispatch to subview or subview_pack
+        if all(s == 0 for s in packed_size):
+            # packed_size=[0,0] means subview (preserve existing packing)
+            handle = _semantic.builder.create_subview(base.handle, offsets, shape)
+        else:
+            # Check if base is already packed (4D) and packed_size matches
+            base_shape = pointee_type.shape
+            if len(base_shape) == 4:
+                base_packed = [base_shape[2], base_shape[3]]
+                if list(packed_size) == base_packed:
+                    # Same packed_size → subview (preserve packing)
+                    handle = _semantic.builder.create_subview(base.handle, offsets, shape)
+                else:
+                    # Different packed_size on ptr → subview_pack
+                    handle = _semantic.builder.create_subview_pack(base.handle, offsets, shape, packed_size)
+            else:
+                # 2D base → subview_pack (apply packing)
+                handle = _semantic.builder.create_subview_pack(base.handle, offsets, shape, packed_size)
 
     else:
         element_ty = pointee_type
