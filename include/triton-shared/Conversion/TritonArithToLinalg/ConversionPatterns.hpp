@@ -3096,11 +3096,15 @@ private:
            symbol == "math.exp2" || symbol == "math.expm1" ||
            symbol == "math.log2" || symbol == "math.log10" ||
            symbol == "math.log1p" || symbol == "math.sinh" ||
-           symbol == "math.tan";
+           symbol == "math.tan" || symbol == "linalg.rint";
   }
 
   static Value buildUnaryMathOp(OpBuilder &b, Location loc, StringRef symbol,
                                 Value input) {
+    if (symbol == "linalg.rint")
+      // rint is round-half-to-even: keep it distinct from math.round
+      // (half-away-from-zero), which differs on exact .5 ties.
+      return math::RoundEvenOp::create(b, loc, input);
     if (symbol == "math.acos")
       return math::AcosOp::create(b, loc, input);
     if (symbol == "math.asin")
@@ -3300,15 +3304,14 @@ private:
             // CUDA ffs semantics: 1-based index of the least significant set
             // bit, 0 if the input is zero.
             auto intTy = cast<IntegerType>(inputVal.getType());
-            Value zero = arith::ConstantOp::create(
-                b, loc, intTy, b.getIntegerAttr(intTy, 0));
+            Value zero = arith::ConstantOp::create(b, loc, intTy,
+                                                   b.getIntegerAttr(intTy, 0));
             Value one = arith::ConstantOp::create(b, loc, intTy,
                                                   b.getIntegerAttr(intTy, 1));
             Value tz = math::CountTrailingZerosOp::create(b, loc, inputVal);
             Value tzPlusOne = arith::AddIOp::create(b, loc, tz, one);
-            Value isZero = arith::CmpIOp::create(b, loc,
-                                                 arith::CmpIPredicate::eq,
-                                                 inputVal, zero);
+            Value isZero = arith::CmpIOp::create(
+                b, loc, arith::CmpIPredicate::eq, inputVal, zero);
             outputVal =
                 arith::SelectOp::create(b, loc, isZero, zero, tzPlusOne);
           } else if (isTrunc) {

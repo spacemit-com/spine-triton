@@ -111,6 +111,20 @@ public:
 
   void runOnOperation() override {
     auto moduleOp = getOperation();
+
+    // tl.debug_barrier lowers to gpu.barrier, a CTA-scope synchronization
+    // with no meaning on the CPU target (each program executes sequentially).
+    // Erase it before the pipeline so downstream bufferization never sees an
+    // op with unknown memory side effects. Match by name string: the gpu
+    // dialect is not linked into this tool.
+    SmallVector<Operation *> barriers;
+    moduleOp->walk([&](Operation *op) {
+      if (op->getName().getStringRef() == "gpu.barrier")
+        barriers.push_back(op);
+    });
+    for (Operation *op : barriers)
+      op->erase();
+
     PassManager pm(&getContext(), moduleOp.getOperationName());
 
     // Lower tt.scan before Triton-to-structured / PtrAnalysis.
