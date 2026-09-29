@@ -224,6 +224,7 @@ build-x86:
         mkdir -p $DEST
         cp -a build-x86_64 $DEST/
         cp -a python/examples $DEST/
+        cp -a python/tests $DEST/
         echo "spine-triton build released to $DEST"
       else
         echo "X86 build failed, build-x86_64 directory not found"
@@ -255,7 +256,7 @@ test-spine-triton-integration:
   variables:
     GIT_SUBMODULE_STRATEGY: none
     CROSS_TOOLCHAIN_PATH: $DEFAULT_RISCV_ROOT_PATH
-    QEMU_PATH: /home/share/nfs_share/ci-node-compiler-env/jdsk-qemu-static-0.0.9_s2/qemu-riscv64-static
+    QEMU_PATH: $DEFAULT_RISCV_QEMU_PATH/bin/qemu-riscv64
     QEMU_SYSROOT: /home/share/nfs_share/ci-node-compiler-env/spacemit-toolchain-linux-glibc-x86_64-v1.2.4/sysroot
     RPC_PORT: "9999"
   script:
@@ -320,7 +321,9 @@ test-spine-triton-integration:
       done
 
       # spine-triton e2e 集成测试
-      # python3 $ST_DIR/examples/mm_block_ptr.py
+      python3 $ST_DIR/examples/mm_block_ptr.py
+      python3 $ST_DIR/tests/raw/test_raw_mv_svector.py
+      python3 $ST_DIR/tests/raw/test_raw_mv_three_stage.py
 
       # spine-FlagGems 算子测试
       rm -rf "$CI_PROJECT_DIR/flaggems"
