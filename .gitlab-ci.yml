@@ -70,6 +70,12 @@ lint:
 build-spine-mlir:
   extends: .x86-host-ci-env
   stage: build
+  # 显式 needs: 只等 lint, 避免无 needs 时落回 stage barrier
+  # 被 .pre 里的 code-review (AI review, 慢且无 artifacts) 串行阻塞
+  needs:
+    - job: lint
+      optional: true      # lint 只在 MR pipeline 存在 (rules 门控)
+      artifacts: false
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
@@ -106,6 +112,11 @@ build-spine-mlir:
 build-rpc-runtime:
   extends: .x86-host-ci-env
   stage: build
+  # 同 build-spine-mlir: 只等 lint, 不等 code-review
+  needs:
+    - job: lint
+      optional: true
+      artifacts: false
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
