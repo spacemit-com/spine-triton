@@ -76,7 +76,7 @@ build-spine-mlir:
     - if: $CI_PIPELINE_SOURCE == "web"
     - if: $CI_PIPELINE_SOURCE == "pipeline"
   tags:
-    - 92_12_host
+    - 92_13_host
   variables:
     GIT_SUBMODULE_STRATEGY: none
     MAX_JOBS: "16"
@@ -112,7 +112,7 @@ build-rpc-runtime:
     - if: $CI_PIPELINE_SOURCE == "web"
     - if: $CI_PIPELINE_SOURCE == "pipeline"
   tags:
-    - 92_12_host
+    - 92_13_host
   variables:
     GIT_SUBMODULE_STRATEGY: none
     CROSS_TOOLCHAIN_PATH: $DEFAULT_RISCV_ROOT_PATH
@@ -170,7 +170,7 @@ build-x86:
     - if: $CI_PIPELINE_SOURCE == "web"
     - if: $CI_PIPELINE_SOURCE == "pipeline"
   tags:
-    - 92_12_host
+    - 92_13_host
   variables:
     GIT_SUBMODULE_STRATEGY: none
     MAX_JOBS: "16"
@@ -240,7 +240,7 @@ test-spine-triton-integration:
     - job: build-rpc-runtime
       artifacts: true
   tags:
-    - 92_12_host
+    - 92_13_host
   variables:
     GIT_SUBMODULE_STRATEGY: none
     CROSS_TOOLCHAIN_PATH: $DEFAULT_RISCV_ROOT_PATH
