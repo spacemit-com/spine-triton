@@ -10,12 +10,29 @@ from __future__ import annotations
 
 import ast
 import inspect
-import re
 import textwrap
 from typing import Callable
 
 from .builtins import mma_cube as _mma_cube
-from .types import _TypedAnnotation
+from .types import (
+    _TypedAnnotation,
+    Ty,
+    ScalarTy,
+    VecTy,
+    TensorTy,
+    MemTy,
+    StridedLayout,
+    parse_ty,
+    parse_ty_or_opaque,
+    GENERIC_SPACE,
+    INDEX,
+    I1,
+    I64,
+    F32,
+    LLVM_PTR,
+    LLVM_DESC,
+    VOID,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -45,36 +62,6 @@ def _find_reassigned(body: list, outer_vars: set) -> set:
                 if isinstance(t, ast.Name) and t.id in outer_vars:
                     found.add(t.id)
     return found
-
-
-def _vec_n(mlir_type: str) -> int:
-    m = re.match(r'vector<(\d+)x', mlir_type)
-    if m:
-        return int(m.group(1))
-    raise ValueError(f"Cannot extract size from {mlir_type!r}")
-
-
-def _vec_elem(mlir_type: str) -> str:
-    m = re.match(r'vector<\d+x(.+)>', mlir_type)
-    if m:
-        return m.group(1)
-    raise ValueError(f"Cannot extract elem type from {mlir_type!r}")
-
-
-def _vec_elem_last(mlir_type: str) -> str:
-    """Element dtype of a rank-N vector (last component), e.g. vector<2x256xf16> -> f16."""
-    m = re.match(r'vector<(?:\d+x)+(bf16|f16|f32|f64|i8|i16|i32|i64)>', mlir_type)
-    if m:
-        return m.group(1)
-    raise ValueError(f"Cannot extract elem type from {mlir_type!r}")
-
-
-def _memref_elem(mlir_type: str) -> str:
-    """Element dtype of a plain ranked memref, e.g. memref<1x?x4x64xf16> -> f16."""
-    m = re.findall(r'x(bf16|f16|f32|f64|i8|i16|i32|i64)', mlir_type)
-    if m:
-        return m[-1]
-    raise ValueError(f"Cannot extract elem type from {mlir_type!r}")
 
 
 _SPINE_RAW_BUILTIN_NAMES = {
@@ -117,19 +104,6 @@ _SPINE_RAW_BUILTIN_NAMES = {
     "llvm_gep",
     "llvm_size",
 }
-
-# Element-type classification for §6.4 elementwise dispatch.
-_FLOAT_ELEMS = {"f16", "f32", "bf16", "f64"}
-_ELEM_BITS = {"i8": 8, "i16": 16, "i32": 32, "i64": 64, "f16": 16, "bf16": 16, "f32": 32, "f64": 64}
-
-
-def _is_float_elem(elem: str) -> bool:
-    return elem in _FLOAT_ELEMS
-
-
-def _elem_bits(elem: str) -> int:
-    return _ELEM_BITS[elem]
-
 
 # §6.4 binary operators → (float arith op, int arith op). None = not defined for
 # that domain (e.g. bitwise on floats, true division on ints).
@@ -203,6 +177,13 @@ def _resolve_dtype(node, default: str = "f16") -> str:
     return ast.literal_eval(node)
 
 
+def _is_vec2d_of(t: Ty, elems: tuple) -> bool:
+    """Rank-2 static-shape vector with a scalar element in `elems` (vmadot guard)."""
+    return (isinstance(t, VecTy) and len(t.dims) == 2
+            and all(isinstance(d, int) for d in t.dims)
+            and isinstance(t.elem, ScalarTy) and t.elem.name in elems)
+
+
 # ---------------------------------------------------------------------------
 # Builder-API codegen  (no string emission)
 # ---------------------------------------------------------------------------
@@ -231,28 +212,29 @@ class SpineMLIRBuilderCodegen:
 
     # --- Type helpers ---
 
-    def _t(self, s: str):
-        return self._b.parse_type(s)
+    def _tt(self, ty: Ty):
+        """Materialise a structured Ty at the C++ builder boundary."""
+        return self._b.parse_type(ty.mlir())
 
-    def _tf(self, name: str):
-        if name == "f16": return self._b.get_f16_type()
-        if name == "f32": return self._b.get_f32_type()
-        return self._t(name)
+    def _tf(self, ty: ScalarTy):
+        if ty.name == "f16": return self._b.get_f16_type()
+        if ty.name == "f32": return self._b.get_f32_type()
+        return self._tt(ty)
 
     # --- Constant helpers (no caching — caches cause dominance violations across regions) ---
 
     def _const_int(self, n: int):
         return self._b.create_arith_constant_index(n)
 
-    def _const_int_typed(self, n: int, elem: str):
-        return self._b.create_arith_constant_int(n, self._t(elem))
+    def _const_int_typed(self, n: int, elem: ScalarTy):
+        return self._b.create_arith_constant_int(n, self._tt(elem))
 
-    def _const_float(self, v: float, ftype: str = "f32"):
+    def _const_float(self, v: float, ftype: ScalarTy = F32):
         return self._b.create_arith_constant_float(v, self._tf(ftype))
 
     # --- Env helpers ---
 
-    def _bind(self, name: str, val, typ: str):
+    def _bind(self, name: str, val, typ: Ty):
         self._env[name] = (val, typ)
 
     def _get(self, name: str) -> tuple:
@@ -283,42 +265,43 @@ class SpineMLIRBuilderCodegen:
 
     # --- broadcast helper ---
 
-    def _broadcast_to(self, val, scalar_type_str: str, vec_type_str: str):
-        return self._b.create_vector_broadcast(val, self._t(vec_type_str))
+    def _broadcast_to(self, val, vec_ty: VecTy):
+        return self._b.create_vector_broadcast(val, self._tt(vec_ty))
 
-    def _match_operands(self, lv, lt: str, rv, rt: str):
-        lv_is = lt.startswith("vector<")
-        rv_is = rt.startswith("vector<")
+    def _match_operands(self, lv, lt: Ty, rv, rt: Ty):
+        lv_is = isinstance(lt, VecTy)
+        rv_is = isinstance(rt, VecTy)
         if lv_is and rv_is:
             if lt != rt:
                 raise NotImplementedError(f"mismatched vectors {lt}/{rt}")
             return lv, rv, lt
         if lv_is and not rv_is:
-            return lv, self._broadcast_to(rv, _vec_elem(lt), lt), lt
+            return lv, self._broadcast_to(rv, lt), lt
         if rv_is and not lv_is:
-            return self._broadcast_to(lv, _vec_elem(rt), rt), rv, rt
+            return self._broadcast_to(lv, rt), rv, rt
         return lv, rv, None
 
-    def _scalar_index_to_float(self, v, ftype: str):
+    def _scalar_index_to_float(self, v, ftype: ScalarTy):
         """index → ftype scalar: index_cast to i64, then sitofp. `index` is not
         an integer type in MLIR so sitofp can't take it directly."""
-        i64_v = self._b.create_arith_index_cast(v, self._t("i64"))
+        i64_v = self._b.create_arith_index_cast(v, self._tt(I64))
         return self._b.create_arith_sitofp(i64_v, self._tf(ftype))
 
-    def _promote_scalar_pair(self, lv, lt: str, rv, rt: str):
+    def _promote_scalar_pair(self, lv, lt: Ty, rv, rt: Ty):
         """Promote a pair of scalar operands to a common type, returning
-        (lv, rv, result_type_str). Handles index↔float mixes (mean = sum / N)
+        (lv, rv, result_type). Handles index↔float mixes (mean = sum / N)
         by lifting index to the float side; identical types pass through."""
         if lt == rt:
             return lv, rv, lt
-        l_f, r_f = _is_float_elem(lt), _is_float_elem(rt)
-        if l_f and rt == "index":
+        l_f = isinstance(lt, ScalarTy) and lt.is_float
+        r_f = isinstance(rt, ScalarTy) and rt.is_float
+        if l_f and rt == INDEX:
             return lv, self._scalar_index_to_float(rv, lt), lt
-        if r_f and lt == "index":
+        if r_f and lt == INDEX:
             return self._scalar_index_to_float(lv, rt), rv, rt
         if l_f and r_f:
             # differing float widths: widen the narrower to the wider
-            wide = lt if _elem_bits(lt) >= _elem_bits(rt) else rt
+            wide = lt if lt.bits >= rt.bits else rt
             if lt != wide:
                 lv = self._b.create_arith_extf(lv, self._tf(wide))
             if rt != wide:
@@ -341,6 +324,9 @@ class SpineMLIRBuilderCodegen:
 
         params = _parse_signature(fn)
         param_type_strs = [ann.mlir_type for _, ann in params]
+        # Structured parse at the annotation boundary — the only place raw type
+        # text enters codegen (fails fast, at generate time, on unknown text).
+        param_tys = [parse_ty(s) for s in param_type_strs]
 
         # Detect spine_raw module aliases
         try:
@@ -394,8 +380,8 @@ class SpineMLIRBuilderCodegen:
             self._constexpr_floats = dict(constexpr_floats)
             self._all_iter_arg_names = all_iter_arg_names
             # Bind params to block args
-            for (pname, ann), barg in zip(params, block_args):
-                self._env[pname] = (barg, ann.mlir_type)
+            for (pname, _ann), pty, barg in zip(params, param_tys, block_args):
+                self._env[pname] = (barg, pty)
             # Generate body statements
             for stmt in func_node.body:
                 if isinstance(stmt, ast.Pass):
@@ -450,7 +436,7 @@ class SpineMLIRBuilderCodegen:
 
         outer_vars = set(self._env.keys())
         reassigned = sorted(_find_reassigned(node.body, outer_vars))
-        ia_data = [(v, *self._get(v)) for v in reassigned]  # (name, val, typ_str)
+        ia_data = [(v, *self._get(v)) for v in reassigned]  # (name, val, ty)
         ia_vals = [d[1] for d in ia_data]
 
         prev_loop_iter = self._loop_iter_args
@@ -476,7 +462,7 @@ class SpineMLIRBuilderCodegen:
                 v, _, ts = d
                 saved[v] = self._env.get(v)
                 self._env[v] = (ria, ts)
-            self._env[loop_var] = (iv, "index")
+            self._env[loop_var] = (iv, INDEX)
             for stmt in node.body:
                 self._gen_stmt(stmt)
             yield_vals = [self._get(v)[0] for v in reassigned]
@@ -522,14 +508,14 @@ class SpineMLIRBuilderCodegen:
     def _gen_expr(self, node, hint: str = "") -> tuple:
         if isinstance(node, ast.Name):
             if node.id in self._constexpr_ints:
-                return self._const_int(self._constexpr_ints[node.id]), "index"
+                return self._const_int(self._constexpr_ints[node.id]), INDEX
             if node.id in self._constexpr_floats:
-                return self._const_float(self._constexpr_floats[node.id]), "f32"
+                return self._const_float(self._constexpr_floats[node.id]), F32
             return self._get(node.id)
         if isinstance(node, ast.Constant):
             v = node.value
-            if isinstance(v, int): return self._const_int(v), "index"
-            if isinstance(v, float): return self._const_float(v), "f32"
+            if isinstance(v, int): return self._const_int(v), INDEX
+            if isinstance(v, float): return self._const_float(v), F32
             raise NotImplementedError(f"Unsupported literal: {v!r}")
         if isinstance(node, ast.BinOp):
             return self._gen_binop(node)
@@ -545,20 +531,20 @@ class SpineMLIRBuilderCodegen:
         lv, lt = self._gen_expr(node.left)
         rv, rt = self._gen_expr(node.right)
         op = type(node.op)
-        if lt == "index" and rt == "index":
+        if lt == INDEX and rt == INDEX:
             m = {ast.Add: "addi", ast.Mult: "muli", ast.Sub: "subi", ast.FloorDiv: "divui"}
             opname = m.get(op)
             if opname is None:
                 raise NotImplementedError(f"BinOp {op.__name__} on index")
             fn = getattr(self._b, f"create_arith_{opname}")
-            return fn(lv, rv), "index"
+            return fn(lv, rv), INDEX
         # Scalar arithmetic (neither operand a vector). Covers reduce-then-scale
         # (mean = vreduce_sum(v) / N): promote index→f32 so a f32 scalar and an
         # index (e.g. row count N) can divide/multiply. _match_operands only
         # broadcasts scalars into vectors, so scalar×scalar must be handled here.
-        if not lt.startswith("vector<") and not rt.startswith("vector<"):
+        if not isinstance(lt, VecTy) and not isinstance(rt, VecTy):
             lv, rv, st = self._promote_scalar_pair(lv, lt, rv, rt)
-            is_f = _is_float_elem(st)
+            is_f = isinstance(st, ScalarTy) and st.is_float
             arith = _BINOP_ARITH.get(op)
             if arith is None:
                 raise NotImplementedError(f"Operator {op.__name__} not in _BINOP_ARITH")
@@ -570,8 +556,8 @@ class SpineMLIRBuilderCodegen:
         lv, rv, vt = self._match_operands(lv, lt, rv, rt)
         if vt is None:
             raise NotImplementedError(f"BinOp between {lt!r} and {rt!r}")
-        elem = _vec_elem(vt)
-        is_f = _is_float_elem(elem)
+        elem = vt.elem
+        is_f = elem.is_float
         arith = _BINOP_ARITH.get(op)
         if arith is None:
             raise NotImplementedError(f"Operator {op.__name__} not in _BINOP_ARITH")
@@ -584,20 +570,20 @@ class SpineMLIRBuilderCodegen:
     def _gen_unaryop(self, node: ast.UnaryOp) -> tuple:
         vv, vt = self._gen_expr(node.operand)
         # Scalar negation (e.g. -1e38 as fill= argument, or -mean in a formula)
-        if not vt.startswith("vector<"):
-            if isinstance(node.op, ast.USub) and _is_float_elem(vt):
+        if not isinstance(vt, VecTy):
+            if isinstance(node.op, ast.USub) and isinstance(vt, ScalarTy) and vt.is_float:
                 return self._b.create_arith_negf(vv), vt
             raise NotImplementedError(f"unary on non-vector {vt}")
-        elem = _vec_elem(vt)
+        elem = vt.elem
         if isinstance(node.op, ast.USub):
-            if _is_float_elem(elem):
+            if elem.is_float:
                 return self._b.create_arith_negf(vv), vt
-            zero = self._broadcast_to(self._const_int_typed(0, elem), elem, vt)
+            zero = self._broadcast_to(self._const_int_typed(0, elem), vt)
             return self._b.create_arith_subi(zero, vv), vt
         if isinstance(node.op, ast.Invert):
-            if _is_float_elem(elem):
+            if elem.is_float:
                 raise NotImplementedError(f"~a not defined for float {elem}")
-            ones = self._broadcast_to(self._const_int_typed(-1, elem), elem, vt)
+            ones = self._broadcast_to(self._const_int_typed(-1, elem), vt)
             return self._b.create_arith_xori(vv, ones), vt
         raise NotImplementedError(f"Unary {type(node.op).__name__}")
 
@@ -613,12 +599,13 @@ class SpineMLIRBuilderCodegen:
         pred_pair = _CMP_PRED.get(op)
         if pred_pair is None:
             raise NotImplementedError(f"Compare {op.__name__}")
-        elem = _vec_elem(vt)
-        if _is_float_elem(elem):
+        elem = vt.elem
+        i1_vt = VecTy((vt.first_dim,), I1)
+        if elem.is_float:
             pred = pred_pair[0]
-            return self._b.create_arith_cmpf(pred, lv, rv), f"vector<{_vec_n(vt)}xi1>"
+            return self._b.create_arith_cmpf(pred, lv, rv), i1_vt
         pred = pred_pair[1]
-        return self._b.create_arith_cmpi(pred, lv, rv), f"vector<{_vec_n(vt)}xi1>"
+        return self._b.create_arith_cmpi(pred, lv, rv), i1_vt
 
     def _gen_call_expr(self, node: ast.Call) -> tuple:
         b = self._aliases
@@ -638,7 +625,7 @@ class SpineMLIRBuilderCodegen:
         if _is_spine_raw_attr(node.func, "imin", b):
             av, _ = self._gen_expr(node.args[0])
             bv, _ = self._gen_expr(node.args[1])
-            return self._b.create_arith_minsi(av, bv), "index"
+            return self._b.create_arith_minsi(av, bv), INDEX
         for nm in ("vmin", "vmax"):
             if _is_spine_raw_attr(node.func, nm, b):
                 return self._gen_vminmax(node, nm)
@@ -690,50 +677,57 @@ class SpineMLIRBuilderCodegen:
 
     def _gen_vzero(self, node: ast.Call) -> tuple:
         kwargs = {kw.arg: kw.value for kw in node.keywords}
-        dtype = _resolve_dtype(node.args[0] if node.args else None, "f32")
+        dt = ScalarTy(_resolve_dtype(node.args[0] if node.args else None, "f32"))
         vl = self._require_vl()
         group = self._try_const_int(kwargs["group"]) if "group" in kwargs else None
-        vt = f"vector<{group}x{vl}x{dtype}>" if group else f"vector<{vl}x{dtype}>"
-        zero = self._const_float(0.0, dtype)
-        return self._b.create_vector_broadcast(zero, self._t(vt)), vt
+        vt = VecTy((group, vl), dt) if group else VecTy((vl,), dt)
+        zero = self._const_float(0.0, dt)
+        return self._b.create_vector_broadcast(zero, self._tt(vt)), vt
 
     def _gen_vmacc(self, node: ast.Call) -> tuple:
         acc_v, acc_t = self._gen_expr(node.args[0])
         x_v, x_t = self._gen_expr(node.args[1])
         y_v, y_t = self._gen_expr(node.args[2])
-        acc_elem = _vec_elem(acc_t)
-        n = _vec_n(acc_t)
-        wide_t = f"vector<{n}x{acc_elem}>"
-        wide_T = self._t(wide_t)
-        if x_t != wide_t:
+        if not isinstance(acc_t, VecTy):
+            raise ValueError(f"vmacc type error: acc must be a vector, got {acc_t}")
+        # Widening fma: x/y are extended to the accumulator's element type when
+        # they differ (e.g. f16 operands into an f32 accumulator).
+        wide_T = self._tt(acc_t)
+        if x_t != acc_t:
             x_v = self._b.create_arith_extf(x_v, wide_T)
-        if y_t != wide_t:
+        if y_t != acc_t:
             y_v = self._b.create_arith_extf(y_v, wide_T)
         return self._b.create_math_fma(x_v, y_v, acc_v), acc_t
 
     def _gen_vreduce_sum(self, node: ast.Call) -> tuple:
         v_v, v_t = self._gen_expr(node.args[0])
-        elem = _vec_elem(v_t)
+        elem = self._reduce_elem(v_t, "vreduce_sum")
         return self._b.create_vector_reduction("add", v_v), elem
 
     def _gen_vreduce_max(self, node: ast.Call) -> tuple:
         v_v, v_t = self._gen_expr(node.args[0])
-        elem = _vec_elem(v_t)
-        if not _is_float_elem(elem):
+        elem = self._reduce_elem(v_t, "vreduce_max")
+        if not elem.is_float:
             raise NotImplementedError(f"vreduce_max on integer element {elem!r} not yet wired (add maxsi to binding)")
         return self._b.create_vector_reduction("maxf", v_v), elem
 
     def _gen_vreduce_min(self, node: ast.Call) -> tuple:
         v_v, v_t = self._gen_expr(node.args[0])
-        elem = _vec_elem(v_t)
-        if not _is_float_elem(elem):
+        elem = self._reduce_elem(v_t, "vreduce_min")
+        if not elem.is_float:
             raise NotImplementedError(f"vreduce_min on integer element {elem!r} not yet wired (add minsi to binding)")
         return self._b.create_vector_reduction("minf", v_v), elem
 
     def _gen_vreduce_mul(self, node: ast.Call) -> tuple:
         v_v, v_t = self._gen_expr(node.args[0])
-        elem = _vec_elem(v_t)
+        elem = self._reduce_elem(v_t, "vreduce_mul")
         return self._b.create_vector_reduction("mul", v_v), elem
+
+    @staticmethod
+    def _reduce_elem(v_t: Ty, which: str) -> ScalarTy:
+        if not isinstance(v_t, VecTy):
+            raise ValueError(f"{which} expects a vector, got {v_t}")
+        return v_t.elem
 
     # ------------------------------------------------------------------
     # vmadot / vminmax / unary math / abs / cast / select
@@ -743,16 +737,14 @@ class SpineMLIRBuilderCodegen:
         acc_v, acc_t = self._gen_expr(node.args[0])
         x_v, x_t = self._gen_expr(node.args[1])
         y_v, y_t = self._gen_expr(node.args[2])
-        xm = re.match(r'vector<(\d+)x(\d+)x(f16|bf16)>', x_t)
-        ym = re.match(r'vector<(\d+)x(\d+)x(f16|bf16)>', y_t)
-        am = re.match(r'vector<(\d+)x(\d+)xf32>', acc_t)
-        if not (xm and ym and am):
+        if not (_is_vec2d_of(x_t, ("f16", "bf16")) and _is_vec2d_of(y_t, ("f16", "bf16"))
+                and _is_vec2d_of(acc_t, ("f32",))):
             raise ValueError(f"vmadot type error: x={x_t} y={y_t} acc={acc_t}")
-        b1, b2, B = int(xm.group(1)), int(ym.group(1)), int(am.group(1))
+        b1, b2, B = x_t.dims[0], y_t.dims[0], acc_t.dims[0]
         if B != b1 * b2:
             raise ValueError(f"vmadot acc rows must be b1·b2={b1*b2}, got {B}")
-        m_s, n_s, k_s = _mma_cube(xm.group(3))
-        result_T = self._t(acc_t)
+        m_s, n_s, k_s = _mma_cube(x_t.elem.name)
+        result_T = self._tt(acc_t)
         res = self._b.create_generic_op("vector_ext.cross_batch_matmul", [x_v, y_v, acc_v],
                                         {"k": k_s, "m": m_s, "n": n_s}, [result_T])
         return res[0], acc_t
@@ -763,8 +755,7 @@ class SpineMLIRBuilderCodegen:
         lv, rv, vt = self._match_operands(lv, lt, rv, rt)
         if vt is None:
             raise NotImplementedError(f"{which}: needs at least one vector")
-        elem = _vec_elem(vt)
-        if _is_float_elem(elem):
+        if vt.elem.is_float:
             fn = self._b.create_arith_minimumf if which == "vmin" else self._b.create_arith_maximumf
         else:
             fn = self._b.create_arith_minsi if which == "vmin" else self._b.create_arith_maxsi
@@ -777,56 +768,49 @@ class SpineMLIRBuilderCodegen:
 
     def _gen_abs(self, node: ast.Call) -> tuple:
         vv, vt = self._gen_expr(node.args[0])
-        elem = _vec_elem(vt)
-        fn = self._b.create_math_absf if _is_float_elem(elem) else self._b.create_math_absi
+        elem = self._reduce_elem(vt, "abs")
+        fn = self._b.create_math_absf if elem.is_float else self._b.create_math_absi
         return fn(vv), vt
 
     def _gen_cast(self, node: ast.Call) -> tuple:
         vv, vt = self._gen_expr(node.args[0])
-        # Scalar cast (e.g. cast(i, f32) where i is a scalar index) — used by
-        # index-tracking reductions to combine loop counters with float lanes.
-        if not vt.startswith("vector<"):
-            dst_elem = _resolve_dtype(node.args[1], vt)
-            if dst_elem == vt:
+        if not isinstance(vt, VecTy):
+            # Scalar cast (e.g. cast(i, f32) where i is a scalar index) — used by
+            # index-tracking reductions to combine loop counters with float lanes.
+            dst = vt if node.args[1] is None else ScalarTy(_resolve_dtype(node.args[1]))
+            if dst == vt:
                 return vv, vt
-            if vt == "index" and _is_float_elem(dst_elem):
-                return self._scalar_index_to_float(vv, dst_elem), dst_elem
-            if _is_float_elem(vt) and _is_float_elem(dst_elem):
-                fn = self._b.create_arith_extf if _elem_bits(dst_elem) > _elem_bits(vt) \
+            if vt == INDEX and dst.is_float:
+                return self._scalar_index_to_float(vv, dst), dst
+            if isinstance(vt, ScalarTy) and vt.is_float and dst.is_float:
+                fn = self._b.create_arith_extf if dst.bits > vt.bits \
                     else self._b.create_arith_truncf
-                return fn(vv, self._tf(dst_elem)), dst_elem
-            raise NotImplementedError(f"scalar cast {vt!r} → {dst_elem!r} not supported")
-        # Element token: _vec_elem_last handles rank-N (vector<16x32xf32>→f32);
-        # fall back to index detection since _vec_elem_last's regex omits index.
-        src_elem = _vec_elem_last(vt)
-        if src_elem is None:
-            src_elem = "index" if vt.endswith("xindex>") else _vec_elem(vt)
-        dst_elem = _resolve_dtype(node.args[1], src_elem)
+                return fn(vv, self._tf(dst)), dst
+            raise NotImplementedError(f"scalar cast {vt!r} → {dst!r} not supported")
+        src_elem = vt.elem
+        dst_elem = ScalarTy(_resolve_dtype(node.args[1], src_elem.name))
         if dst_elem == src_elem:
             return vv, vt
-        # Rebuild the vector type by swapping only the trailing element token
-        # (can't rfind("x") because "index" itself contains an 'x').
-        prefix = vt[:vt.rfind("x" + src_elem)] + "x"
-        dst_type_str = prefix + dst_elem + ">"
-        dst_T = self._t(dst_type_str)
+        dst_ty = VecTy(vt.dims, dst_elem)
+        dst_T = self._tt(dst_ty)
         # index-element vector → float: index has no bit width for extf/sitofp
         # directly; go index → i64 → float (mirrors scalar path).
-        if src_elem == "index" and _is_float_elem(dst_elem):
-            i64_vt = prefix + "i64>"
-            i64_v = self._b.create_arith_index_cast(vv, self._t(i64_vt))
-            return self._b.create_arith_sitofp(i64_v, dst_T), dst_type_str
-        sf, df = _is_float_elem(src_elem), _is_float_elem(dst_elem)
+        if src_elem == INDEX and dst_elem.is_float:
+            i64_ty = VecTy(vt.dims, I64)
+            i64_v = self._b.create_arith_index_cast(vv, self._tt(i64_ty))
+            return self._b.create_arith_sitofp(i64_v, dst_T), dst_ty
+        sf, df = src_elem.is_float, dst_elem.is_float
         if sf and df:
-            fn = self._b.create_arith_extf if _elem_bits(dst_elem) > _elem_bits(
-                src_elem) else self._b.create_arith_truncf
+            fn = self._b.create_arith_extf if dst_elem.bits > src_elem.bits \
+                else self._b.create_arith_truncf
         elif sf and not df:
             fn = self._b.create_arith_fptosi
         elif not sf and df:
             fn = self._b.create_arith_sitofp
         else:
-            fn = self._b.create_arith_extsi if _elem_bits(dst_elem) > _elem_bits(
-                src_elem) else self._b.create_arith_trunci
-        return fn(vv, dst_T), dst_type_str
+            fn = self._b.create_arith_extsi if dst_elem.bits > src_elem.bits \
+                else self._b.create_arith_trunci
+        return fn(vv, dst_T), dst_ty
 
     def _gen_select(self, node: ast.Call) -> tuple:
         mv, mt = self._gen_expr(node.args[0])
@@ -843,23 +827,24 @@ class SpineMLIRBuilderCodegen:
 
     def _gen_vshape(self, node: ast.Call) -> tuple:
         vv, vt = self._gen_expr(node.args[0])
-        elem = _vec_elem_last(vt)
+        if not isinstance(vt, VecTy):
+            raise ValueError(f"vshape expects a vector, got {vt}")
         dims = [self._try_const_int(e) for e in node.args[1].elts] \
             if isinstance(node.args[1], ast.Tuple) else [self._try_const_int(node.args[1])]
         if any(d is None for d in dims):
             raise ValueError("vshape shape must be compile-time ints")
-        out_t = f"vector<{'x'.join(str(d) for d in dims)}x{elem}>"
-        return self._b.create_vector_shape_cast(vv, self._t(out_t)), out_t
+        out_t = VecTy(tuple(dims), vt.elem)
+        return self._b.create_vector_shape_cast(vv, self._tt(out_t)), out_t
 
     def _gen_vbroadcast(self, node: ast.Call) -> tuple:
         vv, vt = self._gen_expr(node.args[0])
         n = self._try_const_int(node.args[1])
         if n is None:
             raise ValueError("vbroadcast n must be a compile-time int")
-        elem = _vec_elem_last(vt)
-        inner = _vec_n(vt)
-        out_t = f"vector<{n}x{inner}x{elem}>"
-        return self._b.create_vector_broadcast(vv, self._t(out_t)), out_t
+        if not isinstance(vt, VecTy):
+            raise ValueError(f"vbroadcast expects a vector, got {vt}")
+        out_t = VecTy((n, vt.first_dim), vt.elem)
+        return self._b.create_vector_broadcast(vv, self._tt(out_t)), out_t
 
     # ------------------------------------------------------------------
     # alloc
@@ -870,28 +855,28 @@ class SpineMLIRBuilderCodegen:
         shape_node = node.args[0]
         assert isinstance(shape_node, ast.Tuple)
         dt_node = node.args[1] if len(node.args) > 1 else kwargs.get("dtype")
-        dtype = _resolve_dtype(dt_node, "f16")
-        dims: list[str] = []
+        dtype = ScalarTy(_resolve_dtype(dt_node, "f16"))
+        dims: list = []
         dyn_vals = []
         for e in shape_node.elts:
             cv = self._try_const_int(e)
             if cv is not None:
-                dims.append(str(cv))
+                dims.append(cv)
             else:
                 vv, _ = self._gen_expr(e)
-                dims.append("?")
+                dims.append(None)
                 dyn_vals.append(vv)
-        mtype_str = f"memref<{'x'.join(dims)}x{dtype}>"
-        return self._b.create_memref_alloc(self._t(mtype_str), dyn_vals if dyn_vals else None, 64), mtype_str
+        mt = MemTy(tuple(dims), dtype)
+        return self._b.create_memref_alloc(self._tt(mt), dyn_vals if dyn_vals else None, 64), mt
 
     # ------------------------------------------------------------------
     # _ranked_cast helper
     # ------------------------------------------------------------------
 
-    def _ranked_cast(self, ptr_v, ptr_t: str) -> tuple:
-        if ptr_t.startswith("memref<*x"):
-            ranked_t = ptr_t.replace("memref<*x", "memref<?x", 1)
-            return self._b.create_memref_cast(self._t(ranked_t), ptr_v), ranked_t
+    def _ranked_cast(self, ptr_v, ptr_t: Ty) -> tuple:
+        if isinstance(ptr_t, MemTy) and ptr_t.unranked:
+            ranked_t = ptr_t.as_dynamic_ranked()
+            return self._b.create_memref_cast(self._tt(ranked_t), ptr_v), ranked_t
         return ptr_v, ptr_t
 
     # ------------------------------------------------------------------
@@ -902,9 +887,9 @@ class SpineMLIRBuilderCodegen:
         kwargs = {kw.arg: kw.value for kw in node.keywords}
         ptr_v, ptr_t = self._gen_expr(node.args[0])
         idx_node = node.args[1]
-        dtype = _resolve_dtype(kwargs.get("dtype"), "f16")
+        dtype = ScalarTy(_resolve_dtype(kwargs.get("dtype"), "f16"))
         vl = self._require_vl()
-        vt = f"vector<{vl}x{dtype}>"
+        vt = VecTy((vl,), dtype)
         # fill= kwarg: value for padding of tail tiles (default 0.0).
         # Softmax exp-accumulation needs fill=-1e38 so exp(fill-xmax)≈0.
         fill_node = kwargs.get("fill")
@@ -920,22 +905,22 @@ class SpineMLIRBuilderCodegen:
 
         # Packed cube tensor from vpack(memref)
         group_kw = kwargs.get("group")
-        if ptr_t.startswith("tensor<") and isinstance(idx_node, ast.Tuple) and group_kw is not None:
+        if isinstance(ptr_t, TensorTy) and isinstance(idx_node, ast.Tuple) and group_kw is not None:
             group = self._try_const_int(group_kw)
             assert group is not None
-            elem = re.search(r'(bf16|f16|f32|f64|i8|i16|i32|i64)>$', ptr_t).group(1)
+            elem = ptr_t.elem
             idx_vs = [self._gen_expr(e)[0] for e in idx_node.elts]
             c0 = self._const_int(0)
-            flat_t = f"vector<{group * vl}x{elem}>"
-            flat_v = self._b.create_vector_transfer_read(self._t(flat_t), ptr_v, idx_vs + [c0], pad, [True])
-            out_t = f"vector<{group}x{vl}x{elem}>"
-            return self._b.create_vector_shape_cast(flat_v, self._t(out_t)), out_t
+            flat_t = VecTy((group * vl,), elem)
+            flat_v = self._b.create_vector_transfer_read(self._tt(flat_t), ptr_v, idx_vs + [c0], pad, [True])
+            out_t = VecTy((group, vl), elem)
+            return self._b.create_vector_shape_cast(flat_v, self._tt(out_t)), out_t
 
-        if not ptr_t.startswith("memref<*x"):
+        if not (isinstance(ptr_t, MemTy) and ptr_t.unranked):
             # Ranked memref (alloc scratch)
             assert isinstance(idx_node, ast.Tuple)
             idx_vs = [self._gen_expr(e)[0] for e in idx_node.elts]
-            return self._b.create_vector_transfer_read(self._t(vt), ptr_v, idx_vs, pad, [True]), vt
+            return self._b.create_vector_transfer_read(self._tt(vt), ptr_v, idx_vs, pad, [True]), vt
 
         # External unranked pointer, tail path: _active_valid (set by a narrowing
         # vconfig) bounds the read to valid elements + fill-pads the rest.
@@ -945,28 +930,27 @@ class SpineMLIRBuilderCodegen:
         if valid_v is not None:
             assert "group" not in kwargs
             off_v, _ = self._gen_expr(idx_node)
-            sp = "#ptr.generic_space"
-            src_mr_t = f"memref<?x{dtype}, strided<[?], offset: ?>, {sp}>"
-            rsrc = self._b.create_memref_reinterpret_cast(self._t(src_mr_t), ptr_v, [off_v], [valid_v],
+            src_mr_t = MemTy((None,), dtype, StridedLayout((None,), True), GENERIC_SPACE)
+            rsrc = self._b.create_memref_reinterpret_cast(self._tt(src_mr_t), ptr_v, [off_v], [valid_v],
                                                           [self._const_int(1)])
-            tens_t = f"tensor<?x{dtype}>"
-            tsrc = self._b.create_bufferization_to_tensor(rsrc, self._t(tens_t))
-            fill_tens_t = f"tensor<{vl}x{dtype}>"
-            escr = self._b.create_tensor_empty(self._t(fill_tens_t))
+            tens_t = TensorTy((None,), dtype)
+            tsrc = self._b.create_bufferization_to_tensor(rsrc, self._tt(tens_t))
+            fill_tens_t = TensorTy((vl,), dtype)
+            escr = self._b.create_tensor_empty(self._tt(fill_tens_t))
             fscr = self._b.create_linalg_fill(pad, escr)
             c0 = self._const_int(0)
             filled = self._b.create_tensor_insert_slice(tsrc, fscr, [c0], [valid_v], [self._const_int(1)])
-            return self._b.create_vector_transfer_read(self._t(vt), filled, [c0], pad, [True]), vt
+            return self._b.create_vector_transfer_read(self._tt(vt), filled, [c0], pad, [True]), vt
 
         ranked_v, ranked_t = self._ranked_cast(ptr_v, ptr_t)
         off_v, _ = self._gen_expr(idx_node)
         group = self._try_const_int(group_kw) if group_kw is not None else None
         if group:
-            flat_t = f"vector<{group * vl}x{dtype}>"
-            flat_v = self._b.create_vector_transfer_read(self._t(flat_t), ranked_v, [off_v], pad, [True])
-            out_t = f"vector<{group}x{vl}x{dtype}>"
-            return self._b.create_vector_shape_cast(flat_v, self._t(out_t)), out_t
-        return self._b.create_vector_transfer_read(self._t(vt), ranked_v, [off_v], pad, [True]), vt
+            flat_t = VecTy((group * vl,), dtype)
+            flat_v = self._b.create_vector_transfer_read(self._tt(flat_t), ranked_v, [off_v], pad, [True])
+            out_t = VecTy((group, vl), dtype)
+            return self._b.create_vector_shape_cast(flat_v, self._tt(out_t)), out_t
+        return self._b.create_vector_transfer_read(self._tt(vt), ranked_v, [off_v], pad, [True]), vt
 
     # ------------------------------------------------------------------
     # sload — scalar load from a pointer at a dynamic index
@@ -982,7 +966,7 @@ class SpineMLIRBuilderCodegen:
         kwargs = {kw.arg: kw.value for kw in node.keywords}
         ptr_v, ptr_t = self._gen_expr(node.args[0])
         idx_v, _ = self._gen_expr(node.args[1])
-        dtype = _resolve_dtype(kwargs.get("dtype"), "f32")
+        dtype = ScalarTy(_resolve_dtype(kwargs.get("dtype"), "f32"))
         ranked_v, _ = self._ranked_cast(ptr_v, ptr_t)
         return self._b.create_memref_load(ranked_v, [idx_v]), dtype
 
@@ -1029,18 +1013,20 @@ class SpineMLIRBuilderCodegen:
         else:
             emit_name = op_name
             attrs = {}
-        result_types = [] if result_t == "()" else [self._t(result_t)]
+        result_ty = parse_ty_or_opaque(result_t)
+        is_void = result_ty == VOID
+        result_types = [] if is_void else [self._tt(result_ty)]
         res = self._b.create_op_textattr(emit_name, operand_vs, attrs, result_types)
-        if result_t == "()":
-            return None, "()"
-        return res[0], result_t
+        if is_void:
+            return None, VOID
+        return res[0], result_ty
 
     def _gen_llvm_poison(self, node: ast.Call) -> tuple:
         """llvm_poison("vector<[8]xf16>") → llvm.mlir.poison : T (vle passthru)."""
         if not isinstance(node.args[0], ast.Constant):
             raise ValueError("llvm_poison: type must be a string literal")
-        ty = node.args[0].value
-        res = self._b.create_op_textattr("llvm.mlir.poison", [], {}, [self._t(ty)])
+        ty = parse_ty_or_opaque(node.args[0].value)
+        res = self._b.create_op_textattr("llvm.mlir.poison", [], {}, [self._tt(ty)])
         return res[0], ty
 
     def _gen_llvm_const(self, node: ast.Call) -> tuple:
@@ -1061,15 +1047,15 @@ class SpineMLIRBuilderCodegen:
                 raise ValueError("llvm_const: value must be a compile-time int/float literal")
         if not isinstance(node.args[1], ast.Constant):
             raise ValueError("llvm_const: type must be a string literal")
-        ty = node.args[1].value
-        if ty.startswith("vector<"):
+        ty = parse_ty_or_opaque(node.args[1].value)
+        if isinstance(ty, VecTy):
             lit = f"{fval if fval is not None else val}"
-            attr = f"dense<{lit}> : {ty}"
-        elif _is_float_elem(ty):
-            attr = f"{fval if fval is not None else float(val)} : {ty}"
+            attr = f"dense<{lit}> : {ty.mlir()}"
+        elif isinstance(ty, ScalarTy) and ty.is_float:
+            attr = f"{fval if fval is not None else float(val)} : {ty.mlir()}"
         else:
-            attr = f"{val} : {ty}"
-        res = self._b.create_op_textattr("llvm.mlir.constant", [], {"value": attr}, [self._t(ty)])
+            attr = f"{val} : {ty.mlir()}"
+        res = self._b.create_op_textattr("llvm.mlir.constant", [], {"value": attr}, [self._tt(ty)])
         return res[0], ty
 
     def _gen_llvm_base_ptr(self, node: ast.Call) -> tuple:
@@ -1079,11 +1065,11 @@ class SpineMLIRBuilderCodegen:
         descriptor; extractvalue[1] is the aligned pointer field.
         """
         ptr_v, ptr_t = self._gen_expr(node.args[0])
-        struct_t = "!llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>"
-        desc = self._b.create_op_textattr("builtin.unrealized_conversion_cast", [ptr_v], {}, [self._t(struct_t)])
+        desc = self._b.create_op_textattr("builtin.unrealized_conversion_cast", [ptr_v], {},
+                                          [self._tt(LLVM_DESC)])
         res = self._b.create_op_textattr("llvm.extractvalue", [desc[0]], {"position": "array<i64: 1>"},
-                                         [self._t("!llvm.ptr")])
-        return res[0], "!llvm.ptr"
+                                         [self._tt(LLVM_PTR)])
+        return res[0], LLVM_PTR
 
     def _gen_llvm_gep(self, node: ast.Call) -> tuple:
         """llvm_gep(base_ptr, offset, elem="f16") → llvm.getelementptr."""
@@ -1092,24 +1078,24 @@ class SpineMLIRBuilderCodegen:
         off_v, off_t = self._gen_expr(node.args[1])
         # llvm.getelementptr requires i64 offset, not index. Default-path
         # range/arithmetic produces index; cast when needed.
-        if off_t == "index":
-            off_v = self._b.create_arith_index_cast(off_v, self._t("i64"))
+        if off_t == INDEX:
+            off_v = self._b.create_arith_index_cast(off_v, self._tt(I64))
         elem = _resolve_dtype(kwargs.get("elem"), "f16")
         res = self._b.create_op_textattr("llvm.getelementptr", [base_v, off_v],
                                          {"rawConstantIndices": "array<i32: -2147483648>", "elem_type": elem},
-                                         [self._t("!llvm.ptr")])
-        return res[0], "!llvm.ptr"
+                                         [self._tt(LLVM_PTR)])
+        return res[0], LLVM_PTR
 
     def _gen_llvm_size(self, node: ast.Call) -> tuple:
         """llvm_size(mem, dim=0) → llvm.extractvalue %desc[3, dim] : i64 (size field)."""
         kwargs = {kw.arg: kw.value for kw in node.keywords}
         ptr_v, ptr_t = self._gen_expr(node.args[0])
         dim = self._try_const_int(kwargs.get("dim")) if "dim" in kwargs else 0
-        struct_t = "!llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>"
-        desc = self._b.create_op_textattr("builtin.unrealized_conversion_cast", [ptr_v], {}, [self._t(struct_t)])
+        desc = self._b.create_op_textattr("builtin.unrealized_conversion_cast", [ptr_v], {},
+                                          [self._tt(LLVM_DESC)])
         res = self._b.create_op_textattr("llvm.extractvalue", [desc[0]], {"position": f"array<i64: 3, {dim}>"},
-                                         [self._t("i64")])
-        return res[0], "i64"
+                                         [self._tt(I64)])
+        return res[0], I64
 
     def _gen_viota(self, node: ast.Call) -> tuple:
         """viota() → vector<VLxf32> = [0.0, 1.0, .., VL-1.0].
@@ -1123,19 +1109,19 @@ class SpineMLIRBuilderCodegen:
         memref.store / scf.for / transfer_read (the _gen_spread path, K3-proven).
         """
         vl = self._require_vl()
-        vt = f"vector<{vl}xf32>"
-        scr = self._b.create_memref_alloc(self._t(f"memref<{vl}xf32>"), None, 64)
+        vt = VecTy((vl,), F32)
+        scr = self._b.create_memref_alloc(self._tt(MemTy((vl,), F32)), None, 64)
         c0, c1, cvl = self._const_int(0), self._const_int(1), self._const_int(vl)
 
         def fill_body(b, iv, _):
-            i64 = b.create_arith_index_cast(iv, self._t("i64"))
-            fv = b.create_arith_sitofp(i64, self._tf("f32"))
+            i64 = b.create_arith_index_cast(iv, self._tt(I64))
+            fv = b.create_arith_sitofp(i64, self._tf(F32))
             b.create_memref_store(fv, scr, [iv])
             return []
 
         self._b.create_scf_for(c0, cvl, c1, [], fill_body)
-        pad = self._const_float(0.0, "f32")
-        return self._b.create_vector_transfer_read(self._t(vt), scr, [c0], pad, [True]), vt
+        pad = self._const_float(0.0, F32)
+        return self._b.create_vector_transfer_read(self._tt(vt), scr, [c0], pad, [True]), vt
 
     # ------------------------------------------------------------------
     # vstore
@@ -1152,38 +1138,38 @@ class SpineMLIRBuilderCodegen:
             if any(d is None for d in dims) or len(dims) != 2:
                 raise ValueError("vstore shape= must be 2-tuple of compile-time ints")
             R, C = dims
-            elem = _vec_elem_last(val_t)
+            if not isinstance(val_t, VecTy):
+                raise TypeError(f"vstore shape= expects a vector value, got '{val_t}'")
+            elem = val_t.elem
             off_v, _ = self._gen_expr(idx_node)
-            sp = "#ptr.generic_space"
-            m2t = f"memref<{R}x{C}x{elem}, strided<[{C}, 1], offset: ?>, {sp}>"
+            m2t = MemTy((R, C), elem, StridedLayout((C, 1), True), GENERIC_SPACE)
             # 结果类型两维全静态 RxC:mixed 传 int,否则 static_sizes 全 dynamic 冲突。
-            r2 = self._b.create_memref_reinterpret_cast_mixed(self._t(m2t), ptr_v, [off_v], [R, C], [C, 1])
+            r2 = self._b.create_memref_reinterpret_cast_mixed(self._tt(m2t), ptr_v, [off_v], [R, C], [C, 1])
             c0 = self._const_int(0)
             self._b.create_vector_transfer_write(val_v, r2, [c0, c0], [False, False])
             return
         assert not isinstance(idx_node, ast.Tuple)
         idx_v, _ = self._gen_expr(idx_node)
-        if not val_t.startswith("vector<"):
+        if not isinstance(val_t, VecTy):
             raise TypeError(f"vstore expects a vector value (width = VL), got scalar '{val_t}'. "
                             f"Use sstore(ptr, idx, scalar) for a single scalar write.")
-        vn = _vec_n(val_t)
-        elem = _vec_elem(val_t)
-        sp = "#ptr.generic_space"
+        vn = val_t.first_dim
+        elem = val_t.elem
         c0 = self._const_int(0)
         if self._active_valid is None:
             # Full-tile path: static memref<VLxT, strided<[1], offset:?>>.
             # Dynamic memref<?xT> causes VL to be clamped by descriptor size
             # → only lane0 written. Static size bypasses clamping.
-            m1t = f"memref<{vn}x{elem}, strided<[1], offset: ?>, {sp}>"
-            r1 = self._b.create_memref_reinterpret_cast_mixed(self._t(m1t), ptr_v, [idx_v], [vn], [1])
+            m1t = MemTy((vn,), elem, StridedLayout((1,), True), GENERIC_SPACE)
+            r1 = self._b.create_memref_reinterpret_cast_mixed(self._tt(m1t), ptr_v, [idx_v], [vn], [1])
             self._b.create_vector_transfer_write(val_v, r1, [c0], [True])
         else:
             # Tail-tile path: only _active_valid < VL elements are valid.
             # Use dynamic memref<?xT> with size=valid + in_bounds=[false]
             # so transfer_write generates a masked store respecting the bound.
             valid_v = self._active_valid
-            m1t = f"memref<?x{elem}, strided<[?], offset: ?>, {sp}>"
-            r1 = self._b.create_memref_reinterpret_cast(self._t(m1t), ptr_v, [idx_v], [valid_v], [self._const_int(1)])
+            m1t = MemTy((None,), elem, StridedLayout((None,), True), GENERIC_SPACE)
+            r1 = self._b.create_memref_reinterpret_cast(self._tt(m1t), ptr_v, [idx_v], [valid_v], [self._const_int(1)])
             self._b.create_vector_transfer_write(val_v, r1, [c0], [False])
 
     # ------------------------------------------------------------------
@@ -1200,7 +1186,7 @@ class SpineMLIRBuilderCodegen:
         ptr_v, ptr_t = self._gen_expr(node.args[0])
         idx_v, _ = self._gen_expr(node.args[1])
         val_v, val_t = self._gen_expr(node.args[2])
-        if val_t.startswith("vector<"):
+        if isinstance(val_t, VecTy):
             raise TypeError(f"sstore expects a scalar value, got vector '{val_t}'. "
                             f"Use vstore(ptr, idx, vec) for a VL-wide vector write.")
         store_v, _ = self._ranked_cast(ptr_v, ptr_t)
@@ -1213,7 +1199,7 @@ class SpineMLIRBuilderCodegen:
     def _gen_vpack(self, node: ast.Call) -> tuple:
         kwargs = {kw.arg: kw.value for kw in node.keywords}
         first_v, first_t = self._gen_expr(node.args[0])
-        if first_t.startswith("memref<"):
+        if isinstance(first_t, MemTy):
             # memref branch: linalg.pack path
             it = kwargs.get("inner_tiles")
             assert it is not None and isinstance(it, ast.Tuple) and len(it.elts) == 2
@@ -1222,9 +1208,7 @@ class SpineMLIRBuilderCodegen:
             K = self._try_const_int(kwargs["stride"]) if "stride" in kwargs else None
             rows = self._try_const_int(kwargs["rows"]) if "rows" in kwargs else None
             assert None not in (rt, kt, K, rows)
-            et = _memref_elem(first_t) if "memref<*x" not in first_t else \
-                re.search(r'memref<\*x([a-z0-9]+)', first_t).group(1)
-            sp = "#ptr.generic_space"
+            et = first_t.elem
             vr_node = kwargs.get("valid_rows")
             Mp = ((rows + rt - 1) // rt) * rt
             Kp = ((K + kt - 1) // kt) * kt
@@ -1234,21 +1218,22 @@ class SpineMLIRBuilderCodegen:
             cst = self._const_float(0.0, et)
             if vr_node is not None:
                 vr_v = self._gen_expr(vr_node)[0]
-                mr_t = f"memref<?x{K}x{et}, strided<[{K}, 1], offset: ?>, {sp}>"
+                mr_t = MemTy((None, K), et, StridedLayout((K, 1), True), GENERIC_SPACE)
                 # dim0 动态(vr_v), dim1 静态 K:必须用 mixed,否则 static_sizes 把
                 # K 也标成 dynamic → 'expected result type with size = dynamic instead of K'。
-                r2 = self._b.create_memref_reinterpret_cast_mixed(self._t(mr_t), first_v, [off_v], [vr_v, K], [K, 1])
-                tsrc = self._b.create_bufferization_to_tensor(r2, self._t(f"tensor<?x{K}x{et}>"))
+                r2 = self._b.create_memref_reinterpret_cast_mixed(self._tt(mr_t), first_v, [off_v], [vr_v, K], [K, 1])
+                tsrc = self._b.create_bufferization_to_tensor(r2, self._tt(TensorTy((None, K), et)))
                 dyn_rows_v = vr_v
             else:
-                mr_t = (f"memref<{rows}x{K}x{et}, strided<[{K}, 1], offset: ?>, {sp}>"
-                        if off_node is not None else f"memref<{rows}x{K}x{et}, strided<[{K}, 1]>, {sp}>")
+                # 有 offset 时 layout 带 offset: ?(off_v 生效);否则省略 offset 段。
+                layout = StridedLayout((K, 1), True) if off_node is not None else StridedLayout((K, 1))
+                mr_t = MemTy((rows, K), et, layout, GENERIC_SPACE)
                 # 两维全静态:mixed 传 int 保持 static_sizes=[rows, K] 与结果类型一致。
-                r2 = self._b.create_memref_reinterpret_cast_mixed(self._t(mr_t), first_v, [off_v], [rows, K], [K, 1])
-                tsrc = self._b.create_bufferization_to_tensor(r2, self._t(f"tensor<{rows}x{K}x{et}>"))
+                r2 = self._b.create_memref_reinterpret_cast_mixed(self._tt(mr_t), first_v, [off_v], [rows, K], [K, 1])
+                tsrc = self._b.create_bufferization_to_tensor(r2, self._tt(TensorTy((rows, K), et)))
                 dyn_rows_v = None
             if need_pad:
-                ep = self._b.create_tensor_empty(self._t(f"tensor<{Mp}x{Kp}x{et}>"))
+                ep = self._b.create_tensor_empty(self._tt(TensorTy((Mp, Kp), et)))
                 fp = self._b.create_linalg_fill(cst, ep)
                 # source tsrc 是 tensor<?xKx> 或 tensor<rowsxKx>:dim1=K 静态,
                 # insert_slice sizes 须 mixed(dim1 传 int K),否则 static_sizes 全 dynamic
@@ -1261,9 +1246,9 @@ class SpineMLIRBuilderCodegen:
             else:
                 src_v, src_rows, src_K = tsrc, rows, K
             oc, kc = src_rows // rt, src_K // kt
-            eP = self._b.create_tensor_empty(self._t(f"tensor<{oc}x{kc}x{rt}x{kt}x{et}>"))
+            eP = self._b.create_tensor_empty(self._tt(TensorTy((oc, kc, rt, kt), et)))
             pk = self._b.create_linalg_pack(src_v, eP, cst, [rt, kt], [0, 1], [0, 1])
-            col_t = f"tensor<{oc}x{kc}x{rt * kt}x{et}>"
+            col_t = TensorTy((oc, kc, rt * kt), et)
             col = self._b.create_tensor_collapse_shape(pk, [[0], [1], [2, 3]])
             return col, col_t
 
@@ -1271,13 +1256,12 @@ class SpineMLIRBuilderCodegen:
         group_len = self._try_const_int(node.args[1])
         if group_len is None:
             raise ValueError("vpack(vector) group_len must be compile-time int")
-        m_re = re.match(r'vector<(\d+)x(\d+)x(f16|bf16|f32)>', first_t)
-        if not m_re:
+        if not _is_vec2d_of(first_t, ("f16", "bf16", "f32")):
             raise ValueError(f"vpack(vector) needs rank-2 vector, got {first_t}")
-        b, ncol, elem = int(m_re.group(1)), int(m_re.group(2)), m_re.group(3)
-        out_t = f"vector<{b // 2}x{ncol * 2}x{elem}>"
+        b, ncol, elem = first_t.dims[0], first_t.dims[1], first_t.elem
+        out_t = VecTy((b // 2, ncol * 2), elem)
         res = self._b.create_generic_op("vector_ext.group_interleave", [first_v], {"groupLen": group_len},
-                                        [self._t(out_t)])
+                                        [self._tt(out_t)])
         return res[0], out_t
 
     # ------------------------------------------------------------------
@@ -1293,9 +1277,9 @@ class SpineMLIRBuilderCodegen:
         k = self._try_const_int(cs_node.elts[2])
         assert None not in (kc, n, k)
         src_v, src_t = self._gen_expr(node.args[0])
-        et = re.search(r'([a-z0-9]+)(?:,|>)', src_t.split("memref<")[1]).group(1) \
-            if "memref<*x" not in src_t else re.search(r'memref<\*x([a-z0-9]+)', src_t).group(1)
-        sp = "#ptr.generic_space"
+        if not isinstance(src_t, MemTy):
+            raise ValueError(f"spread expects a memref source, got {src_t}")
+        et = src_t.elem
         total = kc * k
         k_real = self._try_const_int(kwargs["k_real"]) if "k_real" in kwargs else total
         assert k_real is not None and k_real <= total
@@ -1303,11 +1287,11 @@ class SpineMLIRBuilderCodegen:
         # src → 1D <k_real>
         # src → 1D <k_real>:dim0 静态 k_real(mixed 传 int),但 stride 是 strided<[?]>
         # 动态(earlier strided fix 为满足 to_tensor),故 stride 仍传 Value;offset 静态 0。
-        src1d_t = f"memref<{k_real}x{et}, strided<[?]>, {sp}>"
-        rsrc = self._b.create_memref_reinterpret_cast_mixed(self._t(src1d_t), src_v, [0], [k_real],
+        src1d_t = MemTy((k_real,), et, StridedLayout((None,), False), GENERIC_SPACE)
+        rsrc = self._b.create_memref_reinterpret_cast_mixed(self._tt(src1d_t), src_v, [0], [k_real],
                                                             [self._const_int(1)])
-        scr_t = f"memref<{kc}x{n}x{k}x{et}>"
-        scr = self._b.create_memref_alloc(self._t(scr_t), None, 64)
+        scr_t = MemTy((kc, n, k), et)
+        scr = self._b.create_memref_alloc(self._tt(scr_t), None, 64)
         c0, c1 = self._const_int(0), self._const_int(1)
         ckc, cn, ck = self._const_int(kc), self._const_int(n), self._const_int(k)
         ckreal = self._const_int(k_real) if pad_k else None
@@ -1338,7 +1322,7 @@ class SpineMLIRBuilderCodegen:
             return []
 
         self._b.create_scf_for(c0, ckc, c1, [], outer_body)
-        col_t = f"memref<{kc}x{n * k}x{et}>"
+        col_t = MemTy((kc, n * k), et)
         col = self._b.create_memref_collapse_shape(scr, [[0], [1, 2]])
         return col, col_t
 
@@ -1354,8 +1338,10 @@ class SpineMLIRBuilderCodegen:
         rows = self._try_const_int(dst_shape.elts[2])
         assert rows is not None
         dst_v, dst_t = self._gen_expr(dst_node)
-        dtype = _memref_elem(dst_t)
-        vt = f"vector<{vl}x{dtype}>"
+        if not isinstance(dst_t, MemTy):
+            raise ValueError(f"pack expects a memref destination, got {dst_t}")
+        dtype = dst_t.elem
+        vt = VecTy((vl,), dtype)
         src_v, src_t = self._gen_expr(src_node)
         ranked_v, ranked_t = self._ranked_cast(src_v, src_t)
         row0_v, _ = self._gen_expr(src_idx.elts[0])
@@ -1363,8 +1349,9 @@ class SpineMLIRBuilderCodegen:
         pad = self._const_float(0.0, dtype)
         c0 = self._const_int(0)
         cvl = self._const_int(vl)
-        sp = "#ptr.generic_space"
-        src_mr_t = f"memref<?x{dtype}, strided<[?], offset: ?>, {sp}>"
+        src_mr_t = MemTy((None,), dtype, StridedLayout((None,), True), GENERIC_SPACE)
+        tens_dyn = TensorTy((None,), dtype)
+        tens_vl = TensorTy((vl,), dtype)
 
         def loop_body(b, loop_v, _):
             kb = b.create_arith_divui(loop_v, cvl)
@@ -1374,13 +1361,13 @@ class SpineMLIRBuilderCodegen:
                 off = b.create_arith_addi(roff, loop_v)
                 rem = b.create_arith_subi(stride_v, loop_v)
                 valid = b.create_arith_minsi(cvl, rem)
-                rsrc = b.create_memref_reinterpret_cast(self._t(src_mr_t), ranked_v, [off], [valid],
+                rsrc = b.create_memref_reinterpret_cast(self._tt(src_mr_t), ranked_v, [off], [valid],
                                                         [self._const_int(1)])
-                tsrc = b.create_bufferization_to_tensor(rsrc, self._t(f"tensor<?x{dtype}>"))
-                escr = b.create_tensor_empty(self._t(f"tensor<{vl}x{dtype}>"))
+                tsrc = b.create_bufferization_to_tensor(rsrc, self._tt(tens_dyn))
+                escr = b.create_tensor_empty(self._tt(tens_vl))
                 fscr = b.create_linalg_fill(pad, escr)
                 filled = b.create_tensor_insert_slice(tsrc, fscr, [c0], [valid], [self._const_int(1)])
-                vec = b.create_vector_transfer_read(self._t(vt), filled, [c0], pad, [True])
+                vec = b.create_vector_transfer_read(self._tt(vt), filled, [c0], pad, [True])
                 cr_idx = self._const_int(r)
                 # 1D vector<VL> 写入 rank-4 memref:permutation_map 只 1 个 result(d3),
                 # in_bounds 须与 map results 同 rank(=1),不是索引数(4)。

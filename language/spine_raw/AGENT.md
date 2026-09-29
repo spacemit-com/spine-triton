@@ -76,7 +76,7 @@ A raw kernel is you making four choices explicitly (SPEC §2):
 **LLVM-direct path** (`llvm_*` / `call_intrinsic` only, detected automatically):
 ```
 @tle.raw_kernel Python
-  → AST walk (llvm_direct_text.py)       # text emitter, no builder
+  → AST walk (llvm_direct.py)            # MLIR Python bindings emitter, no text
   → top-level llvm.func module (text)
   → mlir-translate --mlir-to-llvmir      # skip spine-opt, only translate
   → llc → .o → .so                        # RVV machine code

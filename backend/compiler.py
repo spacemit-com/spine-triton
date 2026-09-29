@@ -25,7 +25,6 @@ from . import (
     get_cross_toolchain,
 )
 
-
 _DENSE_I1_RE = re.compile(r'dense<"0x([0-9A-Fa-f]*)"> : (vector|tensor)<((?:\d+x)*\d+)xi1>')
 
 
@@ -93,131 +92,19 @@ def _optimize_linalgdir(linalgdir: str):
     return linalgdir
 
 
-# The lowered host memref descriptor: spine-opt lowers each memref<*xT> param
-# to (i64 rank, !llvm.ptr desc), where desc points to a StridedMemRefType
-# {allocated, aligned, offset, sizes[1], strides[1]}. The aligned data ptr is
-# field [1]. (Confirmed from gemv_host_ll.mlir.)
-_LL_DESC = "!llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>"
-
-
-def _ttir_pos_to_ll_argidx(host_arg_is_memref: list[bool]):
-    """Map each TTIR host-arg position → its start index in the LOWERED ll.mlir
-    signature. Each memref param expands to 2 ll args (i64 rank, !llvm.ptr);
-    each scalar stays 1. Returns list[int] of start indices (ordered)."""
-    starts = []
-    ll = 0
-    for is_mem in host_arg_is_memref:
-        starts.append(ll)
-        ll += 2 if is_mem else 1
-    return starts
-
-
 def _inject_mixed_llvm_llmlir(llmlir: str, func_name: str, host_arg_is_memref: list[bool], llvm_funcs,
                               llvm_calls) -> str:
-    """Graft llvm.func siblings + host→sibling bridge into the LOWERED ll.mlir.
+    """Graft LLVM-direct sibling llvm.func(s) + host→sibling bridges into the
+    LOWERED ll.mlir (post spine-opt, pre mlir-translate).
 
-    Done post-lowering (uniform llvm dialect) so spine-opt never sees llvm ops
-    it can't lower. For each pending call, bridge host descriptor args to the
-    sibling's i64 ABI:
-      - memref: load its (i64 rank,!llvm.ptr) descriptor's [1] aligned ptr,
-        llvm.ptrtoint → i64  (sibling recovers it via llvm.inttoptr)
-      - scalar i32: llvm.sext → i64
-    Then `llvm.call @callee(...) : (i64,...) -> ()` before the host llvm.return.
-    Validated by mlir-translate on real gemv ll.mlir + emit_llvm_func_for_inline.
+    Thin wrapper: the implementation lives in the spine_raw package
+    (mixed_bridge.py) and builds the injected IR entirely with the MLIR Python
+    bindings — no text/regex splicing. Imported lazily so non-mixed kernels
+    never require the bindings; mixed kernels already depend on them via the
+    LLVM-direct sibling emitter (llvm_direct.py).
     """
-    # The new spine-runtime/spert ABI: kernels are marked __require_context__ and
-    # spine-opt injects a leading `%arg0: i64` context handle at the ll.mlir layer
-    # (NOT present in the linalg func.func signature that host_arg_is_memref is from).
-    # So every lowered arg index is shifted by +1 relative to the linalg positions.
-    # The launcher passes spert::Context* first, then user args.
-    _CTX = 1  # leading ctx arg occupies %arg0
-    ll_start = _ttir_pos_to_ll_argidx(host_arg_is_memref)
-    ll_start = [s + _CTX for s in ll_start]
-
-    # Build each call's bridge lines separately, so each can be dropped at its
-    # own positional anchor (svector/bridge interleaving). uid stays globally
-    # unique across specs to avoid %mixN SSA-name clashes.
-    per_spec_bridges = []
-    uid = 0
-    for spec in llvm_calls:
-        callee = spec["callee"]
-        lines = []
-        operands = []
-        optys = []
-        for item in spec["arg_bridge"]:
-            pos, kind = item["pos"], item["kind"]
-            base = ll_start[pos]
-            if kind == "ptr":
-                desc_ptr = f"%arg{base + 1}"  # (rank=base, desc ptr=base+1)
-                d = f"%mix{uid}_d"
-                p = f"%mix{uid}_p"
-                i = f"%mix{uid}_i"
-                lines.append(f"    {d} = llvm.load {desc_ptr} : !llvm.ptr -> {_LL_DESC}")
-                lines.append(f"    {p} = llvm.extractvalue {d}[1] : {_LL_DESC}")
-                lines.append(f"    {i} = llvm.ptrtoint {p} : !llvm.ptr to i64")
-                operands.append(i)
-                optys.append("i64")
-            else:  # scalar: host passes it as i32 → sext to i64
-                s = f"%mix{uid}_s"
-                lines.append(f"    {s} = llvm.sext %arg{base} : i32 to i64")
-                operands.append(s)
-                optys.append("i64")
-            uid += 1
-        # Forward the host's ctx handle (i64 %arg0) so sibling program_id() works.
-        # Sibling uses spine_grid(ctx, axis) for program_id, not explicit grid args.
-        operands.append("%arg0")
-        optys.append("i64")
-        argstr = ", ".join(operands)
-        tystr = ", ".join(optys)
-        lines.append(f"    llvm.call @{callee}({argstr}) : ({tystr}) -> ()")
-        per_spec_bridges.append(lines)
-
-    # Preferred: replace each positional anchor `llvm.call @__spine_bridge_pt_N`
-    # (emitted by call_registry.py, lowered by TLEToLinalg) with its bridge, in
-    # place — preserves source order so svector stages can sit before AND after
-    # a bridge. Then strip the now-dead private stub llvm.func.
-    out = llmlir
-    anchors_replaced = 0
-    for n, lines in enumerate(per_spec_bridges):
-        anchor = f"__spine_bridge_pt_{n}"
-        m = re.search(rf"^[ \t]*llvm\.call @{re.escape(anchor)}\(\)[^\n]*$", out, re.MULTILINE)
-        if m is None:
-            continue
-        out = out[:m.start()] + "\n".join(lines) + out[m.end():]
-        # Drop the private no-arg stub: `llvm.func @anchor() { llvm.return }`.
-        out = re.sub(rf"\n[ \t]*llvm\.func[^\n]*@{re.escape(anchor)}\(\)[^\n]*\{{[^}}]*?llvm\.return[^}}]*?\}}", "",
-                     out, count=1, flags=re.DOTALL)
-        anchors_replaced += 1
-
-    if anchors_replaced == 0:
-        # Fallback (kernels compiled before anchors existed): insert all bridges
-        # before the host func's FIRST llvm.return (host is single-block).
-        host_at = out.find(f"llvm.func @{func_name}")
-        if host_at < 0:
-            raise RuntimeError(f"mixed-mode: host llvm.func @{func_name} not found in ll.mlir")
-        ret_m = None
-        for m in re.finditer(r"^[ \t]*llvm\.return\b.*$", out, re.MULTILINE):
-            if m.start() > host_at:
-                ret_m = m
-                break
-        if ret_m is None:
-            raise RuntimeError("mixed-mode: no llvm.return in host func to anchor llvm.call")
-        flat = [ln for lines in per_spec_bridges for ln in lines]
-        out = out[:ret_m.start()] + "\n".join(flat) + "\n" + out[ret_m.start():]
-
-    # Append the sibling llvm.func(s) before the module's closing brace.
-    # Sibling kernels call runtime symbols (spine_grid, spine_parallel_dispatch_Nd,
-    # ...) provided by libspert.so at dlopen time. Emit declarations so spine-opt
-    # verification passes (llvm.call requires callee visible in module).
-    # NOTE: spine-opt's e2e pipeline may already declare @spine_grid when the host
-    # uses tl.program_id (lowered to spine_grid(ctx, axis)). Declaring it again
-    # here → "redefinition of symbol named 'spine_grid'". Only emit if absent.
-    runtime_decls = []
-    if "spine_grid" not in out:
-        runtime_decls.append("llvm.func @spine_grid(i64, i64) -> i64")
-    close = out.rfind("}")
-    out = out[:close] + "\n" + "\n".join(runtime_decls) + "\n" + "\n".join(llvm_funcs) + "\n" + out[close:]
-    return out
+    from triton.language.extra.spine_raw.mixed_bridge import inject_mixed_llvm_llmlir
+    return inject_mixed_llvm_llmlir(llmlir, func_name, host_arg_is_memref, llvm_funcs, llvm_calls)
 
 
 def _spine_mlir_linalgdir_to_llir_ref(linalgdir: str, metadata):
@@ -425,7 +312,7 @@ def _llir_to_so(llir: str, metadata):
                 f"-L{runtime_lib_dir}",
                 "-shared",
                 f"-l{py_lib}",
-                "-lSpineTritonRuntime",
+                "-lSpineTritonRuntime",  # spine-triton's own runtime: spine_assert, spine_print_unranked_memref, proton, etc.
                 "-fPIC",
                 "-o",
                 so_path,
@@ -600,6 +487,7 @@ class CPUBackend(BaseBackend):
                 return _optimize_llir(_spine_mlir_linalgdir_to_llir_ref(src, metadata))
 
         stages["llir"] = _llir_stage
+
         stages["so"] = lambda src, metadata: _llir_to_so(src, metadata)
 
     @functools.lru_cache()

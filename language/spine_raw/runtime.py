@@ -31,7 +31,7 @@ class SpineLinalgJITFunction:
     def _detect_llvm_direct(self, fn: Callable) -> bool:
         """Detect if fn uses only llvm-direct (llvm_*) primitives by scanning its source.
 
-        Routes to LLVMDirectTextCodegen (sibling llvm.func, bypasses spine-opt)
+        Routes to LLVMDirectCodegen (sibling llvm.func, bypasses spine-opt)
         ONLY when every primitive is llvm-direct — i.e. no svector DATA helpers
         (vload/vzero/vmacc/vreduce_*/sstore/vconfig/...). `range` is path-agnostic
         control-flow and used by both, so it doesn't count as a svector marker.
@@ -58,7 +58,7 @@ class SpineLinalgJITFunction:
                         pass  # control-flow, not a svector marker
                     elif name in _SPINE_RAW_BUILTIN_NAMES and not name.startswith("llvm_"):
                         has_svector = True
-            # Pure llvm-direct kernel → LLVMDirectTextCodegen.
+            # Pure llvm-direct kernel → LLVMDirectCodegen.
             # Mixed or pure-svector → SpineMLIRBuilderCodegen (svector path).
             return has_llvm_direct and not has_svector
         except Exception:

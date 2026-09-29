@@ -1,6 +1,10 @@
 from __future__ import annotations
-import re
 from typing import Any
+
+# Widths of the float scalar types the DSL documents (builtins exports
+# f16/f32/bf16; f64 flows through the same constexpr path). Exact table lookup
+# instead of an `f(\d+)` substring search, which also matched inside "bf16".
+_FLOAT_BITS = {"f16": 16, "bf16": 16, "f32": 32, "f64": 64}
 
 
 def _to_handle(v, builder, param_type_str: str):
@@ -19,8 +23,7 @@ def _to_handle(v, builder, param_type_str: str):
         # fallback: i32/i64 — use index_cast path
         return builder.create_arith_constant_index(val)
     if isinstance(val, float):
-        m = re.search(r"f(\d+)", param_type_str)
-        bits = int(m.group(1)) if m else 32
+        bits = _FLOAT_BITS.get(param_type_str, 32)
         ft = builder.get_f32_type() if bits <= 32 else builder.parse_type("f64")
         return builder.create_arith_constant_float(val, ft)
     raise TypeError(f"spine_raw.call: cannot convert constexpr {val!r} (type {param_type_str!r}) to IR handle")
@@ -103,7 +106,7 @@ def call(fn, outputs=None, inputs=None, _semantic=None):
 
     # LLVM-direct bypass: detect and emit
     if getattr(fn, '_llvm_direct', False):
-        from .llvm_direct_text import emit_llvm_func_for_inline
+        from .llvm_direct import emit_llvm_func_for_inline
         from .codegen import _parse_signature
         # emit_llvm_func_for_inline needs the raw Python function, not the JIT wrapper
         raw_fn = fn._fn if hasattr(fn, '_fn') else fn
@@ -141,7 +144,12 @@ def call(fn, outputs=None, inputs=None, _semantic=None):
         # this ordered bool list to map TTIR arg position → lowered arg index,
         # instead of re-parsing the func.func signature text. The host entry block
         # is identical across all _sr_call sites in one kernel, so overwrite freely.
-        host_arg_kinds = ["tt.ptr" in str(entry.get_argument(i).get_type()) for i in range(n_block_args)]
+        # Prefix check on the printed type (a ptr arg is exactly `!tt.ptr<elt>`):
+        # a plain substring test would also match types that merely EMBED a tt.ptr
+        # (e.g. tensor<128x!tt.ptr<f32>>). tt.ptr is an unregistered-dialect type
+        # in this libtriton build (no Python class to isinstance against), so the
+        # printed-form prefix is the structural check available here.
+        host_arg_kinds = [str(entry.get_argument(i).get_type()).startswith("!tt.ptr") for i in range(n_block_args)]
         _PENDING_LLVM_DIRECT_MODULE["host_arg_kinds"] = host_arg_kinds
 
         params = _parse_signature(raw_fn)  # [(pname, ann), ...]
@@ -159,7 +167,7 @@ def call(fn, outputs=None, inputs=None, _semantic=None):
                                  f"is not a host entry-block argument. In mixed mode inputs must "
                                  f"be the host's own launch parameters (bridged to the sibling "
                                  f"llvm.func by position at the linalgdir stage).")
-            kind = "ptr" if ann.mlir_type.startswith("memref") else "scalar"
+            kind = "ptr" if ann.kind == "mem" else "scalar"
             arg_bridge.append({"pos": pos, "kind": kind})
 
         if "llvm_calls" not in _PENDING_LLVM_DIRECT_MODULE:
