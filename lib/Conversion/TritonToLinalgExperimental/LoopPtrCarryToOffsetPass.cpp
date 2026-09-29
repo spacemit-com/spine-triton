@@ -28,9 +28,7 @@ namespace mlir::triton {
 
 namespace {
 
-static bool isScalarPtrType(Type t) {
-  return isa<triton::PointerType>(t);
-}
+static bool isScalarPtrType(Type t) { return isa<triton::PointerType>(t); }
 
 static bool isDefinedOutsideOf(Value v, Operation *scope) {
   if (auto blockArg = dyn_cast<BlockArgument>(v))
@@ -93,8 +91,7 @@ struct WhilePtrCarryToOffsetPattern : public OpRewritePattern<scf::WhileOp> {
         // Forwarded unchanged: keep the offset unchanged as well.
         info.stride = std::nullopt;
         info.offsetType = inferForwardedOffsetType(afterArgs[idx]);
-      } else if (auto addPtrOp =
-                     newYield.getDefiningOp<triton::AddPtrOp>()) {
+      } else if (auto addPtrOp = newYield.getDefiningOp<triton::AddPtrOp>()) {
         if (addPtrOp.getPtr() != afterArgs[idx])
           return failure();
         Value stride = addPtrOp.getOffset();
@@ -160,7 +157,8 @@ struct WhilePtrCarryToOffsetPattern : public OpRewritePattern<scf::WhileOp> {
         },
         [&](OpBuilder &b, Location l, ValueRange newAfterArgs) {
           IRMapping mapping;
-          for (auto [oldArg, newArg] : llvm::zip(after.getArguments(), newAfterArgs))
+          for (auto [oldArg, newArg] :
+               llvm::zip(after.getArguments(), newAfterArgs))
             mapping.map(oldArg, newArg);
           // Rebuild each carried pointer at the top of the body.
           for (size_t slot : ptrSlots) {
@@ -220,10 +218,86 @@ private:
   }
 };
 
+// An if/elif chain that merges pointers (e.g. picking one of several pointer
+// arguments by program id) keeps the pointer as an scf.if result through the
+// whole lowering; spine-opt lowers scf to cf and its conversion then rejects
+// cf.br block arguments of pointer type ("failed to legalize 'cf.br' ...
+// !ptr.ptr"). The Triton frontend already emits arith.select (including on
+// !tt.ptr) for the innermost if/else pair of such chains; mirror that for the
+// outer levels by rewriting the diamond into a select chain. Only diamonds
+// that merge a pointer and whose arms are pure value merges are rewritten:
+// the then-block must be a bare yield of externally defined values and every
+// else-block op must be speculatable (cmpi/select/constant), so side-effecting
+// control flow is left untouched.
+struct IfPtrYieldToSelectPattern : public OpRewritePattern<scf::IfOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::IfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (ifOp->getNumResults() == 0)
+      return failure();
+    bool mergesPointer = llvm::any_of(ifOp.getResultTypes(), [](Type t) {
+      if (isa<triton::PointerType>(t))
+        return true;
+      if (auto shaped = dyn_cast<ShapedType>(t))
+        return isa<triton::PointerType>(shaped.getElementType());
+      return false;
+    });
+    if (!mergesPointer)
+      return failure();
+
+    Block &thenBlock = ifOp.getThenRegion().front();
+    Block &elseBlock = ifOp.getElseRegion().front();
+    // A bare then-arm (values defined outside the if) is what the first
+    // branch of an elif chain produces; anything else needs real hoisting
+    // and is left alone.
+    if (!thenBlock.without_terminator().empty())
+      return failure();
+    auto thenYield = cast<scf::YieldOp>(thenBlock.getTerminator());
+    auto elseYield = cast<scf::YieldOp>(elseBlock.getTerminator());
+    for (Value v : thenYield.getOperands())
+      if (!isDefinedOutsideOf(v, ifOp))
+        return failure();
+    for (Operation &op : elseBlock.without_terminator())
+      if (!isa<arith::CmpIOp, arith::SelectOp, arith::ConstantOp>(op))
+        return failure();
+
+    rewriter.setInsertionPoint(ifOp);
+    IRMapping mapping;
+    for (Operation &op : elseBlock.without_terminator())
+      rewriter.clone(op, mapping);
+    SmallVector<Value> merged;
+    merged.reserve(ifOp->getNumResults());
+    for (auto [thenVal, elseVal] :
+         llvm::zip(thenYield.getOperands(), elseYield.getOperands())) {
+      Value elseMapped = mapping.lookupOrNull(elseVal);
+      if (!elseMapped)
+        elseMapped = elseVal;
+      merged.push_back(arith::SelectOp::create(
+          rewriter, ifOp.getLoc(), ifOp.getCondition(), thenVal, elseMapped));
+    }
+    rewriter.replaceOp(ifOp, merged);
+    return success();
+  }
+};
+
 struct LoopPtrCarryToOffsetPass
     : public triton::impl::LoopPtrCarryToOffsetBase<LoopPtrCarryToOffsetPass> {
 
   void runOnOperation() override {
+    // if->select must process innermost diamonds first: the else-arm of an
+    // outer diamond only becomes a pure select tree once its nested if has
+    // been rewritten. walk() defaults to post-order (children before
+    // parents), so the collected list is already innermost-first.
+    RewritePatternSet ifPatterns(&getContext());
+    ifPatterns.add<IfPtrYieldToSelectPattern>(&getContext());
+    FrozenRewritePatternSet frozenIf(std::move(ifPatterns));
+    SmallVector<Operation *> ifOps;
+    getOperation()->walk([&](Operation *op) { ifOps.push_back(op); });
+    for (Operation *op : ifOps)
+      if (isa<scf::IfOp>(op))
+        (void)applyOpPatternsGreedily(ArrayRef<Operation *>(op), frozenIf);
+
     RewritePatternSet patterns(&getContext());
     patterns.add<WhilePtrCarryToOffsetPattern>(&getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
@@ -233,6 +307,7 @@ struct LoopPtrCarryToOffsetPass
 
 } // namespace
 
-std::unique_ptr<OperationPass<ModuleOp>> triton::createLoopPtrCarryToOffsetPass() {
+std::unique_ptr<OperationPass<ModuleOp>>
+triton::createLoopPtrCarryToOffsetPass() {
   return std::make_unique<LoopPtrCarryToOffsetPass>();
 }
