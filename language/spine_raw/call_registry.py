@@ -1,32 +1,32 @@
 from __future__ import annotations
 from typing import Any
 
-# Widths of the float scalar types the DSL documents (builtins exports
-# f16/f32/bf16; f64 flows through the same constexpr path). Exact table lookup
-# instead of an `f(\d+)` substring search, which also matched inside "bf16".
-_FLOAT_BITS = {"f16": 16, "bf16": 16, "f32": 32, "f64": 64}
 
-
-def _to_handle(v, builder, param_type_str: str):
+def _to_handle(v, builder, ty):
     """Convert a JIT input value to an MLIR Value handle.
 
-    tl.constexpr (triton specializes small ints, e.g. P=1, as constexpr
-    inside @triton.jit) has no .handle; emit arith.constant instead.
+    ``ty`` is the parameter's structured Ty (types.py). tl.constexpr (triton
+    specializes small ints, e.g. P=1, as constexpr inside @triton.jit) has no
+    .handle; emit arith.constant instead, materialising the constant's MLIR
+    type structurally via ``ty.build(builder)`` (no type text).
     """
+    from .types import ScalarTy
     if hasattr(v, "handle"):
         return v.handle
     # tl.constexpr case
     val = v.value if hasattr(v, "value") else v
     if isinstance(val, int):
-        if param_type_str == "index":
-            return builder.create_arith_constant_index(val)
-        # fallback: i32/i64 — use index_cast path
+        # index / iN params both lower to an index constant here (matches the
+        # pre-refactor behaviour: the i32/i64 "fallback" also used index).
         return builder.create_arith_constant_index(val)
     if isinstance(val, float):
-        bits = _FLOAT_BITS.get(param_type_str, 32)
-        ft = builder.get_f32_type() if bits <= 32 else builder.parse_type("f64")
+        if isinstance(ty, ScalarTy) and ty.is_float:
+            ft = ty.build(builder)
+        else:
+            ft = builder.get_f32_type()
         return builder.create_arith_constant_float(val, ft)
-    raise TypeError(f"spine_raw.call: cannot convert constexpr {val!r} (type {param_type_str!r}) to IR handle")
+    raise TypeError(f"spine_raw.call: cannot convert constexpr {val!r} "
+                    f"(param type {ty!r}) to IR handle")
 
 
 # LLVM-direct handoff: the @triton.jit body (which calls call()) runs during
@@ -191,10 +191,10 @@ def call(fn, outputs=None, inputs=None, _semantic=None):
         return  # sibling llvm.func text recorded; anchor marks the call site
 
     # Normal path
-    param_type_strs, body_builder = fn.make_body_builder()
+    param_tys, body_builder = fn.make_body_builder()
     builder = _semantic.builder
-    param_types = [builder.parse_type(s) for s in param_type_strs]
-    handles = [_to_handle(v, builder, pt) for v, pt in zip(inputs, param_type_strs)]
+    param_types = [ty.build(builder) for ty in param_tys]
+    handles = [_to_handle(v, builder, ty) for v, ty in zip(inputs, param_tys)]
     builder.create_tle_dsl_region_direct(
         fn.__name__,
         handles,

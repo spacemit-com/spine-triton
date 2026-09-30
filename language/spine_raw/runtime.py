@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT
 """@spine_raw decorator and SpineLinalgJITFunction.
 
-SpineLinalgJITFunction wraps a Python function annotated with In/InOut and,
-on first call to make_body_builder(), runs SpineMLIRBuilderCodegen to build
+SpineLinalgJITFunction wraps a Python function annotated with tle.mem/tle.index
+and, on first call to make_body_builder(), runs SpineMLIRBuilderCodegen to build
 the raw kernel body straight through the C++ builder API (no MLIR text).
 """
 from __future__ import annotations
@@ -18,12 +18,12 @@ class SpineLinalgJITFunction:
 
     Attributes:
         _fn                  : original Python function
-        _body_builder_cache  : cached (param_type_strs, body_builder) | None
+        _body_builder_cache  : cached (param_tys, body_builder) | None
     """
 
     def __init__(self, fn: Callable) -> None:
         self._fn = fn
-        self._body_builder_cache = None  # (param_type_strs, body_builder) | None
+        self._body_builder_cache = None  # (param_tys, body_builder) | None
         self.__triton_builtin__ = True
         # LLVM-direct: mark functions using only llvm_* primitives for direct llvm.func emission
         self._llvm_direct = self._detect_llvm_direct(fn)
@@ -69,7 +69,7 @@ class SpineLinalgJITFunction:
         return self._fn.__name__
 
     def make_body_builder(self):
-        """Return (param_type_strs, body_builder) for create_tle_dsl_region_direct."""
+        """Return (param_tys, body_builder) for create_tle_dsl_region_direct."""
         if self._body_builder_cache is None:
             gen = SpineMLIRBuilderCodegen()
             self._body_builder_cache = gen.generate_builder(self._fn)
@@ -89,7 +89,7 @@ def spine_raw(*, name: str = "linalg") -> Callable:
 
     Usage:
         @spine_raw(name="linalg")
-        def mv_acc_raw_inner(A: In["memref<*xf16, #ptr.generic_space>"], ...):
+        def mv_acc_raw_inner(A: tle.mem(f16), K: tle.index, C: tle.mem(f32, out=True)):
             ...
     """
     if name not in _REGISTRY:

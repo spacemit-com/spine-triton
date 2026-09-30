@@ -442,7 +442,8 @@ class CPUBackend(BaseBackend):
         # the pure-LLVM path above (which REPLACES the module), here we stash the
         # sibling func text + per-call arg bridge. Injection happens at the LOWERED
         # ll.mlir layer (_inject_mixed_llvm_llmlir, post spine-opt) — the linalgdir
-        # layer can't host it because memrefs still carry #ptr.generic_space, which
+        # layer can't host it because memrefs still carry the bridge memory space
+        # (#xsmt.memory_space<"global">, MemorySpaceUtils.h), which
         # crashes extract_aligned_pointer lowering. At ll.mlir the host is uniform
         # llvm dialect with memrefs already descriptors, so the llvm.call + sibling
         # splice is legal. Independent of llvm_direct_module (unset in mixed).

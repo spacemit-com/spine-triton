@@ -22,9 +22,8 @@ from .types import (
     TensorTy,
     MemTy,
     StridedLayout,
-    parse_ty,
-    parse_ty_or_opaque,
-    GENERIC_SPACE,
+    classify_type,
+    BRIDGE,
     INDEX,
     I1,
     I64,
@@ -46,9 +45,9 @@ def _parse_signature(fn: Callable) -> list[tuple[str, _TypedAnnotation]]:
         ann = param.annotation
         if ann is inspect.Parameter.empty:
             raise ValueError(f"Parameter '{pname}' of @spine_raw function '{fn.__name__}' "
-                             f"must have an In[...] or InOut[...] annotation.")
+                             f"must have a tle.mem(...) or tle.index annotation.")
         if not isinstance(ann, _TypedAnnotation):
-            raise ValueError(f"Parameter '{pname}' annotation must be In[...] or InOut[...], got {ann!r}")
+            raise ValueError(f"Parameter '{pname}' annotation must be tle.mem(...) or tle.index, got {ann!r}")
         result.append((pname, ann))
     return result
 
@@ -191,7 +190,7 @@ def _is_vec2d_of(t: Ty, elems: tuple) -> bool:
 class SpineMLIRBuilderCodegen:
     """Translate @spine_raw fn → C++ builder API calls.
 
-    generate_builder(fn) → (param_type_strs, body_builder)
+    generate_builder(fn) → (param_tys, body_builder)
     body_builder(b, block_args) is the callback for create_tle_dsl_region_direct.
     """
 
@@ -213,12 +212,23 @@ class SpineMLIRBuilderCodegen:
 
     def _tt(self, ty: Ty):
         """Materialise a structured Ty at the C++ builder boundary."""
-        return self._b.parse_type(ty.mlir())
+        return ty.build(self._b)
 
-    def _tf(self, ty: ScalarTy):
-        if ty.name == "f16": return self._b.get_f16_type()
-        if ty.name == "f32": return self._b.get_f32_type()
-        return self._tt(ty)
+    def _user_ty(self, text: str) -> Ty:
+        """Classify an LLVM-channel user type literal (e.g. "vector<[8]xf16>",
+        "!llvm.ptr", "()") into a structured Ty.
+
+        The literal is the only type *text* kernel authors write; it goes to
+        the official MLIR parser (``builder.parse_type``) and is re-derived
+        structurally by ``classify_type`` — never parsed in Python. "()" (void)
+        has no MLIR type, so it is detected by text before parsing.
+        """
+        if text.strip() == "()":
+            return VOID
+        T = self._b.parse_type(text)
+        if T is None:
+            raise ValueError(f"_user_ty: MLIR parser rejected type literal {text!r}")
+        return classify_type(self._b, T)
 
     # --- Constant helpers (no caching — caches cause dominance violations across regions) ---
 
@@ -229,7 +239,7 @@ class SpineMLIRBuilderCodegen:
         return self._b.create_arith_constant_int(n, self._tt(elem))
 
     def _const_float(self, v: float, ftype: ScalarTy = F32):
-        return self._b.create_arith_constant_float(v, self._tf(ftype))
+        return self._b.create_arith_constant_float(v, self._tt(ftype))
 
     # --- Env helpers ---
 
@@ -284,7 +294,7 @@ class SpineMLIRBuilderCodegen:
         """index → ftype scalar: index_cast to i64, then sitofp. `index` is not
         an integer type in MLIR so sitofp can't take it directly."""
         i64_v = self._b.create_arith_index_cast(v, self._tt(I64))
-        return self._b.create_arith_sitofp(i64_v, self._tf(ftype))
+        return self._b.create_arith_sitofp(i64_v, self._tt(ftype))
 
     def _promote_scalar_pair(self, lv, lt: Ty, rv, rt: Ty):
         """Promote a pair of scalar operands to a common type, returning
@@ -302,9 +312,9 @@ class SpineMLIRBuilderCodegen:
             # differing float widths: widen the narrower to the wider
             wide = lt if lt.bits >= rt.bits else rt
             if lt != wide:
-                lv = self._b.create_arith_extf(lv, self._tf(wide))
+                lv = self._b.create_arith_extf(lv, self._tt(wide))
             if rt != wide:
-                rv = self._b.create_arith_extf(rv, self._tf(wide))
+                rv = self._b.create_arith_extf(rv, self._tt(wide))
             return lv, rv, wide
         raise NotImplementedError(f"scalar promote between {lt!r} and {rt!r}")
 
@@ -313,7 +323,11 @@ class SpineMLIRBuilderCodegen:
     # ------------------------------------------------------------------
 
     def generate_builder(self, fn):
-        """Return (param_type_strs, body_builder) for create_tle_dsl_region_direct."""
+        """Return (param_tys, body_builder) for create_tle_dsl_region_direct.
+
+        ``param_tys`` are structured Ty objects; call_registry materialises
+        them through ``Ty.build(builder)`` — no type-text channel.
+        """
         src = textwrap.dedent(inspect.getsource(fn))
         tree = ast.parse(src)
         func_nodes = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
@@ -322,10 +336,7 @@ class SpineMLIRBuilderCodegen:
         func_node = func_nodes[0]
 
         params = _parse_signature(fn)
-        param_type_strs = [ann.mlir_type for _, ann in params]
-        # Structured parse at the annotation boundary — the only place raw type
-        # text enters codegen (fails fast, at generate time, on unknown text).
-        param_tys = [parse_ty(s) for s in param_type_strs]
+        param_tys = [ann.ty for _, ann in params]
 
         # Detect spine_raw module aliases
         try:
@@ -389,7 +400,7 @@ class SpineMLIRBuilderCodegen:
                     continue
                 self._gen_stmt(stmt)
 
-        return param_type_strs, body_builder
+        return param_tys, body_builder
 
     # ------------------------------------------------------------------
     # Statement generators
@@ -785,7 +796,7 @@ class SpineMLIRBuilderCodegen:
             if isinstance(vt, ScalarTy) and vt.is_float and dst.is_float:
                 fn = self._b.create_arith_extf if dst.bits > vt.bits \
                     else self._b.create_arith_truncf
-                return fn(vv, self._tf(dst)), dst
+                return fn(vv, self._tt(dst)), dst
             raise NotImplementedError(f"scalar cast {vt!r} → {dst!r} not supported")
         src_elem = vt.elem
         dst_elem = ScalarTy(_resolve_dtype(node.args[1], src_elem.name))
@@ -898,7 +909,7 @@ class SpineMLIRBuilderCodegen:
             # Cast fill to match dtype (e.g. f32 literal -1e38 → f16 for f16 vload).
             # linalg.fill requires fill value type to match output element type.
             if fill_t != dtype:
-                fill_v = self._b.create_arith_truncf(fill_v, self._tf(dtype))
+                fill_v = self._b.create_arith_truncf(fill_v, self._tt(dtype))
             pad = fill_v
         else:
             pad = self._const_float(0.0, dtype)
@@ -930,7 +941,7 @@ class SpineMLIRBuilderCodegen:
         if valid_v is not None:
             assert "group" not in kwargs
             off_v, _ = self._gen_expr(idx_node)
-            src_mr_t = MemTy((None, ), dtype, StridedLayout((None, ), True), GENERIC_SPACE)
+            src_mr_t = MemTy((None, ), dtype, StridedLayout((None, ), True), BRIDGE)
             rsrc = self._b.create_memref_reinterpret_cast(self._tt(src_mr_t), ptr_v, [off_v], [valid_v],
                                                           [self._const_int(1)])
             tens_t = TensorTy((None, ), dtype)
@@ -1013,7 +1024,7 @@ class SpineMLIRBuilderCodegen:
         else:
             emit_name = op_name
             attrs = {}
-        result_ty = parse_ty_or_opaque(result_t)
+        result_ty = self._user_ty(result_t)
         is_void = result_ty == VOID
         result_types = [] if is_void else [self._tt(result_ty)]
         res = self._b.create_op_textattr(emit_name, operand_vs, attrs, result_types)
@@ -1025,7 +1036,7 @@ class SpineMLIRBuilderCodegen:
         """llvm_poison("vector<[8]xf16>") → llvm.mlir.poison : T (vle passthru)."""
         if not isinstance(node.args[0], ast.Constant):
             raise ValueError("llvm_poison: type must be a string literal")
-        ty = parse_ty_or_opaque(node.args[0].value)
+        ty = self._user_ty(node.args[0].value)
         res = self._b.create_op_textattr("llvm.mlir.poison", [], {}, [self._tt(ty)])
         return res[0], ty
 
@@ -1047,15 +1058,20 @@ class SpineMLIRBuilderCodegen:
                 raise ValueError("llvm_const: value must be a compile-time int/float literal")
         if not isinstance(node.args[1], ast.Constant):
             raise ValueError("llvm_const: type must be a string literal")
-        ty = parse_ty_or_opaque(node.args[1].value)
+        ty = self._user_ty(node.args[1].value)
+        # Materialise the MLIR Type once; its official printer text (str) is the
+        # type reference embedded in the constant attr (create_op_textattr takes
+        # attr values as text — the C++ builder-API contract, rule 168).
+        T = self._tt(ty)
+        t_text = str(T)
         if isinstance(ty, VecTy):
             lit = f"{fval if fval is not None else val}"
-            attr = f"dense<{lit}> : {ty.mlir()}"
+            attr = f"dense<{lit}> : {t_text}"
         elif isinstance(ty, ScalarTy) and ty.is_float:
-            attr = f"{fval if fval is not None else float(val)} : {ty.mlir()}"
+            attr = f"{fval if fval is not None else float(val)} : {t_text}"
         else:
-            attr = f"{val} : {ty.mlir()}"
-        res = self._b.create_op_textattr("llvm.mlir.constant", [], {"value": attr}, [self._tt(ty)])
+            attr = f"{val} : {t_text}"
+        res = self._b.create_op_textattr("llvm.mlir.constant", [], {"value": attr}, [T])
         return res[0], ty
 
     def _gen_llvm_base_ptr(self, node: ast.Call) -> tuple:
@@ -1080,9 +1096,10 @@ class SpineMLIRBuilderCodegen:
         if off_t == INDEX:
             off_v = self._b.create_arith_index_cast(off_v, self._tt(I64))
         elem = _resolve_dtype(kwargs.get("elem"), "f16")
-        res = self._b.create_op_textattr("llvm.getelementptr", [base_v, off_v],
-                                         {"rawConstantIndices": "array<i32: -2147483648>", "elem_type": elem},
-                                         [self._tt(LLVM_PTR)])
+        res = self._b.create_op_textattr(
+            "llvm.getelementptr", [base_v, off_v],
+            {"rawConstantIndices": "array<i32: -2147483648>", "elem_type": str(ScalarTy(elem).build(self._b))},
+            [self._tt(LLVM_PTR)])
         return res[0], LLVM_PTR
 
     def _gen_llvm_size(self, node: ast.Call) -> tuple:
@@ -1113,7 +1130,7 @@ class SpineMLIRBuilderCodegen:
 
         def fill_body(b, iv, _):
             i64 = b.create_arith_index_cast(iv, self._tt(I64))
-            fv = b.create_arith_sitofp(i64, self._tf(F32))
+            fv = b.create_arith_sitofp(i64, self._tt(F32))
             b.create_memref_store(fv, scr, [iv])
             return []
 
@@ -1140,7 +1157,7 @@ class SpineMLIRBuilderCodegen:
                 raise TypeError(f"vstore shape= expects a vector value, got '{val_t}'")
             elem = val_t.elem
             off_v, _ = self._gen_expr(idx_node)
-            m2t = MemTy((R, C), elem, StridedLayout((C, 1), True), GENERIC_SPACE)
+            m2t = MemTy((R, C), elem, StridedLayout((C, 1), True), BRIDGE)
             # 结果类型两维全静态 RxC:mixed 传 int,否则 static_sizes 全 dynamic 冲突。
             r2 = self._b.create_memref_reinterpret_cast_mixed(self._tt(m2t), ptr_v, [off_v], [R, C], [C, 1])
             c0 = self._const_int(0)
@@ -1158,7 +1175,7 @@ class SpineMLIRBuilderCodegen:
             # Full-tile path: static memref<VLxT, strided<[1], offset:?>>.
             # Dynamic memref<?xT> causes VL to be clamped by descriptor size
             # → only lane0 written. Static size bypasses clamping.
-            m1t = MemTy((vn, ), elem, StridedLayout((1, ), True), GENERIC_SPACE)
+            m1t = MemTy((vn, ), elem, StridedLayout((1, ), True), BRIDGE)
             r1 = self._b.create_memref_reinterpret_cast_mixed(self._tt(m1t), ptr_v, [idx_v], [vn], [1])
             self._b.create_vector_transfer_write(val_v, r1, [c0], [True])
         else:
@@ -1166,7 +1183,7 @@ class SpineMLIRBuilderCodegen:
             # Use dynamic memref<?xT> with size=valid + in_bounds=[false]
             # so transfer_write generates a masked store respecting the bound.
             valid_v = self._active_valid
-            m1t = MemTy((None, ), elem, StridedLayout((None, ), True), GENERIC_SPACE)
+            m1t = MemTy((None, ), elem, StridedLayout((None, ), True), BRIDGE)
             r1 = self._b.create_memref_reinterpret_cast(self._tt(m1t), ptr_v, [idx_v], [valid_v], [self._const_int(1)])
             self._b.create_vector_transfer_write(val_v, r1, [c0], [False])
 
@@ -1216,7 +1233,7 @@ class SpineMLIRBuilderCodegen:
             cst = self._const_float(0.0, et)
             if vr_node is not None:
                 vr_v = self._gen_expr(vr_node)[0]
-                mr_t = MemTy((None, K), et, StridedLayout((K, 1), True), GENERIC_SPACE)
+                mr_t = MemTy((None, K), et, StridedLayout((K, 1), True), BRIDGE)
                 # dim0 动态(vr_v), dim1 静态 K:必须用 mixed,否则 static_sizes 把
                 # K 也标成 dynamic → 'expected result type with size = dynamic instead of K'。
                 r2 = self._b.create_memref_reinterpret_cast_mixed(self._tt(mr_t), first_v, [off_v], [vr_v, K], [K, 1])
@@ -1225,7 +1242,7 @@ class SpineMLIRBuilderCodegen:
             else:
                 # 有 offset 时 layout 带 offset: ?(off_v 生效);否则省略 offset 段。
                 layout = StridedLayout((K, 1), True) if off_node is not None else StridedLayout((K, 1))
-                mr_t = MemTy((rows, K), et, layout, GENERIC_SPACE)
+                mr_t = MemTy((rows, K), et, layout, BRIDGE)
                 # 两维全静态:mixed 传 int 保持 static_sizes=[rows, K] 与结果类型一致。
                 r2 = self._b.create_memref_reinterpret_cast_mixed(self._tt(mr_t), first_v, [off_v], [rows, K], [K, 1])
                 tsrc = self._b.create_bufferization_to_tensor(r2, self._tt(TensorTy((rows, K), et)))
@@ -1285,7 +1302,7 @@ class SpineMLIRBuilderCodegen:
         # src → 1D <k_real>
         # src → 1D <k_real>:dim0 静态 k_real(mixed 传 int),但 stride 是 strided<[?]>
         # 动态(earlier strided fix 为满足 to_tensor),故 stride 仍传 Value;offset 静态 0。
-        src1d_t = MemTy((k_real, ), et, StridedLayout((None, ), False), GENERIC_SPACE)
+        src1d_t = MemTy((k_real, ), et, StridedLayout((None, ), False), BRIDGE)
         rsrc = self._b.create_memref_reinterpret_cast_mixed(self._tt(src1d_t), src_v, [0], [k_real],
                                                             [self._const_int(1)])
         scr_t = MemTy((kc, n, k), et)
@@ -1347,7 +1364,7 @@ class SpineMLIRBuilderCodegen:
         pad = self._const_float(0.0, dtype)
         c0 = self._const_int(0)
         cvl = self._const_int(vl)
-        src_mr_t = MemTy((None, ), dtype, StridedLayout((None, ), True), GENERIC_SPACE)
+        src_mr_t = MemTy((None, ), dtype, StridedLayout((None, ), True), BRIDGE)
         tens_dyn = TensorTy((None, ), dtype)
         tens_vl = TensorTy((vl, ), dtype)
 

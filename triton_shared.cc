@@ -4,6 +4,7 @@
 #include "include/triton-shared/Dialect/XSMT/IR/XSMTOps.h"
 #include "include/triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
 #include "include/triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncOps.h"
+#include "include/triton-shared/Utils/MemorySpaceUtils.h"
 #include "ir.h"
 #include "mlir/AsmParser/AsmParser.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -284,6 +285,11 @@ void init_triton_xsmt_ir(py::module &&m) {
              return self.create<mlir::arith::ConstantOp>(i64Type, attr)
                  .getResult();
            });
+  // The tt.ptr <-> memref bridge memory-space attr is exposed structurally as
+  // ir.builder.get_bridge_memory_space() (init_triton_spine_raw_ir below): the
+  // C++ header MemorySpaceUtils.h getDefaultBridgeMemorySpace stays the single
+  // source of truth, and the attr crosses the boundary as an Attribute object
+  // (no printed-text channel).
 }
 
 // ============================================================================
@@ -454,6 +460,182 @@ void init_triton_spine_raw_ir(py::module &&m) {
           },
           py::arg("type_str"),
           "Parse MLIR type string (e.g., 'vector<32xf32>', 'memref<?xf16>')")
+
+      // ======================================================================
+      // Structured type constructors (official MLIR C++ APIs). The spine_raw
+      // Python type layer (types.py Ty.build) passes objects across the
+      // boundary instead of assembling type text, so these are the single
+      // place where MLIR types get constructed for raw kernels.
+      // ======================================================================
+      .def(
+          "get_integer_type",
+          [](TritonOpBuilder &self, unsigned bits) -> Type {
+            return IntegerType::get(self.getBuilder().getContext(), bits);
+          },
+          py::arg("bits"))
+      .def(
+          "get_float_type",
+          [](TritonOpBuilder &self, unsigned bits, bool is_bf) -> Type {
+            auto *ctx = self.getBuilder().getContext();
+            if (is_bf) {
+              if (bits != 16) {
+                throw std::invalid_argument(
+                    "get_float_type: bfloat only supports 16 bits");
+              }
+              return BFloat16Type::get(ctx);
+            }
+            switch (bits) {
+            case 16:
+              return Float16Type::get(ctx);
+            case 32:
+              return Float32Type::get(ctx);
+            case 64:
+              return Float64Type::get(ctx);
+            default:
+              throw std::invalid_argument(
+                  "get_float_type: unsupported float width");
+            }
+          },
+          py::arg("bits"), py::arg("is_bf"))
+      .def(
+          "get_vector_type",
+          [](TritonOpBuilder &self, std::vector<int64_t> dims,
+             std::vector<bool> scalableDims, Type elemType) -> Type {
+            // std::vector<bool> is bit-packed (no .data()); copy into a
+            // SmallVector<bool> for VectorType::get.
+            SmallVector<bool> scalable(scalableDims.begin(),
+                                       scalableDims.end());
+            return VectorType::get(dims, elemType, scalable);
+          },
+          py::arg("dims"), py::arg("scalable_dims"), py::arg("elem_type"))
+      .def(
+          "get_memref_type",
+          [](TritonOpBuilder &self, std::vector<std::optional<int64_t>> dims,
+             Type elemType,
+             std::optional<std::vector<std::optional<int64_t>>> strides,
+             std::optional<int64_t> offset,
+             std::optional<Attribute> memorySpace) -> Type {
+            SmallVector<int64_t> shape;
+            shape.reserve(dims.size());
+            for (auto d : dims) {
+              shape.push_back(d.value_or(ShapedType::kDynamic));
+            }
+            Attribute ms = memorySpace.value_or(Attribute());
+            if (strides.has_value()) {
+              SmallVector<int64_t> stridesVec;
+              stridesVec.reserve(strides->size());
+              for (auto s : *strides) {
+                stridesVec.push_back(s.value_or(ShapedType::kDynamic));
+              }
+              auto layout = StridedLayoutAttr::get(
+                  self.getBuilder().getContext(),
+                  offset.value_or(ShapedType::kDynamic), stridesVec);
+              return MemRefType::get(shape, elemType, layout, ms);
+            }
+            return MemRefType::get(shape, elemType, MemRefLayoutAttrInterface{},
+                                   ms);
+          },
+          py::arg("dims"), py::arg("elem_type"),
+          py::arg("strides") = py::none(), py::arg("offset") = py::none(),
+          py::arg("memory_space") = py::none())
+      .def(
+          "get_unranked_memref_type",
+          [](TritonOpBuilder &self, Type elemType,
+             std::optional<Attribute> memorySpace) -> Type {
+            return UnrankedMemRefType::get(elemType,
+                                           memorySpace.value_or(Attribute()));
+          },
+          py::arg("elem_type"), py::arg("memory_space") = py::none())
+      .def(
+          "get_tensor_type",
+          [](TritonOpBuilder &self, std::vector<std::optional<int64_t>> dims,
+             Type elemType) -> Type {
+            SmallVector<int64_t> shape;
+            shape.reserve(dims.size());
+            for (auto d : dims) {
+              shape.push_back(d.value_or(ShapedType::kDynamic));
+            }
+            return RankedTensorType::get(shape, elemType);
+          },
+          py::arg("dims"), py::arg("elem_type"))
+      .def("get_bridge_memory_space",
+           [](TritonOpBuilder &self) -> Attribute {
+             // tt.ptr <-> memref bridge memory space (MemorySpaceUtils.h);
+             // returned as an Attribute in the builder's context so Python
+             // never handles attr text.
+             return mlir::triton::getDefaultBridgeMemorySpace(
+                 self.getBuilder().getContext());
+           })
+
+      // ======================================================================
+      // Structured type introspection (types.py classify_type). Lets Python
+      // re-derive its Ty hierarchy from a Type parsed via the official MLIR
+      // parser (builder.parse_type) without regex on printed text.
+      // ======================================================================
+      .def(
+          "type_is_vector",
+          [](TritonOpBuilder &self, Type t) -> bool {
+            return mlir::isa<VectorType>(t);
+          },
+          py::arg("type"))
+      .def(
+          "type_vector_dims",
+          [](TritonOpBuilder &self, Type t) -> std::vector<int64_t> {
+            auto vt = mlir::dyn_cast<VectorType>(t);
+            if (!vt) {
+              throw std::invalid_argument("type_vector_dims: not a VectorType");
+            }
+            return std::vector<int64_t>(vt.getShape().begin(),
+                                        vt.getShape().end());
+          },
+          py::arg("type"))
+      .def(
+          "type_vector_scalable_dims",
+          [](TritonOpBuilder &self, Type t) -> std::vector<bool> {
+            auto vt = mlir::dyn_cast<VectorType>(t);
+            if (!vt) {
+              throw std::invalid_argument(
+                  "type_vector_scalable_dims: not a VectorType");
+            }
+            return std::vector<bool>(vt.getScalableDims().begin(),
+                                     vt.getScalableDims().end());
+          },
+          py::arg("type"))
+      .def(
+          "type_vector_elem",
+          [](TritonOpBuilder &self, Type t) -> Type {
+            auto vt = mlir::dyn_cast<VectorType>(t);
+            if (!vt) {
+              throw std::invalid_argument("type_vector_elem: not a VectorType");
+            }
+            return vt.getElementType();
+          },
+          py::arg("type"))
+      .def(
+          "type_is_index",
+          [](TritonOpBuilder &self, Type t) -> bool {
+            return mlir::isa<IndexType>(t);
+          },
+          py::arg("type"))
+      .def(
+          "type_int_width",
+          [](TritonOpBuilder &self, Type t) -> unsigned {
+            if (auto it = mlir::dyn_cast<IntegerType>(t)) {
+              return it.getWidth();
+            }
+            return 0;
+          },
+          py::arg("type"))
+      .def(
+          "type_float_info",
+          [](TritonOpBuilder &self,
+             Type t) -> std::optional<std::pair<unsigned, bool>> {
+            if (auto ft = mlir::dyn_cast<FloatType>(t)) {
+              return std::make_pair(ft.getWidth(), mlir::isa<BFloat16Type>(ft));
+            }
+            return std::nullopt;
+          },
+          py::arg("type"))
 
       // ========================================================================
       // Arith dialect - 常量
