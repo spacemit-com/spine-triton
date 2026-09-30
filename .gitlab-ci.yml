@@ -91,6 +91,12 @@ build-spine-mlir:
       set -e
       git submodule update --init --recursive third_party/spine-mlir
       cd third_party/spine-mlir
+      # runner 多 slot 并行构建目录会互相污染: build-x86 把本 job 的 artifact
+      # (含 CMakeCache.txt, 记录了它所在 slot 的绝对路径) 下载进自己的 slot,
+      # 本 job 重试落到那个 slot 时 cmake 报 "CMakeCache.txt directory ... is
+      # different than ... where CMakeCache.txt was created" 秒挂。CI 无增量缓存
+      # 收益, 直接清掉旧 build 目录保证干净 configure。
+      rm -rf build/release
       LLVM_COMMIT_ID="$(tr -d '[:space:]' < LLVM_VERSION)"
       LLVM_INSTALL_PATH=/home/share/nfs_share/llvm-pre-build/llvm-${LLVM_COMMIT_ID}-release-x86
       echo "LLVM_INSTALL_PATH: ${LLVM_INSTALL_PATH}"
@@ -282,7 +288,16 @@ test-spine-triton-integration:
 
       source /home/gitlab-runner/.triton/bin/activate
 
-      export PYTHONPATH=$ST_DIR/build-x86_64:$PYTHONPATH
+      # MLIR Python bindings (LLVM22 f6ded0be, cp311+cp312 .so 并存):
+      # spine_raw 的 LLVM-direct/mixed 发射器 (llvm_direct.py / mixed_bridge.py)
+      # 硬依赖 `from mlir import ir`, 缺失时 mixed kernel 编译失败。
+      # 注意: bindings 版本 (f6ded0be/LLVM22) 与本仓 LLVM_VERSION (675f09ac) 是
+      # 有意区分的 era-matched 组合, 不要改成从 LLVM_VERSION 推导。
+      MLIR_BINDINGS=/home/share/nfs_share/llvm-pre-build/llvm-f6ded0be897e2878612dd903f7e8bb85448269e5-20260923-release-x86/python_packages/mlir_core
+      if [ ! -d "$MLIR_BINDINGS" ]; then
+        echo "ERROR: MLIR python bindings not found at $MLIR_BINDINGS"; exit 1
+      fi
+      export PYTHONPATH=$ST_DIR/build-x86_64:$MLIR_BINDINGS:$PYTHONPATH
       export SPINE_TRITON_CROSS_TOOLCHAIN=$CROSS_TOOLCHAIN_PATH
       export SPINE_TRITON_TARGET_ARCH=riscv64
       export SPACEMIT_EP_QEMU_SET_CORE_ARCH="0xA064"
@@ -322,8 +337,13 @@ test-spine-triton-integration:
 
       # spine-triton e2e 集成测试
       python3 $ST_DIR/examples/mm_block_ptr.py
-      python3 $ST_DIR/tests/raw/test_raw_mv_svector.py
-      python3 $ST_DIR/tests/raw/test_raw_mv_three_stage.py
+      # raw 测试必须用 pytest 跑:
+      #   - test_raw_mv_svector.py 是纯 pytest 风格 (无 __main__), `python3 file.py` 会静默空跑
+      #   - test_raw_mv_three_stage.py 的 __main__ 用 try/except 吞异常后 exit 0, 会掩盖失败
+      #   - three_stage 是 mixed kernel, 依赖上面的 MLIR python bindings
+      PYTHONUNBUFFERED=1 pytest -sv -p no:cacheprovider \
+        $ST_DIR/tests/raw/test_raw_mv_svector.py \
+        $ST_DIR/tests/raw/test_raw_mv_three_stage.py
 
       # spine-FlagGems 算子测试
       rm -rf "$CI_PROJECT_DIR/flaggems"
