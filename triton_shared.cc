@@ -4,7 +4,23 @@
 #include "include/triton-shared/Dialect/XSMT/IR/XSMTOps.h"
 #include "include/triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
 #include "include/triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncOps.h"
+#include "include/triton-shared/Utils/MemorySpaceUtils.h"
 #include "ir.h"
+#include "mlir/AsmParser/AsmParser.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Ptr/IR/PtrDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/IR/OwningOpRef.h"
+#include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -124,20 +140,20 @@ void init_triton_xsmt_ir(py::module &&m) {
            })
       .def("create_alloc",
            [](TritonOpBuilder &self, std::vector<int32_t> &shape,
-              mlir::Type type, std::string storage) -> Value {
+              mlir::Type type, std::string scope) -> Value {
              if (shape.empty()) {
                throw std::runtime_error("alloc shape cannot be empty");
              }
-             auto op = self.create<xsmt::AllocOp>(type, shape, storage);
+             auto op = self.create<xsmt::AllocOp>(type, shape, scope);
              return op;
            })
       .def("create_alloc_copies",
            [](TritonOpBuilder &self, std::vector<int64_t> &shape,
-              mlir::Type elementType, std::string storage) -> mlir::Value {
+              mlir::Type elementType, std::string scope) -> mlir::Value {
              if (shape.empty())
                throw std::runtime_error("alloc_copies shape cannot be empty");
              auto op =
-                 self.create<xsmt::AllocCopiesOp>(shape, elementType, storage);
+                 self.create<xsmt::AllocCopiesOp>(shape, elementType, scope);
              return op;
            })
       .def("create_mmt4d",
@@ -227,9 +243,9 @@ void init_triton_xsmt_ir(py::module &&m) {
            })
       .def("create_smt_buffer_type",
            [](TritonOpBuilder &self, std::vector<int64_t> shape,
-              Type &elementType, int copies, std::string storageKind) -> Type {
+              Type &elementType, int copies, std::string scopeKind) -> Type {
              return xsmt::BufferType::get(shape, elementType, copies,
-                                          storageKind);
+                                          scopeKind);
            })
       .def("create_buffer_tensor_subview",
            [](TritonOpBuilder &self, Value buffer, Value bufferIdx) -> Value {
@@ -269,6 +285,11 @@ void init_triton_xsmt_ir(py::module &&m) {
              return self.create<mlir::arith::ConstantOp>(i64Type, attr)
                  .getResult();
            });
+  // The tt.ptr <-> memref bridge memory-space attr is exposed structurally as
+  // ir.builder.get_bridge_memory_space() (init_triton_spine_raw_ir below): the
+  // C++ header MemorySpaceUtils.h getDefaultBridgeMemorySpace stays the single
+  // source of truth, and the attr crosses the boundary as an Attribute object
+  // (no printed-text channel).
 }
 
 // ============================================================================
@@ -294,7 +315,1024 @@ void init_triton_tle_ir(py::module &&m) {
             return op.getResult();
           },
           py::arg("input"), py::arg("tile"), py::arg("index"),
-          "Create insert_tile operation");
+          "Create insert_tile operation")
+      .def(
+          "create_tle_dsl_region",
+          [](TritonOpBuilder &self, const std::string &fn_name,
+             const std::string &raw_linalg, std::vector<Value> &inputs) {
+            // Parse the raw-kernel MLIR text once, here at build time, and hang
+            // the body in tle.dsl_region's real region — so the TTIR stays
+            // readable (no escaped raw_linalg string attr). Custom ops (e.g.
+            // vector_ext.matmul) parse in generic form thanks to the context's
+            // allow-unregistered flag (set in load_dialects).
+            auto &builder = self.getBuilder();
+            mlir::MLIRContext *ctx = builder.getContext();
+            mlir::ParserConfig config(ctx, /*verifyAfterParse=*/false);
+            mlir::OwningOpRef<mlir::ModuleOp> rawMod =
+                mlir::parseSourceString<mlir::ModuleOp>(raw_linalg, config);
+            if (!rawMod)
+              throw std::runtime_error(
+                  "create_tle_dsl_region: failed to parse raw_linalg text");
+            mlir::func::FuncOp rawFunc;
+            rawMod->walk([&](mlir::func::FuncOp f) {
+              if (!f.empty()) {
+                rawFunc = f;
+                return mlir::WalkResult::interrupt();
+              }
+              return mlir::WalkResult::advance();
+            });
+            if (!rawFunc)
+              throw std::runtime_error(
+                  "create_tle_dsl_region: no func.func in raw_linalg");
+
+            auto fnAttr = builder.getStringAttr(fn_name);
+            SmallVector<Value> operands(inputs.begin(), inputs.end());
+            auto op = self.create<tle::DSLRegionOp>(operands, fnAttr);
+
+            // Build the region block with the raw fn's arg types, then clone
+            // the fn body into it (func.return stays — lowering turns it into
+            // spine_ext.return later).
+            mlir::Region &body = op.getBody();
+            mlir::Block *block = new mlir::Block();
+            body.push_back(block);
+            for (mlir::Type paramTy : rawFunc.getArgumentTypes())
+              block->addArgument(paramTy, op.getLoc());
+            mlir::IRMapping mapping;
+            for (auto [fArg, bArg] :
+                 llvm::zip(rawFunc.getArguments(), block->getArguments()))
+              mapping.map(fArg, bArg);
+            mlir::OpBuilder bodyBuilder(block, block->end());
+            for (mlir::Operation &inner : rawFunc.getBody().front()) {
+              // func.return can't live under tle.dsl_region (its verifier wants
+              // parent func.func). Emit generic spine_ext.return instead — the
+              // TLEToLinalg pattern expects that terminator anyway.
+              if (mlir::isa<mlir::func::ReturnOp>(inner)) {
+                mlir::OperationState retState(inner.getLoc(),
+                                              "spine_ext.return");
+                bodyBuilder.create(retState);
+              } else {
+                bodyBuilder.clone(inner, mapping);
+              }
+            }
+          },
+          py::arg("fn_name"), py::arg("raw_linalg"), py::arg("inputs"),
+          "Create tle.dsl_region — spine_raw.call() TTIR op")
+      .def(
+          "create_tle_dsl_region_direct",
+          [](TritonOpBuilder &self, const std::string &fn_name,
+             std::vector<Value> &inputs, std::vector<Type> &paramTypes,
+             py::function bodyBuilder) {
+            // Builder-direct counterpart of create_tle_dsl_region: no MLIR text
+            // round trip. codegen.py builds the raw fn body straight into
+            // dsl_region's region via bodyBuilder, using the same builder
+            // instance — no parseSourceString, no raw_linalg string.
+            auto &builder = self.getBuilder();
+            auto fnAttr = builder.getStringAttr(fn_name);
+            SmallVector<Value> operands(inputs.begin(), inputs.end());
+            auto op = self.create<tle::DSLRegionOp>(operands, fnAttr);
+
+            mlir::Region &body = op.getBody();
+            mlir::Block *block = new mlir::Block();
+            body.push_back(block);
+            for (mlir::Type paramTy : paramTypes)
+              block->addArgument(paramTy, op.getLoc());
+
+            mlir::OpBuilder::InsertionGuard guard(builder);
+            self.setInsertionPointToStart(*block);
+            std::vector<Value> blockArgs(block->getArguments().begin(),
+                                         block->getArguments().end());
+            bodyBuilder(std::ref(self), blockArgs);
+
+            // bodyBuilder emits the raw fn's ops but not the terminator
+            // (there's no func.return here to translate) — always close with
+            // spine_ext.return, matching the text path's substitution.
+            mlir::OperationState retState(op.getLoc(), "spine_ext.return");
+            builder.create(retState);
+          },
+          py::arg("fn_name"), py::arg("inputs"), py::arg("param_types"),
+          py::arg("body_builder"),
+          "Create tle.dsl_region by invoking body_builder(builder, block_args) "
+          "directly — no MLIR text parse round trip");
+}
+
+// ============================================================================
+// Spine Raw IR Builder Bindings
+// 为 spine_raw codegen 提供标准的 MLIR builder API，替代字符串拼接
+// ============================================================================
+
+// Helper: parse MLIR type string
+static Type parseTypeString(OpBuilder &builder, const std::string &typeStr) {
+  MLIRContext *ctx = builder.getContext();
+  return mlir::parseType(typeStr, ctx);
+}
+
+void init_triton_spine_raw_ir(py::module &&m) {
+  auto *builder_cls = ir::getBuilderClass();
+
+  // ========================================================================
+  // Type utilities
+  // ========================================================================
+  builder_cls
+      ->def("get_index_type",
+            [](TritonOpBuilder &self) -> Type {
+              return self.getBuilder().getIndexType();
+            })
+      .def("get_i32_type",
+           [](TritonOpBuilder &self) -> Type {
+             return self.getBuilder().getI32Type();
+           })
+      .def("get_i64_type",
+           [](TritonOpBuilder &self) -> Type {
+             return self.getBuilder().getI64Type();
+           })
+      .def("get_f16_type",
+           [](TritonOpBuilder &self) -> Type {
+             return self.getBuilder().getF16Type();
+           })
+      .def("get_f32_type",
+           [](TritonOpBuilder &self) -> Type {
+             return self.getBuilder().getF32Type();
+           })
+      .def(
+          "parse_type",
+          [](TritonOpBuilder &self, const std::string &typeStr) -> Type {
+            return parseTypeString(self.getBuilder(), typeStr);
+          },
+          py::arg("type_str"),
+          "Parse MLIR type string (e.g., 'vector<32xf32>', 'memref<?xf16>')")
+
+      // ======================================================================
+      // Structured type constructors (official MLIR C++ APIs). The spine_raw
+      // Python type layer (types.py Ty.build) passes objects across the
+      // boundary instead of assembling type text, so these are the single
+      // place where MLIR types get constructed for raw kernels.
+      // ======================================================================
+      .def(
+          "get_integer_type",
+          [](TritonOpBuilder &self, unsigned bits) -> Type {
+            return IntegerType::get(self.getBuilder().getContext(), bits);
+          },
+          py::arg("bits"))
+      .def(
+          "get_float_type",
+          [](TritonOpBuilder &self, unsigned bits, bool is_bf) -> Type {
+            auto *ctx = self.getBuilder().getContext();
+            if (is_bf) {
+              if (bits != 16) {
+                throw std::invalid_argument(
+                    "get_float_type: bfloat only supports 16 bits");
+              }
+              return BFloat16Type::get(ctx);
+            }
+            switch (bits) {
+            case 16:
+              return Float16Type::get(ctx);
+            case 32:
+              return Float32Type::get(ctx);
+            case 64:
+              return Float64Type::get(ctx);
+            default:
+              throw std::invalid_argument(
+                  "get_float_type: unsupported float width");
+            }
+          },
+          py::arg("bits"), py::arg("is_bf"))
+      .def(
+          "get_vector_type",
+          [](TritonOpBuilder &self, std::vector<int64_t> dims,
+             std::vector<bool> scalableDims, Type elemType) -> Type {
+            // std::vector<bool> is bit-packed (no .data()); copy into a
+            // SmallVector<bool> for VectorType::get.
+            SmallVector<bool> scalable(scalableDims.begin(),
+                                       scalableDims.end());
+            return VectorType::get(dims, elemType, scalable);
+          },
+          py::arg("dims"), py::arg("scalable_dims"), py::arg("elem_type"))
+      .def(
+          "get_memref_type",
+          [](TritonOpBuilder &self, std::vector<std::optional<int64_t>> dims,
+             Type elemType,
+             std::optional<std::vector<std::optional<int64_t>>> strides,
+             std::optional<int64_t> offset,
+             std::optional<Attribute> memorySpace) -> Type {
+            SmallVector<int64_t> shape;
+            shape.reserve(dims.size());
+            for (auto d : dims) {
+              shape.push_back(d.value_or(ShapedType::kDynamic));
+            }
+            Attribute ms = memorySpace.value_or(Attribute());
+            if (strides.has_value()) {
+              SmallVector<int64_t> stridesVec;
+              stridesVec.reserve(strides->size());
+              for (auto s : *strides) {
+                stridesVec.push_back(s.value_or(ShapedType::kDynamic));
+              }
+              auto layout = StridedLayoutAttr::get(
+                  self.getBuilder().getContext(),
+                  offset.value_or(ShapedType::kDynamic), stridesVec);
+              return MemRefType::get(shape, elemType, layout, ms);
+            }
+            return MemRefType::get(shape, elemType, MemRefLayoutAttrInterface{},
+                                   ms);
+          },
+          py::arg("dims"), py::arg("elem_type"),
+          py::arg("strides") = py::none(), py::arg("offset") = py::none(),
+          py::arg("memory_space") = py::none())
+      .def(
+          "get_unranked_memref_type",
+          [](TritonOpBuilder &self, Type elemType,
+             std::optional<Attribute> memorySpace) -> Type {
+            return UnrankedMemRefType::get(elemType,
+                                           memorySpace.value_or(Attribute()));
+          },
+          py::arg("elem_type"), py::arg("memory_space") = py::none())
+      .def(
+          "get_tensor_type",
+          [](TritonOpBuilder &self, std::vector<std::optional<int64_t>> dims,
+             Type elemType) -> Type {
+            SmallVector<int64_t> shape;
+            shape.reserve(dims.size());
+            for (auto d : dims) {
+              shape.push_back(d.value_or(ShapedType::kDynamic));
+            }
+            return RankedTensorType::get(shape, elemType);
+          },
+          py::arg("dims"), py::arg("elem_type"))
+      .def("get_bridge_memory_space",
+           [](TritonOpBuilder &self) -> Attribute {
+             // tt.ptr <-> memref bridge memory space (MemorySpaceUtils.h);
+             // returned as an Attribute in the builder's context so Python
+             // never handles attr text.
+             return mlir::triton::getDefaultBridgeMemorySpace(
+                 self.getBuilder().getContext());
+           })
+
+      // ======================================================================
+      // Structured type introspection (types.py classify_type). Lets Python
+      // re-derive its Ty hierarchy from a Type parsed via the official MLIR
+      // parser (builder.parse_type) without regex on printed text.
+      // ======================================================================
+      .def(
+          "type_is_vector",
+          [](TritonOpBuilder &self, Type t) -> bool {
+            return mlir::isa<VectorType>(t);
+          },
+          py::arg("type"))
+      .def(
+          "type_vector_dims",
+          [](TritonOpBuilder &self, Type t) -> std::vector<int64_t> {
+            auto vt = mlir::dyn_cast<VectorType>(t);
+            if (!vt) {
+              throw std::invalid_argument("type_vector_dims: not a VectorType");
+            }
+            return std::vector<int64_t>(vt.getShape().begin(),
+                                        vt.getShape().end());
+          },
+          py::arg("type"))
+      .def(
+          "type_vector_scalable_dims",
+          [](TritonOpBuilder &self, Type t) -> std::vector<bool> {
+            auto vt = mlir::dyn_cast<VectorType>(t);
+            if (!vt) {
+              throw std::invalid_argument(
+                  "type_vector_scalable_dims: not a VectorType");
+            }
+            return std::vector<bool>(vt.getScalableDims().begin(),
+                                     vt.getScalableDims().end());
+          },
+          py::arg("type"))
+      .def(
+          "type_vector_elem",
+          [](TritonOpBuilder &self, Type t) -> Type {
+            auto vt = mlir::dyn_cast<VectorType>(t);
+            if (!vt) {
+              throw std::invalid_argument("type_vector_elem: not a VectorType");
+            }
+            return vt.getElementType();
+          },
+          py::arg("type"))
+      .def(
+          "type_is_index",
+          [](TritonOpBuilder &self, Type t) -> bool {
+            return mlir::isa<IndexType>(t);
+          },
+          py::arg("type"))
+      .def(
+          "type_int_width",
+          [](TritonOpBuilder &self, Type t) -> unsigned {
+            if (auto it = mlir::dyn_cast<IntegerType>(t)) {
+              return it.getWidth();
+            }
+            return 0;
+          },
+          py::arg("type"))
+      .def(
+          "type_float_info",
+          [](TritonOpBuilder &self,
+             Type t) -> std::optional<std::pair<unsigned, bool>> {
+            if (auto ft = mlir::dyn_cast<FloatType>(t)) {
+              return std::make_pair(ft.getWidth(), mlir::isa<BFloat16Type>(ft));
+            }
+            return std::nullopt;
+          },
+          py::arg("type"))
+
+      // ========================================================================
+      // Arith dialect - 常量
+      // ========================================================================
+      .def(
+          "create_arith_constant_index",
+          [](TritonOpBuilder &self, int64_t value) -> Value {
+            auto type = self.getBuilder().getIndexType();
+            auto attr = self.getBuilder().getIntegerAttr(type, value);
+            return self.create<arith::ConstantOp>(type, attr).getResult();
+          },
+          py::arg("value"))
+      .def(
+          "create_arith_constant_int",
+          [](TritonOpBuilder &self, int64_t value, Type intType) -> Value {
+            auto attr = self.getBuilder().getIntegerAttr(intType, value);
+            return self.create<arith::ConstantOp>(intType, attr).getResult();
+          },
+          py::arg("value"), py::arg("int_type"))
+      .def(
+          "create_arith_constant_float",
+          [](TritonOpBuilder &self, double value, Type floatType) -> Value {
+            auto attr = self.getBuilder().getFloatAttr(floatType, value);
+            return self.create<arith::ConstantOp>(floatType, attr).getResult();
+          },
+          py::arg("value"), py::arg("float_type"))
+
+      // ========================================================================
+      // Arith dialect - 整数运算
+      // ========================================================================
+      .def(
+          "create_arith_addi",
+          [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+            return self.create<arith::AddIOp>(lhs, rhs).getResult();
+          },
+          py::arg("lhs"), py::arg("rhs"))
+      .def("create_arith_subi",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::SubIOp>(lhs, rhs).getResult();
+           })
+      .def("create_arith_muli",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::MulIOp>(lhs, rhs).getResult();
+           })
+      .def("create_arith_divsi",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::DivSIOp>(lhs, rhs).getResult();
+           })
+      .def("create_arith_divui",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::DivUIOp>(lhs, rhs).getResult();
+           })
+      .def("create_arith_remsi",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::RemSIOp>(lhs, rhs).getResult();
+           })
+      .def("create_arith_minsi",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::MinSIOp>(lhs, rhs).getResult();
+           })
+      .def("create_arith_maxsi",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::MaxSIOp>(lhs, rhs).getResult();
+           })
+
+      // ========================================================================
+      // Arith dialect - 浮点运算
+      // ========================================================================
+      .def("create_arith_addf",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::AddFOp>(lhs, rhs).getResult();
+           })
+      .def("create_arith_subf",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::SubFOp>(lhs, rhs).getResult();
+           })
+      .def("create_arith_mulf",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::MulFOp>(lhs, rhs).getResult();
+           })
+      .def("create_arith_divf",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::DivFOp>(lhs, rhs).getResult();
+           })
+      .def("create_arith_negf",
+           [](TritonOpBuilder &self, Value operand) -> Value {
+             return self.create<arith::NegFOp>(operand).getResult();
+           })
+      .def("create_arith_minimumf",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::MinimumFOp>(lhs, rhs).getResult();
+           })
+      .def("create_arith_maximumf",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::MaximumFOp>(lhs, rhs).getResult();
+           })
+
+      // ========================================================================
+      // Arith dialect - 类型转换
+      // ========================================================================
+      .def(
+          "create_arith_extf",
+          [](TritonOpBuilder &self, Value input, Type targetType) -> Value {
+            return self.create<arith::ExtFOp>(targetType, input).getResult();
+          },
+          py::arg("input"), py::arg("target_type"))
+      .def("create_arith_truncf",
+           [](TritonOpBuilder &self, Value input, Type targetType) -> Value {
+             return self.create<arith::TruncFOp>(targetType, input).getResult();
+           })
+      .def("create_arith_extsi",
+           [](TritonOpBuilder &self, Value input, Type targetType) -> Value {
+             return self.create<arith::ExtSIOp>(targetType, input).getResult();
+           })
+      .def("create_arith_trunci",
+           [](TritonOpBuilder &self, Value input, Type targetType) -> Value {
+             return self.create<arith::TruncIOp>(targetType, input).getResult();
+           })
+      .def("create_arith_sitofp",
+           [](TritonOpBuilder &self, Value input, Type targetType) -> Value {
+             return self.create<arith::SIToFPOp>(targetType, input).getResult();
+           })
+      .def("create_arith_fptosi",
+           [](TritonOpBuilder &self, Value input, Type targetType) -> Value {
+             return self.create<arith::FPToSIOp>(targetType, input).getResult();
+           })
+      .def("create_arith_index_cast",
+           [](TritonOpBuilder &self, Value input, Type targetType) -> Value {
+             return self.create<arith::IndexCastOp>(targetType, input)
+                 .getResult();
+           })
+
+      // ========================================================================
+      // Arith dialect - 比较
+      // ========================================================================
+      .def(
+          "create_arith_cmpi",
+          [](TritonOpBuilder &self, const std::string &predicate, Value lhs,
+             Value rhs) -> Value {
+            arith::CmpIPredicate pred;
+            if (predicate == "eq")
+              pred = arith::CmpIPredicate::eq;
+            else if (predicate == "ne")
+              pred = arith::CmpIPredicate::ne;
+            else if (predicate == "slt")
+              pred = arith::CmpIPredicate::slt;
+            else if (predicate == "sle")
+              pred = arith::CmpIPredicate::sle;
+            else if (predicate == "sgt")
+              pred = arith::CmpIPredicate::sgt;
+            else if (predicate == "sge")
+              pred = arith::CmpIPredicate::sge;
+            else
+              throw std::runtime_error("Unknown cmpi predicate: " + predicate);
+            return self.create<arith::CmpIOp>(pred, lhs, rhs).getResult();
+          },
+          py::arg("predicate"), py::arg("lhs"), py::arg("rhs"))
+      .def("create_arith_cmpf",
+           [](TritonOpBuilder &self, const std::string &predicate, Value lhs,
+              Value rhs) -> Value {
+             arith::CmpFPredicate pred;
+             if (predicate == "oeq")
+               pred = arith::CmpFPredicate::OEQ;
+             else if (predicate == "one")
+               pred = arith::CmpFPredicate::ONE;
+             else if (predicate == "olt")
+               pred = arith::CmpFPredicate::OLT;
+             else if (predicate == "ole")
+               pred = arith::CmpFPredicate::OLE;
+             else if (predicate == "ogt")
+               pred = arith::CmpFPredicate::OGT;
+             else if (predicate == "oge")
+               pred = arith::CmpFPredicate::OGE;
+             else
+               throw std::runtime_error("Unknown cmpf predicate: " + predicate);
+             return self.create<arith::CmpFOp>(pred, lhs, rhs).getResult();
+           })
+      .def("create_arith_select",
+           [](TritonOpBuilder &self, Value condition, Value trueValue,
+              Value falseValue) -> Value {
+             return self
+                 .create<arith::SelectOp>(condition, trueValue, falseValue)
+                 .getResult();
+           })
+
+      // ========================================================================
+      // Arith dialect - 位运算
+      // ========================================================================
+      .def("create_arith_andi",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::AndIOp>(lhs, rhs).getResult();
+           })
+      .def("create_arith_ori",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::OrIOp>(lhs, rhs).getResult();
+           })
+      .def("create_arith_xori",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::XOrIOp>(lhs, rhs).getResult();
+           })
+      .def("create_arith_shli",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::ShLIOp>(lhs, rhs).getResult();
+           })
+      .def("create_arith_shrsi",
+           [](TritonOpBuilder &self, Value lhs, Value rhs) -> Value {
+             return self.create<arith::ShRSIOp>(lhs, rhs).getResult();
+           })
+
+      // ========================================================================
+      // Math dialect
+      // ========================================================================
+      .def(
+          "create_math_fma",
+          [](TritonOpBuilder &self, Value a, Value b, Value c) -> Value {
+            return self.create<math::FmaOp>(a, b, c).getResult();
+          },
+          py::arg("a"), py::arg("b"), py::arg("c"))
+      .def("create_math_sqrt",
+           [](TritonOpBuilder &self, Value operand) -> Value {
+             return self.create<math::SqrtOp>(operand).getResult();
+           })
+      .def("create_math_rsqrt",
+           [](TritonOpBuilder &self, Value operand) -> Value {
+             return self.create<math::RsqrtOp>(operand).getResult();
+           })
+      .def("create_math_exp",
+           [](TritonOpBuilder &self, Value operand) -> Value {
+             return self.create<math::ExpOp>(operand).getResult();
+           })
+      .def("create_math_exp2",
+           [](TritonOpBuilder &self, Value operand) -> Value {
+             return self.create<math::Exp2Op>(operand).getResult();
+           })
+      .def("create_math_log",
+           [](TritonOpBuilder &self, Value operand) -> Value {
+             return self.create<math::LogOp>(operand).getResult();
+           })
+      .def("create_math_log2",
+           [](TritonOpBuilder &self, Value operand) -> Value {
+             return self.create<math::Log2Op>(operand).getResult();
+           })
+      .def("create_math_absf",
+           [](TritonOpBuilder &self, Value operand) -> Value {
+             return self.create<math::AbsFOp>(operand).getResult();
+           })
+      .def("create_math_absi",
+           [](TritonOpBuilder &self, Value operand) -> Value {
+             return self.create<math::AbsIOp>(operand).getResult();
+           })
+
+      // ========================================================================
+      // Vector dialect - 基础操作
+      // ========================================================================
+      .def(
+          "create_vector_splat",
+          [](TritonOpBuilder &self, Value input, Type vectorType) -> Value {
+            // splat = broadcast a scalar to all lanes (SplatOp 已废弃, 用
+            // BroadcastOp)
+            return self.create<vector::BroadcastOp>(vectorType, input)
+                .getResult();
+          },
+          py::arg("input"), py::arg("vector_type"))
+      .def(
+          "create_vector_broadcast",
+          [](TritonOpBuilder &self, Value source, Type destType) -> Value {
+            return self.create<vector::BroadcastOp>(destType, source)
+                .getResult();
+          },
+          py::arg("source"), py::arg("dest_type"))
+      .def("create_vector_shape_cast",
+           [](TritonOpBuilder &self, Value source, Type resultType) -> Value {
+             return self.create<vector::ShapeCastOp>(resultType, source)
+                 .getResult();
+           })
+      .def(
+          "create_vector_step",
+          [](TritonOpBuilder &self, Type resultType) -> Value {
+            // vector.step : vector<Nxindex> → [0, 1, .., N-1] (iota).
+            // Used for index-tracking reductions (argmax/argmin).
+            return self.create<vector::StepOp>(cast<VectorType>(resultType));
+          },
+          py::arg("result_type"))
+
+      // ========================================================================
+      // Vector dialect - Load/Store
+      // ========================================================================
+      .def(
+          "create_vector_load",
+          [](TritonOpBuilder &self, Type vectorType, Value base,
+             std::vector<Value> indices) -> Value {
+            return self.create<vector::LoadOp>(vectorType, base, indices)
+                .getResult();
+          },
+          py::arg("vector_type"), py::arg("base"), py::arg("indices"))
+      .def("create_vector_store",
+           [](TritonOpBuilder &self, Value valueToStore, Value base,
+              std::vector<Value> indices) {
+             self.create<vector::StoreOp>(valueToStore, base, indices);
+           })
+      .def(
+          "create_vector_transfer_read",
+          [](TritonOpBuilder &self, Type vectorType, Value source,
+             std::vector<Value> indices, Value padding,
+             std::optional<std::vector<bool>> inBounds =
+                 std::nullopt) -> Value {
+            SmallVector<bool> inBoundsVec;
+            if (inBounds.has_value()) {
+              inBoundsVec =
+                  SmallVector<bool>(inBounds->begin(), inBounds->end());
+            } else {
+              // 默认全部 in_bounds=true
+              auto vecTy = cast<VectorType>(vectorType);
+              inBoundsVec = SmallVector<bool>(vecTy.getRank(), true);
+            }
+            return self
+                .create<vector::TransferReadOp>(cast<VectorType>(vectorType),
+                                                source, indices, padding,
+                                                ArrayRef<bool>(inBoundsVec))
+                .getResult();
+          },
+          py::arg("vector_type"), py::arg("source"), py::arg("indices"),
+          py::arg("padding"), py::arg("in_bounds") = py::none())
+      .def(
+          "create_vector_transfer_write",
+          [](TritonOpBuilder &self, Value vector, Value dest,
+             std::vector<Value> indices,
+             std::optional<std::vector<bool>> inBounds = std::nullopt) {
+            SmallVector<bool> inBoundsVec;
+            if (inBounds.has_value()) {
+              inBoundsVec =
+                  SmallVector<bool>(inBounds->begin(), inBounds->end());
+            } else {
+              auto vecTy = cast<VectorType>(vector.getType());
+              inBoundsVec = SmallVector<bool>(vecTy.getRank(), true);
+            }
+            self.create<vector::TransferWriteOp>(vector, dest, indices,
+                                                 ArrayRef<bool>(inBoundsVec));
+          },
+          py::arg("vector"), py::arg("dest"), py::arg("indices"),
+          py::arg("in_bounds") = py::none())
+
+      // ========================================================================
+      // Vector dialect - Reduction
+      // ========================================================================
+      .def(
+          "create_vector_reduction",
+          [](TritonOpBuilder &self, const std::string &kind,
+             Value source) -> Value {
+            vector::CombiningKind combKind;
+            if (kind == "add")
+              combKind = vector::CombiningKind::ADD;
+            else if (kind == "mul")
+              combKind = vector::CombiningKind::MUL;
+            else if (kind == "minf")
+              combKind = vector::CombiningKind::MINIMUMF;
+            else if (kind == "maxf")
+              combKind = vector::CombiningKind::MAXIMUMF;
+            else
+              throw std::runtime_error("Unknown reduction kind: " + kind);
+            return self.create<vector::ReductionOp>(combKind, source)
+                .getResult();
+          },
+          py::arg("kind"), py::arg("source"))
+
+      // ========================================================================
+      // SCF dialect - 控制流
+      // ========================================================================
+      .def(
+          "create_scf_for",
+          [](TritonOpBuilder &self, Value lb, Value ub, Value step,
+             std::vector<Value> iterArgs,
+             py::function bodyBuilder) -> std::vector<Value> {
+            // 创建 scf.for
+            ValueRange iterArgsRange(iterArgs);
+            auto forOp = self.create<scf::ForOp>(lb, ub, step, iterArgsRange);
+
+            // 设置 body builder 的插入点
+            OpBuilder::InsertionGuard guard(self.getBuilder());
+            Block *bodyBlock = forOp.getBody();
+
+            // ForOp::build 在 initArgs 为空且无 bodyBuilder 时会自动
+            // ensureTerminator 塞一个空 scf.yield;若不清除,后面我们再
+            // create<YieldOp> 会得到两个 yield (触发 'scf.yield must be the
+            // last operation')。统一由本函数负责 yield, 先擦掉自动终结符。
+            if (!bodyBlock->empty() &&
+                bodyBlock->back().hasTrait<mlir::OpTrait::IsTerminator>())
+              bodyBlock->back().erase();
+
+            self.getBuilder().setInsertionPointToEnd(bodyBlock);
+
+            // 调用 Python 传入的 body builder
+            // Python 侧需要返回 yield 的值列表
+            Value iv = forOp.getInductionVar();
+            std::vector<Value> regionIterArgs(
+                bodyBlock->getArguments().begin() + 1,
+                bodyBlock->getArguments().end());
+
+            py::object yieldValsObj =
+                bodyBuilder(std::ref(self), iv, regionIterArgs);
+            std::vector<Value> yieldVals =
+                yieldValsObj.cast<std::vector<Value>>();
+
+            // 创建 scf.yield(本函数唯一 yield 来源)
+            self.getBuilder().setInsertionPointToEnd(bodyBlock);
+            self.create<scf::YieldOp>(yieldVals);
+
+            // 返回 for 的结果
+            return std::vector<Value>(forOp.getResults().begin(),
+                                      forOp.getResults().end());
+          },
+          py::arg("lb"), py::arg("ub"), py::arg("step"), py::arg("iter_args"),
+          py::arg("body_builder"))
+      .def("create_scf_yield",
+           [](TritonOpBuilder &self, std::vector<Value> results) {
+             self.create<scf::YieldOp>(results);
+           })
+
+      // ========================================================================
+      // MemRef dialect
+      // ========================================================================
+      .def(
+          "create_memref_alloc",
+          [](TritonOpBuilder &self, Type memrefType,
+             std::optional<std::vector<Value>> dynamicSizes = std::nullopt,
+             std::optional<int64_t> alignment = std::nullopt) -> Value {
+            SmallVector<Value> dynSizes;
+            if (dynamicSizes.has_value()) {
+              dynSizes = SmallVector<Value>(dynamicSizes->begin(),
+                                            dynamicSizes->end());
+            }
+            // 必须 cast<MemRefType>:参数是 Type,若直接传给 create<AllocOp>
+            // 会匹配 泛型 build(TypeRange, ValueRange, attrs) 重载,不设
+            // operandSegmentSizes → 'operand count does not match total size in
+            // operandSegmentSizes'。 cast 后命中 AllocOp::build(MemRefType,
+            // ValueRange dynamicSizes, ...)。
+            auto op = self.create<memref::AllocOp>(cast<MemRefType>(memrefType),
+                                                   dynSizes);
+            if (alignment.has_value()) {
+              op->setAttr("alignment", self.getBuilder().getI64IntegerAttr(
+                                           alignment.value()));
+            }
+            return op.getResult();
+          },
+          py::arg("memref_type"), py::arg("dynamic_sizes") = py::none(),
+          py::arg("alignment") = py::none())
+      .def("create_memref_load",
+           [](TritonOpBuilder &self, Value memref,
+              std::vector<Value> indices) -> Value {
+             return self.create<memref::LoadOp>(memref, indices).getResult();
+           })
+      .def("create_memref_store",
+           [](TritonOpBuilder &self, Value value, Value memref,
+              std::vector<Value> indices) {
+             self.create<memref::StoreOp>(value, memref, indices);
+           })
+      .def(
+          "create_memref_reinterpret_cast",
+          [](TritonOpBuilder &self, Type resultType, Value source,
+             std::vector<Value> offsets, std::vector<Value> sizes,
+             std::vector<Value> strides) -> Value {
+            // ReinterpretCastOp 需要 OpFoldResult（Value 或 静态 int）。
+            // 全部动态时，static 数组用 ShapedType::kDynamic 占位。
+            auto toOFR = [](const std::vector<Value> &vals)
+                -> SmallVector<OpFoldResult> {
+              SmallVector<OpFoldResult> result;
+              for (Value v : vals)
+                result.push_back(v);
+              return result;
+            };
+            return self
+                .create<memref::ReinterpretCastOp>(cast<MemRefType>(resultType),
+                                                   source, toOFR(offsets)[0],
+                                                   toOFR(sizes), toOFR(strides))
+                .getResult();
+          },
+          py::arg("result_type"), py::arg("source"), py::arg("offsets"),
+          py::arg("sizes"), py::arg("strides"))
+      .def(
+          "create_memref_reinterpret_cast_mixed",
+          [](TritonOpBuilder &self, Type resultType, Value source,
+             py::list offsets, py::list sizes, py::list strides) -> Value {
+            // 混合 static/dynamic 版本:py::list 每个元素是 int(静态,进 static_*
+            // 数组)或 Value(动态,static 位填 kDynamic)。用于结果类型含静态维
+            // (如 memref<?x64xf16>)时,static_sizes 必须与结果类型逐维一致,
+            // 否则报 'expected result type with size = dynamic instead of N'。
+            auto &b = self.getBuilder();
+            auto toOFR = [&b](py::list items) -> SmallVector<OpFoldResult> {
+              SmallVector<OpFoldResult> result;
+              for (py::handle it : items) {
+                if (py::isinstance<py::int_>(it))
+                  result.push_back(b.getIndexAttr(it.cast<int64_t>()));
+                else
+                  result.push_back(it.cast<Value>());
+              }
+              return result;
+            };
+            return self
+                .create<memref::ReinterpretCastOp>(cast<MemRefType>(resultType),
+                                                   source, toOFR(offsets)[0],
+                                                   toOFR(sizes), toOFR(strides))
+                .getResult();
+          },
+          py::arg("result_type"), py::arg("source"), py::arg("offsets"),
+          py::arg("sizes"), py::arg("strides"))
+      .def(
+          "create_memref_collapse_shape",
+          [](TritonOpBuilder &self, Value src,
+             const std::vector<std::vector<int64_t>> &reassociation) -> Value {
+            SmallVector<ReassociationIndices> reassoc;
+            for (const auto &group : reassociation) {
+              reassoc.push_back(
+                  ReassociationIndices(group.begin(), group.end()));
+            }
+            return self.create<memref::CollapseShapeOp>(src, reassoc)
+                .getResult();
+          },
+          py::arg("src"), py::arg("reassociation"))
+      .def("create_memref_cast",
+           [](TritonOpBuilder &self, Type targetType, Value source) -> Value {
+             return self.create<memref::CastOp>(targetType, source).getResult();
+           })
+
+      // ========================================================================
+      // Tensor dialect (for bufferization path)
+      // ========================================================================
+      .def(
+          "create_tensor_empty",
+          [](TritonOpBuilder &self, Type tensorType,
+             std::optional<std::vector<Value>> dynamicSizes =
+                 std::nullopt) -> Value {
+            SmallVector<Value> dynSizes;
+            if (dynamicSizes.has_value()) {
+              dynSizes = SmallVector<Value>(dynamicSizes->begin(),
+                                            dynamicSizes->end());
+            }
+            return self.create<tensor::EmptyOp>(tensorType, dynSizes)
+                .getResult();
+          },
+          py::arg("tensor_type"), py::arg("dynamic_sizes") = py::none())
+      .def("create_tensor_insert_slice",
+           [](TritonOpBuilder &self, Value source, Value dest,
+              std::vector<Value> offsets, std::vector<Value> sizes,
+              std::vector<Value> strides) -> Value {
+             return self
+                 .create<tensor::InsertSliceOp>(source, dest, offsets, sizes,
+                                                strides)
+                 .getResult();
+           })
+      .def("create_tensor_insert_slice_mixed",
+           [](TritonOpBuilder &self, Value source, Value dest, py::list offsets,
+              py::list sizes, py::list strides) -> Value {
+             // 混合 static/dynamic:int→static OFR, Value→dynamic。source
+             // 含静态维 (如 tensor<?x64xf16>)时,insert_slice static_sizes
+             // 须逐维匹配 source, 否则报 'expected type to be tensor<?x?xf16>'
+             // rank/size mismatch。
+             auto &b = self.getBuilder();
+             auto toOFR = [&b](py::list items) -> SmallVector<OpFoldResult> {
+               SmallVector<OpFoldResult> result;
+               for (py::handle it : items) {
+                 if (py::isinstance<py::int_>(it))
+                   result.push_back(b.getIndexAttr(it.cast<int64_t>()));
+                 else
+                   result.push_back(it.cast<Value>());
+               }
+               return result;
+             };
+             return self
+                 .create<tensor::InsertSliceOp>(source, dest, toOFR(offsets),
+                                                toOFR(sizes), toOFR(strides))
+                 .getResult();
+           })
+      .def("create_tensor_collapse_shape",
+           [](TritonOpBuilder &self, Value src,
+              const std::vector<std::vector<int64_t>> &reassociation) -> Value {
+             SmallVector<ReassociationIndices> reassoc;
+             for (const auto &group : reassociation) {
+               reassoc.push_back(
+                   ReassociationIndices(group.begin(), group.end()));
+             }
+             return self.create<tensor::CollapseShapeOp>(src, reassoc)
+                 .getResult();
+           })
+
+      // ========================================================================
+      // Linalg dialect
+      // ========================================================================
+      .def("create_linalg_fill",
+           [](TritonOpBuilder &self, Value value, Value output) -> Value {
+             return self.create<linalg::FillOp>(value, output).getResult(0);
+           })
+      .def(
+          "create_linalg_pack",
+          [](TritonOpBuilder &self, Value source, Value dest,
+             Value paddingValue, const std::vector<int64_t> &innerTiles,
+             const std::vector<int64_t> &outerDimsPerm,
+             const std::vector<int64_t> &innerDimsPos) -> Value {
+            // 根据 MLIR 签名: create(builder, loc, type, source, dest,
+            // padding_value,
+            //                        outer_dims_perm, inner_dims_pos,
+            //                        inner_tiles, static_inner_tiles)
+            auto &builder = self.getBuilder();
+            SmallVector<int64_t> staticInnerTiles(innerTiles.begin(),
+                                                  innerTiles.end());
+            SmallVector<Value> innerTilesValues; // 空的动态 tiles
+
+            return self
+                .create<linalg::PackOp>(
+                    dest.getType(), source, dest, paddingValue, outerDimsPerm,
+                    innerDimsPos, innerTilesValues, staticInnerTiles)
+                .getResult();
+          },
+          py::arg("source"), py::arg("dest"), py::arg("padding_value"),
+          py::arg("inner_tiles"), py::arg("outer_dims_perm"),
+          py::arg("inner_dims_pos"))
+
+      // ========================================================================
+      // Bufferization dialect
+      // ========================================================================
+      .def("create_bufferization_to_tensor",
+           [](TritonOpBuilder &self, Value memref, Type tensorType) -> Value {
+             auto op =
+                 self.create<bufferization::ToTensorOp>(tensorType, memref);
+             // Match text path "bufferization.to_tensor ... restrict"
+             op->setAttr("restrict", self.getBuilder().getUnitAttr());
+             return op.getResult();
+           })
+      .def("create_bufferization_to_memref",
+           [](TritonOpBuilder &self, Value tensor, Type memrefType) -> Value {
+             // ToMemrefOp 已改名 ToBufferOp（新版 MLIR），需显式给出 memref
+             // 结果类型
+             return self.create<bufferization::ToBufferOp>(memrefType, tensor)
+                 .getResult();
+           })
+
+      // ========================================================================
+      // Generic (unregistered) op builder — for ops in dialects that are never
+      // registered/loaded (e.g. vector_ext.*), which parse only in generic form
+      // under the context's allowUnregisteredDialects flag (see load_dialects).
+      // int_attrs covers the only attr shape spine_raw's generic ops need today
+      // (vector_ext.cross_batch_matmul's m/n/k, vector_ext.group_interleave's
+      // groupLen — all i64 integer attrs).
+      // ========================================================================
+      .def(
+          "create_generic_op",
+          [](TritonOpBuilder &self, const std::string &opName,
+             std::vector<Value> operands,
+             std::map<std::string, int64_t> intAttrs,
+             std::vector<Type> resultTypes) -> std::vector<Value> {
+            auto &builder = self.getBuilder();
+            mlir::OperationState state(self.getLastLoc(), opName);
+            state.addOperands(operands);
+            state.addTypes(resultTypes);
+            for (auto &[name, val] : intAttrs)
+              state.addAttribute(name, builder.getI64IntegerAttr(val));
+            mlir::Operation *op = builder.create(state);
+            return std::vector<Value>(op->getResults().begin(),
+                                      op->getResults().end());
+          },
+          py::arg("op_name"), py::arg("operands"), py::arg("int_attrs"),
+          py::arg("result_types"),
+          "Create an unregistered/generic-form op (e.g. vector_ext.*)")
+
+      // ========================================================================
+      // Generic op builder with text-parsed attributes — for LLVM-dialect
+      // llvm-direct kernels (call_intrinsic / mlir.constant / extractvalue /
+      // getelementptr). Each attr value is an MLIR attribute in text form,
+      // parsed via parseAttribute, so string / dense / array / type attrs are
+      // all covered by one method (create_generic_op only handles i64 attrs).
+      // ========================================================================
+      .def(
+          "create_op_textattr",
+          [](TritonOpBuilder &self, const std::string &opName,
+             std::vector<Value> operands,
+             std::map<std::string, std::string> textAttrs,
+             std::vector<Type> resultTypes) -> std::vector<Value> {
+            auto &builder = self.getBuilder();
+            auto *ctx = builder.getContext();
+            mlir::OperationState state(self.getLastLoc(), opName);
+            state.addOperands(operands);
+            state.addTypes(resultTypes);
+            for (auto &[name, txt] : textAttrs) {
+              mlir::Attribute attr = mlir::parseAttribute(txt, ctx);
+              if (!attr)
+                throw std::runtime_error(
+                    "create_op_textattr: failed to parse attribute '" + name +
+                    "' = " + txt);
+              state.addAttribute(name, attr);
+            }
+            mlir::Operation *op = builder.create(state);
+            return std::vector<Value>(op->getResults().begin(),
+                                      op->getResults().end());
+          },
+          py::arg("op_name"), py::arg("operands"), py::arg("text_attrs"),
+          py::arg("result_types"),
+          "Create an op with text-parsed attributes (LLVM dialect "
+          "llvm-direct)");
 }
 
 void init_triton_spine_triton(py::module &&m) {
@@ -303,11 +1341,28 @@ void init_triton_spine_triton(py::module &&m) {
     mlir::DialectRegistry registry;
     registry.insert<mlir::xsmt::XSMTDialect, mlir::xsmt_async::XSMTAsyncDialect,
                     tensor::TensorDialect, mlir::triton::proton::ProtonDialect,
-                    mlir::tle::TLEDialect>();
+                    mlir::tle::TLEDialect,
+                    // Payload dialects for tle.dsl_region's real region body,
+                    // so the raw-kernel MLIR text parses in-process (custom ops
+                    // like vector_ext.matmul stay generic via the context's
+                    // allow-unregistered flag).
+                    mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                    mlir::memref::MemRefDialect, mlir::vector::VectorDialect,
+                    mlir::arith::ArithDialect, mlir::scf::SCFDialect,
+                    mlir::math::MathDialect,
+                    mlir::bufferization::BufferizationDialect,
+                    mlir::ptr::PtrDialect, mlir::LLVM::LLVMDialect>();
+    // Registering func dialect above makes TTIR's InlinerPass query func's
+    // DialectInlinerInterface; that interface lives in a separate extension
+    // that must be registered explicitly, or the inliner aborts with
+    // "interface promised by dialect 'func' but never implemented".
+    mlir::func::registerInlinerExtension(registry);
     context.appendDialectRegistry(registry);
+    context.allowUnregisteredDialects();
     context.loadAllAvailableDialects();
   });
 
   init_triton_xsmt_ir(m.def_submodule("xsmt_ir"));
   init_triton_tle_ir(m.def_submodule("tle_ir"));
+  init_triton_spine_raw_ir(m.def_submodule("spine_raw_ir"));
 }

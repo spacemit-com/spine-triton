@@ -3,30 +3,36 @@
 spine-triton is forked from [microsoft/triton-shared](https://github.com/microsoft/triton-shared), which is a Shared Middle-Layer for Triton Compilation.
 
 ## QuickStart
+
 1. env setup
-~~~
+
+```
 apt update
 
 apt install gcc g++ gdb libsleef-dev libnuma-dev libomp5 libgomp1 python3-dev
 
 pip install PyYAML sympy torch opencv-python pybind11 --index-url https://git.spacemit.com/api/v4/projects/33/packages/pypi/simple
-~~~
+```
 
 2. prebuild whl
-~~~
+
+```
 pip install triton --index-url https://git.spacemit.com/api/v4/projects/33/packages/pypi/simple
-~~~
+```
 
 3. mm demo
-~~~
+
+```
 # python/examples/test_smt_mm.py
 # export SPINE_TRITON_DUMP_PATH=./ir_dumps # for ir dump
 python3 python/examples/test_smt_mm.py
-~~~
+```
 
 ## Build
+
 1. llvm
-~~~
+
+```
 # at spine-triton
 # pull llvm-project
 # llvm-project hash-tag at spine-triton/triton/cmake/llvm-hash.txt
@@ -53,24 +59,26 @@ cmake -G Ninja ../llvm-project/llvm \
 
 cmake --build . --target install --parallel 40
 popd
-~~~
+```
 
 2. download spine-mlir
-~~~
+
+```
 wget https://github.com/spacemit-com/spine-mlir/releases/download/0.5.4/spine-mlir-riscv64-0.5.4.tar.gz
-~~~
+```
 
 3. install triton
-~~~
+
+```
 git submodule update --init --recursive
 bash scripts/build.sh ${LLVM_INSTALL_DIR} {arch/x86_64/riscv64} {spine-mlir-install-dir}
-~~~
+```
 
 ## Code Style
 
 Use the same pre-commit checks as CI before sending a PR.
 
-~~~
+```
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip pre-commit
@@ -80,7 +88,7 @@ pre-commit run
 
 # check all tracked files covered by the hooks
 pre-commit run --all-files
-~~~
+```
 
 ## License
 

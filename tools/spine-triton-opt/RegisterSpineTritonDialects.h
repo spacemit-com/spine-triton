@@ -54,6 +54,7 @@ inline void registerSpineTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerAddTargetDescriptionPasses();
   mlir::triton::registerScfbufferStandardized();
   mlir::triton::registerConvertScanOp();
+  mlir::triton::registerLoopPtrCarryToOffset();
   mlir::triton::registerXSMTToLinalgPass();
   mlir::triton::registerTLEToLinalgPass();
   mlir::triton::registerAddLLVMDebugInfoPass();

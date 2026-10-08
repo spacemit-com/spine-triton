@@ -1306,3 +1306,16 @@ index f73a0f184..0cec77129 100644
    throw std::runtime_error("Unknown profiler: " + name);
  }
 
+diff --git a/python/triton/compiler/compiler.py b/python/triton/compiler/compiler.py
+index d6f8dd26f..16c4f67a9 100644
+--- a/python/triton/compiler/compiler.py
++++ b/python/triton/compiler/compiler.py
+@@ -7,7 +7,7 @@ from ..backends.compiler import Language
+ from ..backends.compiler import BaseBackend, GPUTarget
+ from .. import __version__, knobs
+ from ..runtime.autotuner import OutOfResources
+-from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager, get_cache_key
++from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager, get_cache_key, triton_key
+ from ..runtime.driver import driver
+ from ..tools.disasm import get_sass
+ from pathlib import Path

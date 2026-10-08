@@ -16,6 +16,7 @@
 #include "triton-shared/Conversion/TritonPtrToMemref/TritonPtrToMemref.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/CollapseShape.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ConvertScanOp.h"
+#include "triton-shared/Conversion/TritonToLinalgExperimental/LoopPtrCarryToOffset.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcileLlvmPtrCasts.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcilePtrCasts.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ScfbufferStandardized.h"
@@ -27,14 +28,18 @@
 #include "triton-shared/Conversion/XSMTToLinalg/XSMTToLinalg.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "triton-shared/Utils/MemorySpaceUtils.h"
 
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/Passes.h"
@@ -51,6 +56,43 @@ namespace mlir::triton {
 } // namespace mlir::triton
 
 namespace {
+
+// Generic pass: inline spine_ext.raw_region ops into the surrounding func.
+// Mirrors spine-mlir's SpineRawRegionInlinePass but works on unregistered ops
+// (spine_ext lives in spine-mlir; we match by op name string).
+struct InlineSpineRawRegion
+    : public PassWrapper<InlineSpineRawRegion, OperationPass<func::FuncOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(InlineSpineRawRegion)
+  StringRef getArgument() const override { return "inline-spine-raw-region"; }
+  void runOnOperation() override {
+    SmallVector<Operation *> toErase;
+    getOperation().walk([&](Operation *op) {
+      if (op->getName().getStringRef() != "spine_ext.raw_region")
+        return;
+      Block &body = op->getRegion(0).front();
+      IRMapping mapping;
+      OpBuilder b(op);
+      for (auto [arg, operand] :
+           llvm::zip(body.getArguments(), op->getOperands())) {
+        Value mapped = operand;
+        if (arg.getType() != operand.getType())
+          if (isa<IndexType>(arg.getType()) &&
+              operand.getType().isSignlessInteger(32))
+            mapped = arith::IndexCastOp::create(b, op->getLoc(),
+                                                b.getIndexType(), operand);
+        mapping.map(arg, mapped);
+      }
+      for (Operation &inner : body) {
+        if (inner.getName().getStringRef().contains(".return"))
+          continue;
+        b.clone(inner, mapping);
+      }
+      toErase.push_back(op);
+    });
+    for (auto *op : llvm::reverse(toErase))
+      op->erase();
+  }
+};
 
 class TritonToLinalgExperimentalPass
     : public triton::impl::TritonToLinalgExperimentalBase<
@@ -70,6 +112,20 @@ public:
 
   void runOnOperation() override {
     auto moduleOp = getOperation();
+
+    // tl.debug_barrier lowers to gpu.barrier, a CTA-scope synchronization
+    // with no meaning on the CPU target (each program executes sequentially).
+    // Erase it before the pipeline so downstream bufferization never sees an
+    // op with unknown memory side effects. Match by name string: the gpu
+    // dialect is not linked into this tool.
+    SmallVector<Operation *> barriers;
+    moduleOp->walk([&](Operation *op) {
+      if (op->getName().getStringRef() == "gpu.barrier")
+        barriers.push_back(op);
+    });
+    for (Operation *op : barriers)
+      op->erase();
+
     PassManager pm(&getContext(), moduleOp.getOperationName());
 
     // Lower tt.scan before Triton-to-structured / PtrAnalysis.
@@ -83,6 +139,12 @@ public:
     // This also avoids relying on later passes to legalize scans after the
     // structured-pointer pipeline has already seen them.
     pm.addPass(createConvertScanOpPass());
+
+    // Rewrite while-loops that carry scalar tt.ptr values (ptr += stride)
+    // into offset-carrying loops before pointer analysis runs: PtrAnalysis
+    // and the downstream spine-opt pipeline cannot legalize loop-carried raw
+    // pointers (cf.br with !ptr.ptr operands fails conversion).
+    pm.addPass(createLoopPtrCarryToOffsetPass());
 
     pm.addPass(createTritonToStructuredPass(enableMakeGatherScatterTensorPtr));
 
@@ -105,6 +167,12 @@ public:
     pm.addPass(createRemoveDeadValuesPass());
     pm.addPass(createXSMTToLinalgPass());
     pm.addPass(createTLEToLinalgPass());
+    // Inline spine_ext.raw_region bodies (produced by TLEToLinalgPass above)
+    // here so spine-opt's e2e pipeline receives clean linalg/memref/vector IR.
+    pm.addNestedPass<func::FuncOp>(std::make_unique<InlineSpineRawRegion>());
+    // After inlining, proton.record ops (emitted by spine_raw codegen) are
+    // now real ops in the host function — lower them via ProtonRecordOpPattern.
+    pm.addPass(createXSMTToLinalgPass());
     pm.addPass(createReconcileUnrealizedCastsPass());
     pm.addPass(createReconcilePtrCastsPass());
     pm.addPass(createReconcileLlvmPtrCastsPass());
@@ -119,6 +187,10 @@ public:
       // pm.addPass(createCollapseShapePass());
     }
 
+    // Allow unregistered ops (spine_ext.raw_region, vector_ext.*, proton.record
+    // allowed via --allow-unregistered-dialect command-line flag (set in
+    // compiler.py at context-creation time — safe in multi-threaded passes,
+    // CLAUDE.md rule 40a).
     if (failed(runPipeline(pm, getOperation()))) {
       signalPassFailure();
     }
