@@ -191,13 +191,12 @@ build-x86:
       echo "LLVM_DIR: $LLVM_DIR"
 
       # The build LLVM (675f09ac) ships no MLIR Python bindings; pass the
-      # era-matched f6ded0be bindings as arg 4 so the build script can vendor
-      # them into backend/mlir_core (script accepts an LLVM install root with
-      # python_packages/mlir_core — the old "-python" suffix package has been
-      # rotated off NFS). At runtime no PYTHONPATH is needed (vendored copy is
-      # resolved by _mlir_loader.py).
-      MLIR_BINDINGS_PKG=/home/share/nfs_share/llvm-pre-build/llvm-f6ded0be897e2878612dd903f7e8bb85448269e5-20260923-release-x86
-      if [ ! -d "$MLIR_BINDINGS_PKG/python_packages/mlir_core/mlir" ]; then
+      # era-matched f6ded0be bindings package (top level contains mlir/) as
+      # arg 4 so the build script can vendor them into backend/mlir_core.
+      # At runtime no PYTHONPATH is needed (vendored copy is resolved by
+      # _mlir_loader.py).
+      MLIR_BINDINGS_PKG=/share/nfs_share/llvm-pre-build/llvm-f6ded0be897e2878612dd903f7e8bb85448269e5-20261009-release-x86-python312
+      if [ ! -d "$MLIR_BINDINGS_PKG/mlir" ]; then
         echo "ERROR: MLIR python bindings not found in $MLIR_BINDINGS_PKG"
         exit 1
       fi

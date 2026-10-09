@@ -31,50 +31,20 @@ export TRITON_PLUGIN_DIRS=${PWD}
 # Vendor spert headers from SPINE_RUNTIME_INSTALL_DIR/include into backend/include
 # (the generated launcher #include "spert.hpp"); libspert.so* is picked up by
 # setup.py from SPINE_RUNTIME_INSTALL_DIR/lib.
-mkdir -p backend/include/SpineRuntime
-if [ -f "${SPINE_RUNTIME_INSTALL_DIR}/include/spert.hpp" ]; then
-    for h in spert.hpp spert_engine.hpp spert_abi.h; do
-        [ -f "${SPINE_RUNTIME_INSTALL_DIR}/include/${h}" ] && \
-            cp "${SPINE_RUNTIME_INSTALL_DIR}/include/${h}" "backend/include/SpineRuntime/${h}"
-    done
-    echo "vendored spert headers from ${SPINE_RUNTIME_INSTALL_DIR}/include"
-else
-    echo "ERROR: spert.hpp not found in ${SPINE_RUNTIME_INSTALL_DIR}/include" >&2
-    exit 1
-fi
+source "$(dirname "$(readlink -f "$0")")/common.sh"
+vendor_spert_headers "${SPINE_RUNTIME_INSTALL_DIR}"
 
 # Vendor MLIR Python bindings (mlir_core) into backend/mlir_core so the build
 # is self-contained: llvm_direct.py / mixed_bridge.py resolve them at runtime
 # (language/smt_rvisa/_mlir_loader.py) without any PYTHONPATH export.
-# Source: arg 4 (optional), either the "-python" release package (a directory
-# containing mlir_core/) or an LLVM install with python_packages/mlir_core;
+# Source: arg 4 (optional), the bindings package (top level contains mlir/);
 # defaults to the build LLVM when it ships python_packages (675f09ac does not,
 # so pass the era-matched f6ded0be bindings package explicitly).
 if [ -n "${4:-}" ]; then
-    MLIR_BINDINGS_ROOT=$(cd "${4}" && pwd)
+    vendor_mlir_bindings "${4}"
 else
-    MLIR_BINDINGS_ROOT=${LLVM_INSTALL_DIR}
+    vendor_mlir_bindings "${LLVM_INSTALL_DIR}"
 fi
-if [ -d "${MLIR_BINDINGS_ROOT}/python_packages/mlir_core" ]; then
-    MLIR_BINDINGS_SRC=${MLIR_BINDINGS_ROOT}/python_packages/mlir_core
-elif [ -d "${MLIR_BINDINGS_ROOT}/mlir_core" ]; then
-    MLIR_BINDINGS_SRC=${MLIR_BINDINGS_ROOT}/mlir_core
-elif [ -d "${MLIR_BINDINGS_ROOT}/mlir" ]; then
-    # arg is the mlir_core directory itself
-    MLIR_BINDINGS_SRC=${MLIR_BINDINGS_ROOT}
-else
-    echo "ERROR: MLIR Python bindings (mlir_core) not found under ${MLIR_BINDINGS_ROOT}" >&2
-    echo "Pass the -python release package or an LLVM install with python_packages/mlir_core as arg 4" >&2
-    exit 1
-fi
-rm -rf backend/mlir_core
-mkdir -p backend/mlir_core
-cp -a "${MLIR_BINDINGS_SRC}/." backend/mlir_core/
-if [ ! -d backend/mlir_core/mlir ]; then
-    echo "ERROR: MLIR Python bindings (mlir_core) not found at ${MLIR_BINDINGS_SRC}" >&2
-    exit 1
-fi
-echo "vendored MLIR Python bindings from: ${MLIR_BINDINGS_SRC}"
 
 mkdir -p ${TRITON_PLUGIN_DIRS}/${BUILD_DIR}
 
