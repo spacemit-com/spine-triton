@@ -43,6 +43,26 @@ else
     exit 1
 fi
 
+# Vendor MLIR Python bindings (mlir_core) into backend/mlir_core so the wheel
+# is self-contained: llvm_direct.py / mixed_bridge.py resolve them at runtime
+# (language/spine_raw/_mlir_loader.py) without any PYTHONPATH export.
+# Source (arg 5, optional): an LLVM install with python_packages/mlir_core; the
+# build LLVM already provides one when it ships python_packages.
+if [ -n "${5:-}" ]; then
+    MLIR_BINDINGS_SRC=$(cd "${5}" && pwd)/python_packages/mlir_core
+else
+    MLIR_BINDINGS_SRC=${LLVM_INSTALL_DIR}/python_packages/mlir_core
+fi
+rm -rf backend/mlir_core
+mkdir -p backend/mlir_core
+cp -a "${MLIR_BINDINGS_SRC}/." backend/mlir_core/
+if [ ! -d backend/mlir_core/mlir ]; then
+    echo "ERROR: MLIR Python bindings (mlir_core) not found at ${MLIR_BINDINGS_SRC}" >&2
+    echo "Pass an LLVM install with python_packages/mlir_core as arg 5" >&2
+    exit 1
+fi
+echo "vendored LLVM for MLIR Python bindings: $(dirname $(dirname ${MLIR_BINDINGS_SRC}))"
+
 mkdir -p ${TRITON_PLUGIN_DIRS}/${BUILD_DIR}
 
 pushd triton
