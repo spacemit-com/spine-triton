@@ -2,7 +2,7 @@
 
 Roofline references:
   - multi-thread peak: torch STREAM COPY (uses all cores)
-  - single-thread peak: spine_raw copy kernel grid=(1,)
+  - single-thread peak: smt_rvisa copy kernel grid=(1,)
 mv effective bytes = B[M,K]*2(f16) + A[K]*2(f16) + C[M]*4(f32).
 BW = bytes / median_time. util = BW / peak.
 Best util per shape = max over BLOCK sweep (dispatch/parallelism tradeoff).
@@ -16,7 +16,7 @@ from importlib.machinery import SourceFileLoader
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.spine_raw as tle  # noqa: F401
+import triton.language.extra.smt_rvisa as tle  # noqa: F401
 
 _TESTS = os.path.dirname(__file__)
 sv = SourceFileLoader("mv_sv", os.path.join(_TESTS, "test_raw_mv_svector.py")).load_module()

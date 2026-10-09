@@ -1,6 +1,6 @@
-"""reduce-family perf: spine_raw single-pass streaming vs FlagGems, f32.
+"""reduce-family perf: smt_rvisa single-pass streaming vs FlagGems, f32.
 
-Validates PLAN_reduce_gap.md's core claim — that spine_raw's single-pass
+Validates PLAN_reduce_gap.md's core claim — that smt_rvisa's single-pass
 streaming reduce (register-resident accumulator, one memory sweep) beats
 FlagGems' multi-pass / discrete-autotune kernels for reduce-shaped ops.
 
@@ -22,7 +22,7 @@ import triton
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.spine_raw as tle  # noqa: F401  (registers backend)
+import triton.language.extra.smt_rvisa as tle  # noqa: F401  (registers backend)
 
 WARMUP, REPS = 20, 100
 _TESTS = os.path.dirname(__file__)

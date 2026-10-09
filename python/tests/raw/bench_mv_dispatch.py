@@ -15,7 +15,7 @@ import triton
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.spine_raw as tle  # noqa: F401
+import triton.language.extra.smt_rvisa as tle  # noqa: F401
 from importlib.machinery import SourceFileLoader
 
 _TESTS = os.path.dirname(__file__)

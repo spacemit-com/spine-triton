@@ -1,4 +1,4 @@
-"""spine_raw argmax / argmin — index-tracking reduction via viota + select.
+"""smt_rvisa argmax / argmin — index-tracking reduction via viota + select.
 
 Strategy (single VL-wide lane accumulator):
   1. Reduce element-wise: best_val[lane] = max over tiles at that lane,
@@ -18,8 +18,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f32 = tle.f32
 i32 = "i32"

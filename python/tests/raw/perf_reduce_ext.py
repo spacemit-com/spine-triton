@@ -1,7 +1,7 @@
 """reduce-family extended perf: group_norm 2D sweep + cumsum vec vs scalar.
 
 Extends perf_reduce.py results with:
-  group_norm: spine_raw vs FlagGems, sweep over (G, C) shapes
+  group_norm: smt_rvisa vs FlagGems, sweep over (G, C) shapes
   cumsum_vec: 3-phase vectorized vs sequential scalar, large N
 """
 import os
@@ -13,7 +13,7 @@ import triton
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.spine_raw as tle  # noqa
+import triton.language.extra.smt_rvisa as tle  # noqa
 
 _TESTS = os.path.dirname(__file__)
 _gn = SourceFileLoader("gn_mod", os.path.join(_TESTS, "test_raw_group_norm.py")).load_module()
@@ -43,7 +43,7 @@ def bench(fn):
 
 
 # ──────────────────────────────────────────────────────────────────
-# group_norm: spine_raw grid=(G,) vs FlagGems
+# group_norm: smt_rvisa grid=(G,) vs FlagGems
 # ──────────────────────────────────────────────────────────────────
 def bench_group_norm():
     print("\n=== group_norm (f16 in, 2D) ===")

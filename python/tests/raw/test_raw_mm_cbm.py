@@ -2,7 +2,7 @@
 
 C[M,N] = A[M,K] @ B[N,K]ᵀ,单 (mc=1,nc=1) block:M=16,N=32,K=64,cube=8。
 host 端按 linalg.pack 规则把 A/B 摆成 packed 连续 buffer(与 probe_cbm_e2e 同,cbm 输入
-吃平铺 pack,不需输入侧 vpack);kernel 用 spine_raw 原语:
+吃平铺 pack,不需输入侧 vpack);kernel 用 smt_rvisa 原语:
   逐 kc-tile: vload(group=) 读 packed 连续 → vmadot 累加(cross_batch_matmul)
   末: vpack×2 (group_interleave 还原) → vshape → vstore
 对拍 torch A@Bᵀ。这是把手写 MLIR probe 升级成 codegen 真生成的关键验证。
@@ -13,8 +13,8 @@ import triton
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f16 = tle.f16
 f32 = tle.f32

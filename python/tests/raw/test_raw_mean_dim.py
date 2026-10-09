@@ -1,4 +1,4 @@
-"""spine_raw mean_dim — 2D reduce along dim=1 giving per-row means.
+"""smt_rvisa mean_dim — 2D reduce along dim=1 giving per-row means.
 
 torch.mean(x, dim=1) → values[M]  for input [M, N].
 Same grid=(M,) pattern as max_dim/sum_2d; each program handles one row.
@@ -10,8 +10,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f32 = tle.f32
 

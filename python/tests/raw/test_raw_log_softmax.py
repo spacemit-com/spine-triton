@@ -1,4 +1,4 @@
-"""spine_raw log_softmax — numerically stable log(softmax(x)).
+"""smt_rvisa log_softmax — numerically stable log(softmax(x)).
 
 Kernel: out[i] = log(exp(x[i] - max(x)) / sum(exp(x - max(x))))
              = (x[i] - max(x)) - log(sum(exp(x - max(x))))
@@ -12,8 +12,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f32 = tle.f32
 

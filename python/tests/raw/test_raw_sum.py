@@ -1,11 +1,11 @@
-"""spine_raw sum 算子实现 - L0 真正零缺口
+"""smt_rvisa sum 算子实现 - L0 真正零缺口
 
 sum 是唯一不需要标量算术的 reduce 算子：
 - 只需要 vreduce_sum（已存在）
 - 无需除以 N
 - 无需其他原语
 
-验证 spine_raw 的基本 reduce 能力。
+验证 smt_rvisa 的基本 reduce 能力。
 """
 import torch
 import triton
@@ -14,8 +14,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f16 = tle.f16
 f32 = tle.f32
@@ -56,7 +56,7 @@ def sum_1d_host(X, out, N):
 
 
 def sum_1d_raw(X: torch.Tensor) -> torch.Tensor:
-    """1D sum using spine_raw."""
+    """1D sum using smt_rvisa."""
     assert X.ndim == 1
     assert X.dtype == torch.float16
 
@@ -106,7 +106,7 @@ def sum_2d_dim1_host(X, out, M, N):
 
 
 def sum_2d_raw(X: torch.Tensor, dim: int) -> torch.Tensor:
-    """2D sum along specified dimension using spine_raw."""
+    """2D sum along specified dimension using smt_rvisa."""
     assert X.ndim == 2
     assert X.dtype == torch.float16
     assert dim in [0, 1]
@@ -134,7 +134,7 @@ def _test_sum_1d(N):
     # Reference
     ref = X.float().sum()
 
-    # spine_raw - this creates a new output tensor inside
+    # smt_rvisa - this creates a new output tensor inside
     got = sum_1d_raw(X)
 
     diff = abs(got.item() - ref.item())
@@ -151,7 +151,7 @@ def _test_sum_2d(M, N, dim):
     # Reference
     ref = X.float().sum(dim=dim)
 
-    # spine_raw
+    # smt_rvisa
     got = sum_2d_raw(X, dim=dim)
 
     max_diff = (got - ref).abs().max().item()

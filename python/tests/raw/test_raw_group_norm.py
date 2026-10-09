@@ -1,4 +1,4 @@
-"""spine_raw group_norm — per-group layernorm over a [G, C] layout.
+"""smt_rvisa group_norm — per-group layernorm over a [G, C] layout.
 
 group_norm normalizes each group independently: for input reshaped to
 [num_groups, group_size], each group g gets (x - mean_g) / sqrt(var_g + eps).
@@ -14,8 +14,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f16 = tle.f16
 f32 = tle.f32

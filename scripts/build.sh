@@ -49,23 +49,35 @@ fi
 
 # Vendor MLIR Python bindings (mlir_core) into backend/mlir_core so the build
 # is self-contained: llvm_direct.py / mixed_bridge.py resolve them at runtime
-# (language/spine_raw/_mlir_loader.py) without any PYTHONPATH export.
-# Source (arg 5, optional): an LLVM install with python_packages/mlir_core; the
-# build LLVM already provides one when it ships python_packages.
+# (language/smt_rvisa/_mlir_loader.py) without any PYTHONPATH export.
+# Source (arg 5, optional): either the "-python" release package (a directory
+# containing mlir_core/) or an LLVM install with python_packages/mlir_core;
+# defaults to the build LLVM when it ships python_packages.
 if [ -n "${5:-}" ]; then
-    MLIR_BINDINGS_SRC=$(cd "${5}" && pwd)/python_packages/mlir_core
+    MLIR_BINDINGS_ROOT=$(cd "${5}" && pwd)
 else
-    MLIR_BINDINGS_SRC=${LLVM_INSTALL_DIR}/python_packages/mlir_core
+    MLIR_BINDINGS_ROOT=${LLVM_INSTALL_DIR}
+fi
+if [ -d "${MLIR_BINDINGS_ROOT}/python_packages/mlir_core" ]; then
+    MLIR_BINDINGS_SRC=${MLIR_BINDINGS_ROOT}/python_packages/mlir_core
+elif [ -d "${MLIR_BINDINGS_ROOT}/mlir_core" ]; then
+    MLIR_BINDINGS_SRC=${MLIR_BINDINGS_ROOT}/mlir_core
+elif [ -d "${MLIR_BINDINGS_ROOT}/mlir" ]; then
+    # arg is the mlir_core directory itself
+    MLIR_BINDINGS_SRC=${MLIR_BINDINGS_ROOT}
+else
+    echo "ERROR: MLIR Python bindings (mlir_core) not found under ${MLIR_BINDINGS_ROOT}" >&2
+    echo "Pass the -python release package or an LLVM install with python_packages/mlir_core as arg 5" >&2
+    exit 1
 fi
 rm -rf backend/mlir_core
 mkdir -p backend/mlir_core
 cp -a "${MLIR_BINDINGS_SRC}/." backend/mlir_core/
 if [ ! -d backend/mlir_core/mlir ]; then
     echo "ERROR: MLIR Python bindings (mlir_core) not found at ${MLIR_BINDINGS_SRC}" >&2
-    echo "Pass an LLVM install with python_packages/mlir_core as arg 5" >&2
     exit 1
 fi
-echo "vendored LLVM for MLIR Python bindings: $(dirname $(dirname ${MLIR_BINDINGS_SRC}))"
+echo "vendored MLIR Python bindings from: ${MLIR_BINDINGS_SRC}"
 
 mkdir -p ${TRITON_PLUGIN_DIRS}/${BUILD_DIR}
 

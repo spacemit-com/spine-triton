@@ -1,4 +1,4 @@
-"""spine_raw silu/swish — x * sigmoid(x), composable from existing primitives.
+"""smt_rvisa silu/swish — x * sigmoid(x), composable from existing primitives.
 
 silu(x) = x * (1 / (1 + exp(-x)))
          = x * sigmoid(x)
@@ -13,8 +13,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f32 = tle.f32
 

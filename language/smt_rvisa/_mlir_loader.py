@@ -8,11 +8,11 @@ the other backend payload (bin/, lib/). They are located the same way env.py
 locates libspert — purely relative to this file, no environment variable:
 
   - installed layout:  <triton_pkg>/backends/<name>/mlir_core
-    (this file lives at <triton_pkg>/language/extra/spine_raw/, 3 levels up
+    (this file lives at <triton_pkg>/language/extra/smt_rvisa/, 3 levels up
     is the triton package root; the backend name is globbed so both
     spine_triton and spacemit builds work)
   - source-tree layout: <repo_root>/backend/mlir_core
-    (this file lives at <repo_root>/language/spine_raw/, 2 levels up)
+    (this file lives at <repo_root>/language/smt_rvisa/, 2 levels up)
 
 ``mlir`` is a namespace package, so the directory that *contains* it must be
 on ``sys.path`` — appended (never inserted at position 0) so it cannot shadow

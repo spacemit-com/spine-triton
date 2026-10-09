@@ -1,4 +1,4 @@
-"""spine_raw weight_norm — per-row L2 normalize a weight matrix.
+"""smt_rvisa weight_norm — per-row L2 normalize a weight matrix.
 
 For W [C_out, C_in]:
   g[i]       = ||W[i,:]||_2         (L2 norm per output filter)
@@ -13,8 +13,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f32 = tle.f32
 

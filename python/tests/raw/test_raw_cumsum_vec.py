@@ -1,4 +1,4 @@
-"""spine_raw cumsum vectorized — 3-phase block-scan, O(N) with grid parallelism.
+"""smt_rvisa cumsum vectorized — 3-phase block-scan, O(N) with grid parallelism.
 
 Phase 1 (grid=(P,)): each program reduce-sums VL=64 elements → block_sums[p]
 Phase 2 (grid=(1,)): scalar exclusive-prefix over P block_sums → offsets[p]
@@ -21,8 +21,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f32 = tle.f32
 

@@ -7,7 +7,7 @@ A single pipeline `out = (Mat @ (vec * alpha)) * beta` split so each stage is
 written in a DIFFERENT syntax layer:
 
   stage 1  pre_scale_tl   : vec_s[k] = vec[k] * alpha      —— 普通 tl 语法
-  stage 2  gemv_spine_raw : scores[n] = Σ_k Mat[n,k]*vec_s —— 普通 spine_raw
+  stage 2  gemv_smt_rvisa : scores[n] = Σ_k Mat[n,k]*vec_s —— 普通 smt_rvisa
   stage 3  post_scale_llvm: out[n]    = scores[n] * beta   —— call_intrinsic (LLVM-direct)
 
 SINGLE fused launch (the architectural fix):
@@ -20,13 +20,13 @@ SINGLE fused launch (the architectural fix):
     no-op, so all three layers compose in ONE program — no separate launch.
 
 Shape constraints: N % 8 == 0 (stage 3 vle/vse fixed VL=8, no tail); K arbitrary
-(stage 2 spine_raw handles the K tail; stage 1 tl masks its tail). BLOCK must
+(stage 2 smt_rvisa handles the K tail; stage 1 tl masks its tail). BLOCK must
 cover both N and K since the fused host runs grid=(1,) (one program strides all).
 
 Run under pytest (K3-verified 5/5). `python this_file.py` re-executes the module
 as __main__, which takes a separate per-shape recompile path whose fresh binary
 miscomputes stage-2 gemv for K>64 across shapes in one process — a recompile
-quirk of the do_not_specialize host, NOT the tl/spine_raw/call_intrinsic
+quirk of the do_not_specialize host, NOT the tl/smt_rvisa/call_intrinsic
 coexistence mechanism (each stage is correct standalone; the imported/pytest
 path compiles once and reuses correctly).
 """
@@ -37,8 +37,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f16 = tle.f16
 f32 = tle.f32
@@ -59,11 +59,11 @@ def pre_scale_tl(vec_ptr, vec_s_ptr, alpha, K, BLOCK: tl.constexpr):
     tl.store(vec_s_ptr + offs, y, mask=mask)
 
 
-# ── 层级 2: 普通 spine_raw (dsl_region) —— GEMV scores = Mat @ vec_s ─────────
+# ── 层级 2: 普通 smt_rvisa (dsl_region) —— GEMV scores = Mat @ vec_s ─────────
 # Mat/vec_s f16, acc f32: tle.vmacc IS the widening vfwmacc (f16×f16→f32), the
 # K3-proven idiom. Tail loop handles arbitrary K.
 @tle.raw_kernel
-def gemv_spine_raw(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, out=True), K: tle.index,
+def gemv_smt_rvisa(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, out=True), K: tle.index,
                    row_base: tle.index, row_end: tle.index):
     nvl = tle.vconfig(-1, 1)  # f16 lmul=1 → VLMAX=64
     Kfloor = (K // nvl) * nvl
@@ -119,8 +119,8 @@ def fused_three_layer_host(Mat, vec, vec_s, scores, out, alpha, K, N, BLOCK: tl.
     x = tl.load(vec + offs, mask=mask, other=0.0)
     y = (x.to(tl.float32) * alpha).to(tl.float16)
     tl.store(vec_s + offs, y, mask=mask)
-    # stage 2: spine_raw GEMV (dsl_region), all N rows
-    _sr_call(gemv_spine_raw, outputs=[], inputs=[Mat, vec_s, scores, K, 0, N])
+    # stage 2: smt_rvisa GEMV (dsl_region), all N rows
+    _sr_call(gemv_smt_rvisa, outputs=[], inputs=[Mat, vec_s, scores, K, 0, N])
     # stage 3: llvm-direct post-scale (llvm.call sibling), all N
     _sr_call(post_scale_llvm, outputs=[], inputs=[scores, out, N])
 
@@ -156,7 +156,7 @@ def test_mixed_three_layer(N, K):
 
 
 if __name__ == "__main__":
-    print("=== Mixed-syntax THREE layers: tl → spine_raw → call_intrinsic ===")
+    print("=== Mixed-syntax THREE layers: tl → smt_rvisa → call_intrinsic ===")
     all_ok = True
     # NOTE: run under pytest for verification — `python this_file.py` re-executes
     # the module as __main__, which triggers a separate per-shape recompile path

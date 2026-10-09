@@ -1,4 +1,4 @@
-"""spine_raw L0 标量算术验证 — reduce 后 /N + rsqrt 广播回向量。
+"""smt_rvisa L0 标量算术验证 — reduce 后 /N + rsqrt 广播回向量。
 
 验证 PLAN_reduce_gap.md L0 修复:codegen 支持 f32 scalar 与 index 混合算术
 (`vreduce_sum(v) / N`),解锁 mean / rms_norm 家族。
@@ -9,8 +9,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f16 = tle.f16
 f32 = tle.f32
