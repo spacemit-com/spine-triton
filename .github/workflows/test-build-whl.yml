@@ -24,10 +24,18 @@ jobs:
       matrix:
         python-version: ${{ fromJson(needs.setup.outputs.python-versions) }}
     steps:
-      - name: Checkout code with submodules
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          # Init submodules manually below: the third_party/* ones live on the
+          # internal GitLab (gitlab.dc.com), unreachable from GitHub-hosted
+          # runners, and the build only consumes prebuilt release assets for
+          # them anyway.
+          submodules: false
+
+      - name: Init triton submodule
+        run: |
+          git submodule update --init --recursive triton
 
       - name: Set environment variables
         run: |
