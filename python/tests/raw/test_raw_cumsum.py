@@ -1,4 +1,4 @@
-"""spine_raw cumsum (L4 scan) — sequential scalar prefix sum.
+"""smt_rvisa cumsum (L4 scan) — sequential scalar prefix sum.
 
 cumsum[i] = sum(x[0..i]). Unlike the reduce family ("reduce a vector to a
 scalar"), scan emits one output per position. The simplest correct form is a
@@ -20,8 +20,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f32 = tle.f32
 

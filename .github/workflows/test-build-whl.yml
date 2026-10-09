@@ -41,6 +41,33 @@ jobs:
         run: |
           cat .github/variables.env >> $GITHUB_ENV
 
+      # The MLIR Python bindings and the cross-build Python (py-riscv64) are
+      # per-CPython-version assets: variables.env defines
+      # MLIR_BINDINGS_{URL,MD5}_<312|313|314> and PYENV_{URL,MD5}_<312|313|314>;
+      # select the pair matching this matrix job into plain
+      # MLIR_BINDINGS_{URL,MD5} / PYENV_{URL,MD5} for the steps below.
+      - name: Select per-python-version asset URLs
+        run: |
+          V="$(echo '${{ matrix.python-version }}' | tr -d '.')"
+          MB_URL="MLIR_BINDINGS_URL_${V}"
+          MB_MD5="MLIR_BINDINGS_MD5_${V}"
+          PE_URL="PYENV_URL_${V}"
+          PE_MD5="PYENV_MD5_${V}"
+          for var in "$MB_URL" "$MB_MD5" "$PE_URL" "$PE_MD5"; do
+            if [ -z "${!var:-}" ]; then
+              echo "ERROR: $var is not defined in .github/variables.env" >&2
+              exit 1
+            fi
+          done
+          # variables.env values may carry surrounding double quotes (GITHUB_ENV
+          # does not strip them); strip so cache keys and md5sum checks see the
+          # bare values.
+          strip_q() { local s="${!1}"; s="${s%\"}"; s="${s#\"}"; echo "$s"; }
+          echo "MLIR_BINDINGS_URL=$(strip_q "$MB_URL")" >> "$GITHUB_ENV"
+          echo "MLIR_BINDINGS_MD5=$(strip_q "$MB_MD5")" >> "$GITHUB_ENV"
+          echo "PYENV_URL=$(strip_q "$PE_URL")" >> "$GITHUB_ENV"
+          echo "PYENV_MD5=$(strip_q "$PE_MD5")" >> "$GITHUB_ENV"
+
       - name: Setup System Dependencies
         run: |
           sudo apt-get update
@@ -148,13 +175,67 @@ jobs:
           tar -xf llvm.tar.gz -C llvm_installed --strip-components=1
           rm llvm.tar.gz
 
+      # The MLIR Python bindings are per-CPython-version assets (each package
+      # only ships cpython-3XX-tagged .so). The cache key must therefore include
+      # the python version: with the old md5-only key a 3.12 cache-hit on a
+      # shared runner would poison the 3.13/3.14 jobs with wrong-tag bindings
+      # (import error only at runtime on the board).
+      - name: Cache MLIR Python bindings
+        id: cache-mlir-bindings
+        uses: actions/cache@v4
+        with:
+          path: mlir_bindings
+          key: mlir-bindings-${{ env.MLIR_BINDINGS_MD5 }}-py${{ matrix.python-version }}
+
+      - name: Download and extract MLIR Python bindings
+        if: steps.cache-mlir-bindings.outputs.cache-hit != 'true'
+        run: |
+          curl -k -L -o mlir-bindings.tar.gz ${{ env.MLIR_BINDINGS_URL }}
+          echo "expecting md5 ${{ env.MLIR_BINDINGS_MD5 }}"
+          echo "${{ env.MLIR_BINDINGS_MD5 }}  mlir-bindings.tar.gz" | md5sum -c -
+          # Single top-level dir (<llvm-tag>-...-python3XX/); strip it so the
+          # extracted root is mlir_bindings/mlir/ directly.
+          mkdir -p mlir_bindings
+          tar -xf mlir-bindings.tar.gz -C mlir_bindings --strip-components=1
+          rm mlir-bindings.tar.gz
+          # Sanity: the vendored _mlir .so must match this job's python tag.
+          ls mlir_bindings/mlir/_mlir_libs/ | grep -q "_mlir.cpython-${{ matrix.python-version }}-riscv64-linux-gnu.so" \
+            || { echo "ERROR: bindings package has no _mlir.cpython-${{ matrix.python-version }} .so"; exit 1; }
+          ls mlir_bindings/mlir/ | head
+
+      # riscv64 CPython (py-riscv64-3XX): supplies the target Python headers
+      # (Python3_INCLUDE_DIR) and libpython for the cross compile. The host
+      # actions/setup-python headers are x86 and must not leak into the build.
+      - name: Cache riscv64 Python
+        id: cache-py-riscv64
+        uses: actions/cache@v4
+        with:
+          path: py_riscv64
+          key: py-riscv64-${{ env.PYENV_MD5 }}
+
+      - name: Download and extract riscv64 Python
+        if: steps.cache-py-riscv64.outputs.cache-hit != 'true'
+        run: |
+          curl -k -L -o py-riscv64.tar.gz ${{ env.PYENV_URL }}
+          echo "expecting md5 ${{ env.PYENV_MD5 }}"
+          echo "${{ env.PYENV_MD5 }}  py-riscv64.tar.gz" | md5sum -c -
+          # Single top-level dir (py-riscv64-3XX/); strip it so the extracted
+          # root has include/python3.X and lib/libpython3.X.so directly.
+          mkdir -p py_riscv64
+          tar -xf py-riscv64.tar.gz -C py_riscv64 --strip-components=1
+          rm py-riscv64.tar.gz
+          ls py_riscv64/include/
+          ls py_riscv64/include/ | grep -qx "python${{ matrix.python-version }}" \
+            || { echo "ERROR: py_riscv64/include has no python${{ matrix.python-version }}"; exit 1; }
+          ls py_riscv64/lib/libpython*.so*
+
       - name: Build and install Spine Triton plugin
         env:
           MAX_JOBS: 2
           TRITON_PARALLEL_LINK_JOBS: 1
         run: |
           chmod +x scripts/build_whl.sh
-          ./scripts/build_whl.sh llvm_installed riscv64 speir_installed spine_runtime_installed
+          ./scripts/build_whl.sh llvm_installed riscv64 speir_installed spine_runtime_installed mlir_bindings py_riscv64
 
       - name: Upload wheel package
         if: success()

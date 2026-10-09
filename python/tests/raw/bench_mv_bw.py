@@ -1,4 +1,4 @@
-"""K3 single-thread memory bandwidth via spine_raw copy kernel + mv utilization."""
+"""K3 single-thread memory bandwidth via smt_rvisa copy kernel + mv utilization."""
 import os
 import time
 import numpy as np
@@ -7,13 +7,13 @@ import triton
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f32 = tle.f32
 
 
-# ── single-thread STREAM COPY via spine_raw ──────────────────────────────────
+# ── single-thread STREAM COPY via smt_rvisa ──────────────────────────────────
 @tle.raw_kernel
 def copy_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
     nvl = tle.vconfig(-1, 1)
@@ -44,7 +44,7 @@ def bench(fn, reps=30):
 def main():
     os.environ['TRITON_ALWAYS_COMPILE'] = '1'
 
-    print("=== K3 single-thread peak bandwidth (spine_raw STREAM COPY) ===")
+    print("=== K3 single-thread peak bandwidth (smt_rvisa STREAM COPY) ===")
     peak_bw = 0.0
     for N in [1 * 1024 * 1024, 4 * 1024 * 1024, 16 * 1024 * 1024, 32 * 1024 * 1024]:
         X = torch.randn(N, dtype=torch.float32)

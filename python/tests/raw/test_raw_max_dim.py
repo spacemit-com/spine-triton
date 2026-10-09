@@ -1,4 +1,4 @@
-"""spine_raw max_dim / min_dim — 2D reduce along dim=1 with value + index outputs.
+"""smt_rvisa max_dim / min_dim — 2D reduce along dim=1 with value + index outputs.
 
 torch.max(x, dim=1) → (values[M], indices[M]). Each program handles one row,
 reusing the argmax select-based index tracking. grid=(M,), row via program_id.
@@ -10,8 +10,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f32 = tle.f32
 INF_IDX = 1.0e30

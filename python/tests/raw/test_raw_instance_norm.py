@@ -1,4 +1,4 @@
-"""spine_raw instance_norm — per-(sample,channel) normalization over spatial dim.
+"""smt_rvisa instance_norm — per-(sample,channel) normalization over spatial dim.
 
 For input [N, C, L]:
   out[n, c, :] = (x[n,c,:] - mean_{n,c}) / sqrt(var_{n,c} + eps)
@@ -18,7 +18,7 @@ import pytest
 from importlib.machinery import SourceFileLoader
 import os
 
-import triton.language.extra.spine_raw as tle  # noqa: F401
+import triton.language.extra.smt_rvisa as tle  # noqa: F401
 
 _gn = SourceFileLoader("gn_mod", os.path.join(os.path.dirname(__file__), "test_raw_group_norm.py")).load_module()
 

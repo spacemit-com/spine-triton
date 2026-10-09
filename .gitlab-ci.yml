@@ -191,12 +191,14 @@ build-x86:
       echo "LLVM_DIR: $LLVM_DIR"
 
       # The build LLVM (675f09ac) ships no MLIR Python bindings; pass the
-      # era-matched f6ded0be LLVM as arg 4 so the build script can vendor
-      # its python_packages/mlir_core into backend/mlir_core. At runtime no
-      # PYTHONPATH is needed (vendored copy is resolved by _mlir_loader.py).
-      MLIR_BINDINGS_LLVM=/home/share/nfs_share/llvm-pre-build/llvm-f6ded0be897e2878612dd903f7e8bb85448269e5-20260923-release-x86
-      if [ ! -d "$MLIR_BINDINGS_LLVM/python_packages/mlir_core/mlir" ]; then
-        echo "ERROR: MLIR python bindings not found in $MLIR_BINDINGS_LLVM"
+      # era-matched f6ded0be bindings as arg 4 so the build script can vendor
+      # them into backend/mlir_core (script accepts an LLVM install root with
+      # python_packages/mlir_core — the old "-python" suffix package has been
+      # rotated off NFS). At runtime no PYTHONPATH is needed (vendored copy is
+      # resolved by _mlir_loader.py).
+      MLIR_BINDINGS_PKG=/home/share/nfs_share/llvm-pre-build/llvm-f6ded0be897e2878612dd903f7e8bb85448269e5-20260923-release-x86
+      if [ ! -d "$MLIR_BINDINGS_PKG/python_packages/mlir_core/mlir" ]; then
+        echo "ERROR: MLIR python bindings not found in $MLIR_BINDINGS_PKG"
         exit 1
       fi
 
@@ -216,7 +218,7 @@ build-x86:
       echo "SPINE_RUNTIME_DIR: $SPINE_RUNTIME_DIR"
 
       chmod +x scripts/build_x86_rpc.sh
-      ./scripts/build_x86_rpc.sh $LLVM_DIR $SPEIR_DIR $SPINE_RUNTIME_DIR $MLIR_BINDINGS_LLVM
+      ./scripts/build_x86_rpc.sh $LLVM_DIR $SPEIR_DIR $SPINE_RUNTIME_DIR $MLIR_BINDINGS_PKG
 
       if [ -d "build-x86_64" ]; then
         echo "X86 build successful"

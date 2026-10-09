@@ -1,4 +1,4 @@
-"""spine_raw L1 reduce primitives: vreduce_max / vreduce_min / vreduce_mul.
+"""smt_rvisa L1 reduce primitives: vreduce_max / vreduce_min / vreduce_mul.
 
 These were almost free — create_vector_reduction already supported maxf/minf/mul;
 only codegen marker+handler was missing.
@@ -9,8 +9,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f32 = tle.f32
 

@@ -1,4 +1,4 @@
-"""spine_raw cross_entropy — fused negative log-likelihood.
+"""smt_rvisa cross_entropy — fused negative log-likelihood.
 
 kernel: loss = -log_softmax[target]
              = log(sum(exp(x - max))) + max - x[target]
@@ -12,8 +12,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f32 = tle.f32
 

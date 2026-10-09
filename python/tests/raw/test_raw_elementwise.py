@@ -1,8 +1,8 @@
-"""spine_raw §6.4 逐元素运算 end-to-end test.
+"""smt_rvisa §6.4 逐元素运算 end-to-end test.
 
 Exercises the §6.4 surface — arithmetic operators (+ - * / % and scalar
 broadcast), unary (-a), comparison (-> mask), and the named functions
-vmin/vmax/sqrt/rsqrt/abs/cast/select — through the full spine_raw ->
+vmin/vmax/sqrt/rsqrt/abs/cast/select — through the full smt_rvisa ->
 tle.dsl_region -> lowering pipeline on K3, checked against torch.
 
 Each kernel applies one §6.4 op elementwise over a VL-tile, then reduces
@@ -22,8 +22,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f16 = tle.f16
 f32 = tle.f32

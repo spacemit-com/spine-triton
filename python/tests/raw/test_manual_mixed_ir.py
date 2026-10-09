@@ -2,7 +2,7 @@
 Manually written mixed-mode IR test: func.func host + llvm.func sibling.
 
 This demonstrates the multi-function module approach for coexistence of
-tl/spine_raw/call_intrinsic semantics in a single kernel, without requiring
+tl/smt_rvisa/call_intrinsic semantics in a single kernel, without requiring
 automatic emission logic in call_registry.py.
 
 The test validates:

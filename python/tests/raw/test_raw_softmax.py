@@ -1,4 +1,4 @@
-"""spine_raw softmax — stable numerics via max-subtracted exp-sum.
+"""smt_rvisa softmax — stable numerics via max-subtracted exp-sum.
 
 Kernel: out[i] = exp(x[i] - max(x)) / sum(exp(x - max(x)))
 
@@ -10,8 +10,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f32 = tle.f32
 

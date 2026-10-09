@@ -5,15 +5,15 @@ import triton.language as tl
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f16 = tle.f16
 f32 = tle.f32
 
 
 @tle.raw_kernel
-def gemv_spine_raw(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, out=True), K: tle.index,
+def gemv_smt_rvisa(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, out=True), K: tle.index,
                    row_base: tle.index, row_end: tle.index):
     nvl = tle.vconfig(-1, 1)
     Kfloor = (K // nvl) * nvl
@@ -36,7 +36,7 @@ def gemv_host(Mat, vec_s, scores, K, N, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     row_base = pid * BLOCK
     row_end = min(row_base + BLOCK, N)
-    _sr_call(gemv_spine_raw, outputs=[], inputs=[Mat, vec_s, scores, K, row_base, row_end])
+    _sr_call(gemv_smt_rvisa, outputs=[], inputs=[Mat, vec_s, scores, K, row_base, row_end])
 
 
 def test_shape(N, K):

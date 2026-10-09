@@ -7,7 +7,7 @@ orchestration:
   • 语法层级 2 (@tle.raw_kernel, dsl_region path): vload/vmacc/vreduce_sum/sstore
 
 The host computes each program's row range with *Triton* arithmetic and passes
-BASE pointers + scalar dims/bounds into one spine_raw sub-kernel. The sub-kernel
+BASE pointers + scalar dims/bounds into one smt_rvisa sub-kernel. The sub-kernel
 is inlined as a `tle.dsl_region` into the host body (call_registry.py:99-109),
 so this is a genuine compile-time composition, not a runtime call.
 
@@ -24,14 +24,14 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f16 = tle.f16
 f32 = tle.f32
 
 
-# ── 语法层级 2: spine_raw 子 kernel (dsl_region 路径) ──────────────────────
+# ── 语法层级 2: smt_rvisa 子 kernel (dsl_region 路径) ──────────────────────
 # Mat/vec are f16, accumulator f32: tle.vmacc IS the widening vfwmacc
 # (f16×f16→f32), the K3-proven idiom (test_raw_mv_svector.py). Feeding f32 into
 # vmacc builds a 2048-bit vector<64xf32> fma that mis-tiles for K>VL — so the
@@ -91,7 +91,7 @@ def test_mixed_single_stage(N, K):
 
 
 if __name__ == "__main__":
-    print("=== Mixed-syntax single stage: Triton host + spine_raw GEMV ===")
+    print("=== Mixed-syntax single stage: Triton host + smt_rvisa GEMV ===")
     all_ok = True
     for N, K in _SHAPES:
         try:

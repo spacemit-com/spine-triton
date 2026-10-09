@@ -2,7 +2,7 @@
 
 (PLAN_mixed_syntax_composition.md §121-167 "分层调用 / Host-Level Composition")
 
-One @triton.jit host orchestrates TWO spine_raw sub-kernels that pass an
+One @triton.jit host orchestrates TWO smt_rvisa sub-kernels that pass an
 intermediate result through a shared memory buffer:
 
   stage 1  gemv_stage    : scores[n] = sum_k Mat[n,k] * vec[k]      (→ scores buf)
@@ -16,7 +16,7 @@ program-serial, compile-time inlined, zero call/dispatch overhead (PLAN §144-14
 This is the composable half of the PLAN. NOTE (fail-loud, AGENT.md §8.1 / §10):
 an LLVM-direct sub-kernel CANNOT be composed this way — its emitter replaces the
 whole module, discarding the host body and any other dsl_region. So both stages
-here are spine_raw (dsl_region path), which genuinely inlines and composes.
+here are smt_rvisa (dsl_region path), which genuinely inlines and composes.
 """
 import torch
 import triton
@@ -24,14 +24,14 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f16 = tle.f16
 f32 = tle.f32
 
 
-# ── stage 1: GEMV (spine_raw) — Mat @ vec → scores ─────────────────────────
+# ── stage 1: GEMV (smt_rvisa) — Mat @ vec → scores ─────────────────────────
 # Mat/vec f16, acc f32: tle.vmacc IS the widening vfwmacc (f16×f16→f32), the
 # K3-proven idiom. f32 vmacc builds a 2048-bit vector<64xf32> fma that mis-tiles
 # for K>VL. `scores` stays f32 — softmax stage 2 reads it as f32.
@@ -53,7 +53,7 @@ def gemv_stage(Mat: tle.mem(f16), vec: tle.mem(f16), scores: tle.mem(f32, out=Tr
         tle.sstore(scores, n, tle.vreduce_sum(acc))
 
 
-# ── stage 2: Softmax (spine_raw) — scores → out, stable via max-subtract ───
+# ── stage 2: Softmax (smt_rvisa) — scores → out, stable via max-subtract ───
 @tle.raw_kernel
 def softmax_stage(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
     nvl = tle.vconfig(-1, 1)
@@ -95,9 +95,9 @@ def softmax_stage(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.inde
 # ── Triton host: compose stage1 → stage2 through `scores` buffer ───────────
 @triton.jit(do_not_specialize=["K", "N"])
 def gemv_softmax_host(Mat, vec, scores, out, K, N):
-    # stage 1: Mat @ vec → scores   (spine_raw dsl_region #1, inlined)
+    # stage 1: Mat @ vec → scores   (smt_rvisa dsl_region #1, inlined)
     _sr_call(gemv_stage, outputs=[], inputs=[Mat, vec, scores, K, N])
-    # stage 2: softmax(scores) → out (spine_raw dsl_region #2, inlined; reads #1's output)
+    # stage 2: softmax(scores) → out (smt_rvisa dsl_region #2, inlined; reads #1's output)
     _sr_call(softmax_stage, outputs=[], inputs=[scores, out, N])
 
 

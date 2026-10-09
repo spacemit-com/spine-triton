@@ -1,4 +1,4 @@
-"""spine_raw activations — relu / sigmoid / gelu from existing primitives.
+"""smt_rvisa activations — relu / sigmoid / gelu from existing primitives.
 
 relu    : vmax(x, 0)
 sigmoid : 1 / (1 + exp(-x))
@@ -13,8 +13,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.spine_raw as tle
-from triton.language.extra.spine_raw import call as _sr_call
+import triton.language.extra.smt_rvisa as tle
+from triton.language.extra.smt_rvisa import call as _sr_call
 
 f32 = tle.f32
 _SQRT_2_PI = 0.7978845608028654  # sqrt(2/pi)

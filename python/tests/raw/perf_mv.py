@@ -1,4 +1,4 @@
-"""mv perf sweep: spine_raw's three mv writings vs FlagGems native, f16.
+"""mv perf sweep: smt_rvisa's three mv writings vs FlagGems native, f16.
 
   style2  — pure svector (vmacc + vreduce_sum, no packing)
   style3  — svector + pre-pack B (alloc + pack)
@@ -23,7 +23,7 @@ import triton
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.spine_raw as tle  # noqa: F401  (registers the backend)
+import triton.language.extra.smt_rvisa as tle  # noqa: F401  (registers the backend)
 
 WARMUP, REPS = 20, 100
 

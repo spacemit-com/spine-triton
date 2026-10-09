@@ -1,4 +1,4 @@
-"""spine_raw batch_norm — normalize over the batch (N) dimension per channel.
+"""smt_rvisa batch_norm — normalize over the batch (N) dimension per channel.
 
 For input [N, C]:
   mean[c] = sum(x[:, c]) / N
@@ -21,7 +21,7 @@ import pytest
 from importlib.machinery import SourceFileLoader
 import os
 
-import triton.language.extra.spine_raw as tle  # noqa: F401
+import triton.language.extra.smt_rvisa as tle  # noqa: F401
 
 f16 = tle.f16
 f32 = tle.f32
