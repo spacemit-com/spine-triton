@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build spine-triton for x86 (native) with riscv64 target support
-# Usage: bash build_x86_rpc.sh ${LLVM_INSTALL_DIR} ${SPINE_MLIR_INSTALL_DIR} ${SPINE_RUNTIME_INSTALL_DIR}
+# Usage: bash build_x86_rpc.sh ${LLVM_INSTALL_DIR} ${SPINE_MLIR_INSTALL_DIR} ${SPINE_RUNTIME_INSTALL_DIR} [${MLIR_BINDINGS_LLVM}]
 set -e
 
 LLVM_INSTALL_DIR=$(cd "${1}" && pwd)
@@ -42,6 +42,27 @@ else
     echo "ERROR: spert.hpp not found in ${SPINE_RUNTIME_INSTALL_DIR}/include" >&2
     exit 1
 fi
+
+# Vendor MLIR Python bindings (mlir_core) into backend/mlir_core so the build
+# is self-contained: llvm_direct.py / mixed_bridge.py resolve them at runtime
+# (language/spine_raw/_mlir_loader.py) without any PYTHONPATH export.
+# Source: arg 4 (optional), an LLVM install with python_packages/mlir_core;
+# defaults to the build LLVM when it ships python_packages (675f09ac does not,
+# so pass the era-matched f6ded0be bindings LLVM explicitly).
+if [ -n "${4:-}" ]; then
+    MLIR_BINDINGS_SRC=$(cd "${4}" && pwd)/python_packages/mlir_core
+else
+    MLIR_BINDINGS_SRC=${LLVM_INSTALL_DIR}/python_packages/mlir_core
+fi
+rm -rf backend/mlir_core
+mkdir -p backend/mlir_core
+cp -a "${MLIR_BINDINGS_SRC}/." backend/mlir_core/
+if [ ! -d backend/mlir_core/mlir ]; then
+    echo "ERROR: MLIR Python bindings (mlir_core) not found at ${MLIR_BINDINGS_SRC}" >&2
+    echo "Pass an LLVM install with python_packages/mlir_core as arg 4" >&2
+    exit 1
+fi
+echo "vendored LLVM for MLIR Python bindings: $(dirname $(dirname ${MLIR_BINDINGS_SRC}))"
 
 mkdir -p ${TRITON_PLUGIN_DIRS}/${BUILD_DIR}
 

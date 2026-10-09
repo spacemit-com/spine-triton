@@ -1,5 +1,5 @@
 # !/bin/bash
-# bash build.sh ${LLVM_INSTALL_DIR} {arch/x86_64/riscv64} {spine-mlir-install-dir}
+# bash build.sh ${LLVM_INSTALL_DIR} {arch/x86_64/riscv64} {spine-mlir-install-dir} [{mlir-bindings-llvm}]
 
 LLVM_INSTALL_DIR=${1}
 BUILD_DIR=build-${2}
@@ -12,6 +12,26 @@ VERSION_NUMBER=$(cat VERSION_NUMBER)
 echo "LLVM_INSTALL_DIR: ${LLVM_INSTALL_DIR}"
 
 export TRITON_PLUGIN_DIRS=${PWD}
+
+# Vendor MLIR Python bindings (mlir_core) into backend/mlir_core so the build
+# is self-contained: llvm_direct.py / mixed_bridge.py resolve them at runtime
+# (language/spine_raw/_mlir_loader.py) without any PYTHONPATH export.
+# Source (arg 4, optional): an LLVM install with python_packages/mlir_core; the
+# build LLVM already provides one when it ships python_packages.
+if [ -n "${4:-}" ]; then
+    MLIR_BINDINGS_SRC=$(cd "${4}" && pwd)/python_packages/mlir_core
+else
+    MLIR_BINDINGS_SRC=${LLVM_INSTALL_DIR}/python_packages/mlir_core
+fi
+rm -rf backend/mlir_core
+mkdir -p backend/mlir_core
+cp -a "${MLIR_BINDINGS_SRC}/." backend/mlir_core/
+if [ ! -d backend/mlir_core/mlir ]; then
+    echo "ERROR: MLIR Python bindings (mlir_core) not found at ${MLIR_BINDINGS_SRC}" >&2
+    echo "Pass an LLVM install with python_packages/mlir_core as arg 4" >&2
+    exit 1
+fi
+echo "vendored LLVM for MLIR Python bindings: $(dirname $(dirname ${MLIR_BINDINGS_SRC}))"
 
 mkdir -p ${TRITON_PLUGIN_DIRS}/${BUILD_DIR}
 

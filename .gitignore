@@ -8,6 +8,9 @@ ir_dumps
 myenv
 backend/bin/*
 backend/lib/*
+# MLIR Python bindings are vendored into backend/mlir_core at package time
+# from the LLVM install (scripts/build_whl.sh et al.).
+backend/mlir_core/*
 # spert headers are vendored into backend/include at package time from the
 # spine-runtime submodule (setup.py); ExecutionEngine/ stays tracked.
 backend/include/SpineRuntime/*
