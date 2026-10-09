@@ -232,7 +232,7 @@ jobs:
           TRITON_PARALLEL_LINK_JOBS: 1
         run: |
           chmod +x scripts/build_whl.sh
-          ./scripts/build_whl.sh llvm_installed riscv64 speir_installed spine_runtime_installed mlir_bindings py_riscv64
+          ./scripts/build_whl.sh llvm_installed riscv64 speir_installed spine_runtime_installed $PWD/mlir_bindings $PWD/py_riscv64
 
       - name: Upload wheel package
         if: success()
