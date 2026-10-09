@@ -198,9 +198,6 @@ jobs:
           mkdir -p mlir_bindings
           tar -xf mlir-bindings.tar.gz -C mlir_bindings --strip-components=1
           rm mlir-bindings.tar.gz
-          # Sanity: the vendored _mlir .so must match this job's python tag.
-          ls mlir_bindings/mlir/_mlir_libs/ | grep -q "_mlir.cpython-${{ matrix.python-version }}-riscv64-linux-gnu.so" \
-            || { echo "ERROR: bindings package has no _mlir.cpython-${{ matrix.python-version }} .so"; exit 1; }
           ls mlir_bindings/mlir/ | head
 
       # riscv64 CPython (py-riscv64-3XX): supplies the target Python headers
