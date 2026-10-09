@@ -31,43 +31,20 @@ export TRITON_PLUGIN_DIRS=${PWD}
 # Vendor spert headers from SPINE_RUNTIME_INSTALL_DIR/include into backend/include
 # (the generated launcher #include "spert.hpp"); libspert.so* is picked up by
 # setup.py from SPINE_RUNTIME_INSTALL_DIR/lib.
-mkdir -p backend/include
-if [ -f "${SPINE_RUNTIME_INSTALL_DIR}/include/spert.hpp" ]; then
-    for h in spert.hpp spert_engine.hpp spert_abi.h; do
-        [ -f "${SPINE_RUNTIME_INSTALL_DIR}/include/${h}" ] && \
-            cp "${SPINE_RUNTIME_INSTALL_DIR}/include/${h}" "backend/include/${h}"
-    done
-    echo "vendored spert headers from ${SPINE_RUNTIME_INSTALL_DIR}/include"
-else
-    echo "ERROR: spert.hpp not found in ${SPINE_RUNTIME_INSTALL_DIR}/include" >&2
-    exit 1
-fi
+source "$(dirname "$(readlink -f "$0")")/common.sh"
+vendor_spert_headers "${SPINE_RUNTIME_INSTALL_DIR}"
 
 # Vendor MLIR Python bindings (mlir_core) into backend/mlir_core so the wheel
 # is self-contained: llvm_direct.py / mixed_bridge.py resolve them at runtime
 # (language/smt_rvisa/_mlir_loader.py) without any PYTHONPATH export.
-# Source (arg 5, required): the riscv64-python3XX release package from
-# https://github.com/spacemit-com/spine-mlir/releases
-# (tag llvm-f6ded0be...), extracted so that <arg>/mlir/ exists.
+# Arg 5 (required): the riscv64-python3XX bindings release package from
+# https://github.com/spacemit-com/spine-mlir/releases (top level contains mlir/).
 if [ -z "${5:-}" ]; then
     echo "ERROR: mlir-bindings dir (arg 5) is required" >&2
     echo "Usage: bash build_whl.sh <LLVM> <arch> <spine-mlir-install> <spine-runtime-install> <mlir-bindings-dir> [py-riscv64-dir]" >&2
     exit 1
 fi
-MLIR_BINDINGS_SRC=$(cd "${5}" && pwd)
-if [ ! -d "${MLIR_BINDINGS_SRC}/mlir" ]; then
-    echo "ERROR: ${MLIR_BINDINGS_SRC}/mlir not found" >&2
-    echo "Pass the extracted riscv64-python3XX release package (its top level contains mlir/) as arg 5" >&2
-    exit 1
-fi
-rm -rf backend/mlir_core
-mkdir -p backend/mlir_core
-cp -a "${MLIR_BINDINGS_SRC}/mlir/." backend/mlir_core/mlir/
-if [ ! -d backend/mlir_core/mlir ]; then
-    echo "ERROR: MLIR Python bindings (mlir_core) not vendored at backend/mlir_core/mlir" >&2
-    exit 1
-fi
-echo "vendored MLIR Python bindings from: ${MLIR_BINDINGS_SRC}/mlir"
+vendor_mlir_bindings "${5}"
 
 mkdir -p ${TRITON_PLUGIN_DIRS}/${BUILD_DIR}
 
