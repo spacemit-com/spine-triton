@@ -239,7 +239,7 @@ def _llir_to_so(llir: str, metadata):
             elif ai_cpu_arch in {"spacemit-a100"}:
                 mattr_list.append("xsmtvdotii")
             elif ai_cpu_arch in {"spacemit-x100", "spacemit-x60", "spacemit-a60"}:
-                mattr_list.append("xsmtvdoti")
+                mattr_list.append("xsmtvdot")
 
             llc_flags.extend(["--march=riscv64", "--mattr=" + ",".join(mattr_list)])
 
