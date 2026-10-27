@@ -78,6 +78,8 @@ build-spine-mlir:
       optional: true
       artifacts: false
   rules:
+    - if: $CI_PIPELINE_SOURCE == "web" && $BUILD_COMMIT
+      when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_PIPELINE_SOURCE == "web"
@@ -118,6 +120,8 @@ build-rpc-runtime:
       optional: true
       artifacts: false
   rules:
+    - if: $CI_PIPELINE_SOURCE == "web" && $BUILD_COMMIT
+      when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_PIPELINE_SOURCE == "web"
@@ -170,6 +174,8 @@ build-x86:
     - job: build-rpc-runtime
       artifacts: true
   rules:
+    - if: $CI_PIPELINE_SOURCE == "web" && $BUILD_COMMIT
+      when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_PIPELINE_SOURCE == "web"
@@ -412,6 +418,8 @@ test-spine-triton-integration:
   extends: .x86-host-ci-env
   stage: test
   rules:
+    - if: $CI_PIPELINE_SOURCE == "web" && $BUILD_COMMIT
+      when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_PIPELINE_SOURCE == "web"
