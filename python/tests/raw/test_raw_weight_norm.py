@@ -13,43 +13,43 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f32 = tle.f32
+f32 = sr.f32
 
 
-@tle.raw_kernel
-def weight_norm_kernel(W: tle.mem(f32), W_norm: tle.mem(f32, out=True), g_out: tle.mem(f32, out=True), C_out: tle.index,
-                       C_in: tle.index, row: tle.index):
+@sr.raw_kernel
+def weight_norm_kernel(W: sr.mem(f32), W_norm: sr.mem(f32, out=True), g_out: sr.mem(f32, out=True), C_out: sr.index,
+                       C_in: sr.index, row: sr.index):
     """One program per output filter (row). Computes g and W_norm for that row."""
-    nvl = tle.vconfig(-1, 1)
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (C_in // nvl) * nvl
     base = row * C_in
 
     # Accumulate sum(w²)
-    acc_sq = tle.vzero(f32)
-    for i in tle.range(0, Nfloor, nvl):
-        vw = tle.vload(W, base + i, dtype=f32)
+    acc_sq = sr.vzero(f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vw = sr.vload(W, base + i, dtype=f32)
         acc_sq = acc_sq + vw * vw
-    for i in tle.range(Nfloor, C_in, nvl):
-        tle.vconfig(C_in - i, 1)
-        tw = tle.vload(W, base + i, dtype=f32)
+    for i in sr.range(Nfloor, C_in, nvl):
+        sr.vconfig(C_in - i, 1)
+        tw = sr.vload(W, base + i, dtype=f32)
         acc_sq = acc_sq + tw * tw
 
-    g = tle.sqrt(tle.vreduce_sum(acc_sq))  # L2 norm (scalar)
-    inv_g = tle.rsqrt(tle.vreduce_sum(acc_sq))  # 1/g
+    g = sr.sqrt(sr.vreduce_sum(acc_sq))  # L2 norm (scalar)
+    inv_g = sr.rsqrt(sr.vreduce_sum(acc_sq))  # 1/g
 
-    tle.sstore(g_out, row, g)
+    sr.sstore(g_out, row, g)
 
     # Normalize and write W_norm
-    for i in tle.range(0, Nfloor, nvl):
-        vw2 = tle.vload(W, base + i, dtype=f32)
-        tle.vstore(W_norm, base + i, vw2 * inv_g)
-    for i in tle.range(Nfloor, C_in, nvl):
-        tle.vconfig(C_in - i, 1)
-        tw2 = tle.vload(W, base + i, dtype=f32)
-        tle.vstore(W_norm, base + i, tw2 * inv_g)
+    for i in sr.range(0, Nfloor, nvl):
+        vw2 = sr.vload(W, base + i, dtype=f32)
+        sr.vstore(W_norm, base + i, vw2 * inv_g)
+    for i in sr.range(Nfloor, C_in, nvl):
+        sr.vconfig(C_in - i, 1)
+        tw2 = sr.vload(W, base + i, dtype=f32)
+        sr.vstore(W_norm, base + i, tw2 * inv_g)
 
 
 @triton.jit

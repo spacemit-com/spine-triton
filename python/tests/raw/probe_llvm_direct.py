@@ -5,20 +5,20 @@ import triton
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f16 = tle.f16
+f16 = sr.f16
 
 
-@tle.raw_kernel
-def llvm_direct_copy(X: tle.mem(f16), out: tle.mem(f16, out=True), N: tle.index):
-    vl = tle.llvm_const(8, "i64")
-    pt = tle.llvm_poison("vector<[8]xf16>")
-    bx = tle.llvm_base_ptr(X)
-    bo = tle.llvm_base_ptr(out)
-    v = tle.call_intrinsic("llvm.riscv.vle", [pt, bx, vl], result_type="vector<[8]xf16>")
-    tle.call_intrinsic("llvm.riscv.vse", [v, bo, vl], result_type="()")
+@sr.raw_kernel
+def llvm_direct_copy(X: sr.mem(f16), out: sr.mem(f16, out=True), N: sr.index):
+    vl = sr.llvm_const(8, "i64")
+    pt = sr.llvm_poison("vector<[8]xf16>")
+    bx = sr.llvm_base_ptr(X)
+    bo = sr.llvm_base_ptr(out)
+    v = sr.call_intrinsic("llvm.riscv.vle", [pt, bx, vl], result_type="vector<[8]xf16>")
+    sr.call_intrinsic("llvm.riscv.vse", [v, bo, vl], result_type="()")
 
 
 @triton.jit

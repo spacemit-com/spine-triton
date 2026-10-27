@@ -13,10 +13,10 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f32 = tle.f32
+f32 = sr.f32
 _SQRT_2_PI = 0.7978845608028654  # sqrt(2/pi)
 _GELU_COEF = 0.044715
 
@@ -24,18 +24,18 @@ _GELU_COEF = 0.044715
 # ---------------------------------------------------------------------------
 # relu
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def relu_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def relu_kernel(X: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
-    zero = tle.vzero(f32)
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.vload(X, i, dtype=f32)
-        tle.vstore(out, i, tle.vmax(vx, zero))
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.vload(X, i, dtype=f32)
-        tle.vstore(out, i, tle.vmax(tx, zero))
+    zero = sr.vzero(f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.vload(X, i, dtype=f32)
+        sr.vstore(out, i, sr.vmax(vx, zero))
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.vload(X, i, dtype=f32)
+        sr.vstore(out, i, sr.vmax(tx, zero))
 
 
 @triton.jit
@@ -46,17 +46,17 @@ def relu_host(X, out, N):
 # ---------------------------------------------------------------------------
 # sigmoid
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def sigmoid_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def sigmoid_kernel(X: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.vload(X, i, dtype=f32)
-        tle.vstore(out, i, 1.0 / (1.0 + tle.vexp(-vx)))
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.vload(X, i, dtype=f32)
-        tle.vstore(out, i, 1.0 / (1.0 + tle.vexp(-tx)))
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.vload(X, i, dtype=f32)
+        sr.vstore(out, i, 1.0 / (1.0 + sr.vexp(-vx)))
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.vload(X, i, dtype=f32)
+        sr.vstore(out, i, 1.0 / (1.0 + sr.vexp(-tx)))
 
 
 @triton.jit
@@ -67,23 +67,23 @@ def sigmoid_host(X, out, N):
 # ---------------------------------------------------------------------------
 # gelu — tanh approximation (Hendrycks & Gimpel 2016 / PyTorch default)
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def gelu_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def gelu_kernel(X: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.vload(X, i, dtype=f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.vload(X, i, dtype=f32)
         inner = _SQRT_2_PI * (vx + _GELU_COEF * vx * vx * vx)
-        e2 = tle.vexp(inner + inner)  # exp(2 * inner) for tanh
+        e2 = sr.vexp(inner + inner)  # exp(2 * inner) for tanh
         tanh_v = (e2 - 1.0) / (e2 + 1.0)  # tanh via exp
-        tle.vstore(out, i, 0.5 * vx * (1.0 + tanh_v))
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.vload(X, i, dtype=f32)
+        sr.vstore(out, i, 0.5 * vx * (1.0 + tanh_v))
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.vload(X, i, dtype=f32)
         inner2 = _SQRT_2_PI * (tx + _GELU_COEF * tx * tx * tx)
-        e22 = tle.vexp(inner2 + inner2)
+        e22 = sr.vexp(inner2 + inner2)
         tanh2 = (e22 - 1.0) / (e22 + 1.0)
-        tle.vstore(out, i, 0.5 * tx * (1.0 + tanh2))
+        sr.vstore(out, i, 0.5 * tx * (1.0 + tanh2))
 
 
 @triton.jit

@@ -21,10 +21,10 @@ import pytest
 from importlib.machinery import SourceFileLoader
 import os
 
-import triton.language.extra.smt_rvisa as tle  # noqa: F401
+import triton.language.extra.smt_rvisa as sr  # noqa: F401
 
-f16 = tle.f16
-f32 = tle.f32
+f16 = sr.f16
+f32 = sr.f32
 EPS = 1e-5
 
 # Reuse the group_norm kernel directly — it normalizes each "group" (row) of C
@@ -32,7 +32,7 @@ EPS = 1e-5
 _gn = SourceFileLoader("gn_mod", os.path.join(os.path.dirname(__file__), "test_raw_group_norm.py")).load_module()
 
 group_norm_host = _gn.group_norm_host  # @triton.jit wrapper
-group_norm_kernel = _gn.group_norm_kernel  # @tle.raw_kernel
+group_norm_kernel = _gn.group_norm_kernel  # @sr.raw_kernel
 
 
 def batch_norm(X: torch.Tensor, eps: float = EPS) -> torch.Tensor:

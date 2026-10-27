@@ -14,53 +14,53 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f16 = tle.f16
-f32 = tle.f32
+f16 = sr.f16
+f32 = sr.f32
 EPS = 1e-5
 
 
-@tle.raw_kernel
-def group_norm_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), G: tle.index, C: tle.index, row: tle.index):
+@sr.raw_kernel
+def group_norm_kernel(X: sr.mem(f16), out: sr.mem(f32, out=True), G: sr.index, C: sr.index, row: sr.index):
     """Normalize one group (row) of C elements: (x - mean) / sqrt(var + eps)."""
-    nvl = tle.vconfig(-1, 1)
+    nvl = sr.vconfig(-1, 1)
     Cfloor = (C // nvl) * nvl
     base = row * C
 
     # 趟1: sum(x)
-    acc1 = tle.vzero(f32)
-    for i in tle.range(0, Cfloor, nvl):
-        va = tle.cast(tle.vload(X, base + i), f32)
+    acc1 = sr.vzero(f32)
+    for i in sr.range(0, Cfloor, nvl):
+        va = sr.cast(sr.vload(X, base + i), f32)
         acc1 = acc1 + va
-    for i in tle.range(Cfloor, C, nvl):
-        tle.vconfig(C - i, 1)
-        ta = tle.cast(tle.vload(X, base + i), f32)
+    for i in sr.range(Cfloor, C, nvl):
+        sr.vconfig(C - i, 1)
+        ta = sr.cast(sr.vload(X, base + i), f32)
         acc1 = acc1 + ta
-    mean = tle.vreduce_sum(acc1) / C
+    mean = sr.vreduce_sum(acc1) / C
 
     # 趟2: sum(x²) — use E[x²]-mean² to compute variance.
     # Avoids (0-mean)²=mean² inflation from fill-0 padded lanes (0²=0 contributes nothing).
-    acc2 = tle.vzero(f32)
-    for i in tle.range(0, Cfloor, nvl):
-        vb = tle.cast(tle.vload(X, base + i), f32)
+    acc2 = sr.vzero(f32)
+    for i in sr.range(0, Cfloor, nvl):
+        vb = sr.cast(sr.vload(X, base + i), f32)
         acc2 = acc2 + vb * vb
-    for i in tle.range(Cfloor, C, nvl):
-        tle.vconfig(C - i, 1)
-        tb = tle.cast(tle.vload(X, base + i), f32)  # fill=0: 0²=0, no inflation
+    for i in sr.range(Cfloor, C, nvl):
+        sr.vconfig(C - i, 1)
+        tb = sr.cast(sr.vload(X, base + i), f32)  # fill=0: 0²=0, no inflation
         acc2 = acc2 + tb * tb
-    var = tle.vreduce_sum(acc2) / C - mean * mean  # E[x²] - mean² = Var(x)
-    scale = tle.rsqrt(var + EPS)
+    var = sr.vreduce_sum(acc2) / C - mean * mean  # E[x²] - mean² = Var(x)
+    scale = sr.rsqrt(var + EPS)
 
     # 趟3: (x - mean) * scale
-    for i in tle.range(0, Cfloor, nvl):
-        nx = tle.cast(tle.vload(X, base + i), f32)
-        tle.vstore(out, base + i, (nx - mean) * scale)
-    for i in tle.range(Cfloor, C, nvl):
-        tle.vconfig(C - i, 1)
-        mx = tle.cast(tle.vload(X, base + i), f32)
-        tle.vstore(out, base + i, (mx - mean) * scale)
+    for i in sr.range(0, Cfloor, nvl):
+        nx = sr.cast(sr.vload(X, base + i), f32)
+        sr.vstore(out, base + i, (nx - mean) * scale)
+    for i in sr.range(Cfloor, C, nvl):
+        sr.vconfig(C - i, 1)
+        mx = sr.cast(sr.vload(X, base + i), f32)
+        sr.vstore(out, base + i, (mx - mean) * scale)
 
 
 @triton.jit

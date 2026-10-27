@@ -4,7 +4,7 @@ Demonstrates the two syntax layers that DO compose today via host-level
 orchestration:
 
   • 语法层级 1 (@triton.jit host): tl.program_id + 算术 + min 做工作分配
-  • 语法层级 2 (@tle.raw_kernel, dsl_region path): vload/vmacc/vreduce_sum/sstore
+  • 语法层级 2 (@sr.raw_kernel, dsl_region path): vload/vmacc/vreduce_sum/sstore
 
 The host computes each program's row range with *Triton* arithmetic and passes
 BASE pointers + scalar dims/bounds into one smt_rvisa sub-kernel. The sub-kernel
@@ -24,36 +24,36 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f16 = tle.f16
-f32 = tle.f32
+f16 = sr.f16
+f32 = sr.f32
 
 
 # ── 语法层级 2: smt_rvisa 子 kernel (dsl_region 路径) ──────────────────────
-# Mat/vec are f16, accumulator f32: tle.vmacc IS the widening vfwmacc
+# Mat/vec are f16, accumulator f32: sr.vmacc IS the widening vfwmacc
 # (f16×f16→f32), the K3-proven idiom (test_raw_mv_svector.py). Feeding f32 into
 # vmacc builds a 2048-bit vector<64xf32> fma that mis-tiles for K>VL — so the
 # matmul inputs stay f16 and only the reduction result is f32.
-@tle.raw_kernel
-def gemv_rows(Mat: tle.mem(f16), vec: tle.mem(f16), C: tle.mem(f32, out=True), K: tle.index, row_base: tle.index,
-              row_end: tle.index):
+@sr.raw_kernel
+def gemv_rows(Mat: sr.mem(f16), vec: sr.mem(f16), C: sr.mem(f32, out=True), K: sr.index, row_base: sr.index,
+              row_end: sr.index):
     """Compute C[n] = sum_k Mat[n*K + k] * vec[k] for n in [row_base, row_end)."""
-    nvl = tle.vconfig(-1, 1)  # f16 lmul=1 → VLMAX=64
+    nvl = sr.vconfig(-1, 1)  # f16 lmul=1 → VLMAX=64
     Kfloor = (K // nvl) * nvl  # full-tile K span
-    for n in tle.range(row_base, row_end, 1):
-        acc = tle.vzero(f32)
-        for ki in tle.range(0, Kfloor, nvl):  # main loop: full tiles, fast path
-            vm = tle.vload(Mat, n * K + ki)  # f16 (vload default)
-            vv = tle.vload(vec, ki)
-            acc = tle.vmacc(acc, vm, vv)  # widening f16×f16→f32
-        for ki in tle.range(Kfloor, K, nvl):  # tail: 0/1 iters, narrow → fill-0
-            nvl = tle.vconfig(K - ki, 1)
-            tm = tle.vload(Mat, n * K + ki)  # distinct temp names (tail iter_arg rule)
-            tv = tle.vload(vec, ki)
-            acc = tle.vmacc(acc, tm, tv)
-        tle.sstore(C, n, tle.vreduce_sum(acc))
+    for n in sr.range(row_base, row_end, 1):
+        acc = sr.vzero(f32)
+        for ki in sr.range(0, Kfloor, nvl):  # main loop: full tiles, fast path
+            vm = sr.vload(Mat, n * K + ki)  # f16 (vload default)
+            vv = sr.vload(vec, ki)
+            acc = sr.vmacc(acc, vm, vv)  # widening f16×f16→f32
+        for ki in sr.range(Kfloor, K, nvl):  # tail: 0/1 iters, narrow → fill-0
+            nvl = sr.vconfig(K - ki, 1)
+            tm = sr.vload(Mat, n * K + ki)  # distinct temp names (tail iter_arg rule)
+            tv = sr.vload(vec, ki)
+            acc = sr.vmacc(acc, tm, tv)
+        sr.sstore(C, n, sr.vreduce_sum(acc))
 
 
 # ── 语法层级 1: Triton host — 用 Triton 语法做工作分配 ──────────────────────

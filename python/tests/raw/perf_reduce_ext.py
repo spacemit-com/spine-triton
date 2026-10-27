@@ -13,7 +13,7 @@ import triton
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.smt_rvisa as tle  # noqa
+import triton.language.extra.smt_rvisa as sr  # noqa
 
 _TESTS = os.path.dirname(__file__)
 _gn = SourceFileLoader("gn_mod", os.path.join(_TESTS, "test_raw_group_norm.py")).load_module()

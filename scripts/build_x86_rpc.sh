@@ -52,6 +52,10 @@ pushd triton
 git reset 2>/dev/null || true
 git checkout . 2>/dev/null || true
 git clean -fd 2>/dev/null || true
+# Same as build_whl.sh: git clean keeps the ignored build/ staging dir, and a
+# stale CMakeCache.txt left there by a cross build in the same runner
+# workspace poisons the next configure.
+rm -rf build
 for p in ${CUR_DIR}/patch/*.patch; do
     echo "Applying patch: ${p}"
     git apply "${p}" || { echo "ERROR: failed to apply patch ${p}"; exit 1; }

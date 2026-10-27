@@ -12,7 +12,7 @@ written in a DIFFERENT syntax layer:
 
 SINGLE fused launch (the architectural fix):
   • stage 1 (tl ops) emit inline in the host func.func.
-  • stage 2 (@tle.raw_kernel) inlines as a `tle.dsl_region` op in the same host.
+  • stage 2 (@sr.raw_kernel) inlines as a `tle.dsl_region` op in the same host.
   • stage 3 (`call_intrinsic`, LLVM-direct) now emits a SIBLING top-level
     `llvm.func` plus a host-side `llvm.call` bridge, injected post-lowering at
     the ll.mlir layer (compiler.py _inject_mixed_llvm_llmlir). BufferDeallocation
@@ -37,11 +37,11 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f16 = tle.f16
-f32 = tle.f32
+f16 = sr.f16
+f32 = sr.f32
 
 _BETA = 0.5  # baked into the LLVM-direct stage as a constant vector splat
 
@@ -60,27 +60,27 @@ def pre_scale_tl(vec_ptr, vec_s_ptr, alpha, K, BLOCK: tl.constexpr):
 
 
 # ── 层级 2: 普通 smt_rvisa (dsl_region) —— GEMV scores = Mat @ vec_s ─────────
-# Mat/vec_s f16, acc f32: tle.vmacc IS the widening vfwmacc (f16×f16→f32), the
+# Mat/vec_s f16, acc f32: sr.vmacc IS the widening vfwmacc (f16×f16→f32), the
 # K3-proven idiom. Tail loop handles arbitrary K.
-@tle.raw_kernel
-def gemv_smt_rvisa(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, out=True), K: tle.index,
-                   row_base: tle.index, row_end: tle.index):
-    nvl = tle.vconfig(-1, 1)  # f16 lmul=1 → VLMAX=64
+@sr.raw_kernel
+def gemv_smt_rvisa(Mat: sr.mem(f16), vec_s: sr.mem(f16), scores: sr.mem(f32, out=True), K: sr.index, row_base: sr.index,
+                   row_end: sr.index):
+    nvl = sr.vconfig(-1, 1)  # f16 lmul=1 → VLMAX=64
     Kfloor = (K // nvl) * nvl
-    for n in tle.range(row_base, row_end, 1):
-        acc = tle.vzero(f32)
+    for n in sr.range(row_base, row_end, 1):
+        acc = sr.vzero(f32)
         # Main loop: process full vectors
-        for ki in tle.range(0, Kfloor, nvl):
-            vm = tle.vload(Mat, n * K + ki)
-            vv = tle.vload(vec_s, ki)
-            acc = tle.vmacc(acc, vm, vv)
+        for ki in sr.range(0, Kfloor, nvl):
+            vm = sr.vload(Mat, n * K + ki)
+            vv = sr.vload(vec_s, ki)
+            acc = sr.vmacc(acc, vm, vv)
         # Tail loop: step=nvl, but reconfigure inside (style from test_raw_mv_svector.py)
-        for ki in tle.range(Kfloor, K, nvl):
-            nvl = tle.vconfig(K - ki, 1)  # Reconfigure for tail length
-            tm = tle.vload(Mat, n * K + ki)
-            tv = tle.vload(vec_s, ki)
-            acc = tle.vmacc(acc, tm, tv)
-        tle.sstore(scores, n, tle.vreduce_sum(acc))
+        for ki in sr.range(Kfloor, K, nvl):
+            nvl = sr.vconfig(K - ki, 1)  # Reconfigure for tail length
+            tm = sr.vload(Mat, n * K + ki)
+            tv = sr.vload(vec_s, ki)
+            acc = sr.vmacc(acc, tm, tv)
+        sr.sstore(scores, n, sr.vreduce_sum(acc))
 
 
 # (fused host defined below, after all three stage kernels)
@@ -90,18 +90,18 @@ def gemv_smt_rvisa(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, 
 # vle → fmul(by beta splat) → vse. LLVM-direct = standalone llvm.func module, so
 # this is its OWN launch (cannot inline beside a dsl_region). N % 8 == 0 → VL=8
 # tiles cover N exactly, no tail. grid=1: single program strides the whole N.
-@tle.raw_kernel
-def post_scale_llvm(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    vl = tle.llvm_const(8, "i64")
-    zero = tle.llvm_const(0, "i64")
-    beta = tle.llvm_const("5.000000e-01", "vector<[8]xf32>")  # 0.5 splat
-    for i in tle.range(zero, N, vl):
-        p = tle.llvm_poison("vector<[8]xf32>")
-        gs = tle.llvm_gep(tle.llvm_base_ptr(scores), i, "f32")
-        v = tle.call_intrinsic("llvm.riscv.vle", [p, gs, vl], result_type="vector<[8]xf32>")
-        r = tle.call_intrinsic("llvm.fmul", [v, beta], result_type="vector<[8]xf32>")
-        go = tle.llvm_gep(tle.llvm_base_ptr(out), i, "f32")
-        tle.call_intrinsic("llvm.riscv.vse", [r, go, vl], result_type="()")
+@sr.raw_kernel
+def post_scale_llvm(scores: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index):
+    vl = sr.llvm_const(8, "i64")
+    zero = sr.llvm_const(0, "i64")
+    beta = sr.llvm_const("5.000000e-01", "vector<[8]xf32>")  # 0.5 splat
+    for i in sr.range(zero, N, vl):
+        p = sr.llvm_poison("vector<[8]xf32>")
+        gs = sr.llvm_gep(sr.llvm_base_ptr(scores), i, "f32")
+        v = sr.call_intrinsic("llvm.riscv.vle", [p, gs, vl], result_type="vector<[8]xf32>")
+        r = sr.call_intrinsic("llvm.fmul", [v, beta], result_type="vector<[8]xf32>")
+        go = sr.llvm_gep(sr.llvm_base_ptr(out), i, "f32")
+        sr.call_intrinsic("llvm.riscv.vse", [r, go, vl], result_type="()")
 
 
 # ── 融合 host: 三层语法一次 launch ───────────────────────────────────────────

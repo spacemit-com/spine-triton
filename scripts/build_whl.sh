@@ -52,6 +52,11 @@ pushd triton
 git reset
 git checkout .
 git clean -fd
+# git clean -fd (no -x) keeps the gitignored build/ staging dir, and
+# bdist_wheel never prunes files deleted from it, so artifacts left by an
+# unrelated build in the same runner workspace (e.g. an x86 build) would be
+# packaged into the wheel.
+rm -rf build dist
 ls ${CUR_DIR}/patch/*.patch | xargs -n1 git apply
 
 export SPINE_MLIR_INSTALL_DIR=${SPINE_MLIR_INSTALL_DIR}

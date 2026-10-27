@@ -13,11 +13,11 @@ import triton
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f16 = tle.f16
-f32 = tle.f32
+f16 = sr.f16
+f32 = sr.f32
 
 M, N, K = 16, 32, 64
 MB, NB, KB = 16, 32, 8
@@ -25,21 +25,21 @@ KC = K // KB  # 8
 B1, B2 = MB // 8, NB // 8  # 2, 4
 
 
-@tle.raw_kernel
-def mm(Ap: tle.mem(f16), Bp: tle.mem(f16), C: tle.mem(f16, out=True)):
+@sr.raw_kernel
+def mm(Ap: sr.mem(f16), Bp: sr.mem(f16), C: sr.mem(f16, out=True)):
     # Ap packed <1,8,16,8> flat, Bp packed <1,8,32,8> flat. per kc-tile:
     #   A tile 连续 128 = <2×64>(b1=2 cubes), B tile 连续 256 = <4×64>(b2=4)
-    tle.vconfig(-1, 1)  # VL=64
-    acc = tle.vzero(f32, group=8)  # <8×64xf32> = b1·b2
-    for kc in tle.range(0, KC, 1):
-        va = tle.vload(Ap, kc * 128, group=B1)  # <2×64xf16>
-        vb = tle.vload(Bp, kc * 256, group=B2)  # <4×64xf16>
-        acc = tle.vmadot(acc, va, vb)  # cross_batch_matmul
-    c1 = tle.vpack(acc, 8)  # <8×64> → <4×128>
-    c2 = tle.vpack(c1, 16)  # <4×128> → <2×256>
-    cf = tle.vshape(c2, (16, 32))  # → 行主序 <16×32xf32>
-    c = tle.cast(cf, f16)  # f32 → f16(匹配 C)
-    tle.vstore(C, 0, c, shape=(16, 32))  # 2D 块写回(1D 宽向量 transfer_write 会丢 lane)
+    sr.vconfig(-1, 1)  # VL=64
+    acc = sr.vzero(f32, group=8)  # <8×64xf32> = b1·b2
+    for kc in sr.range(0, KC, 1):
+        va = sr.vload(Ap, kc * 128, group=B1)  # <2×64xf16>
+        vb = sr.vload(Bp, kc * 256, group=B2)  # <4×64xf16>
+        acc = sr.vmadot(acc, va, vb)  # cross_batch_matmul
+    c1 = sr.vpack(acc, 8)  # <8×64> → <4×128>
+    c2 = sr.vpack(c1, 16)  # <4×128> → <2×256>
+    cf = sr.vshape(c2, (16, 32))  # → 行主序 <16×32xf32>
+    c = sr.cast(cf, f16)  # f32 → f16(匹配 C)
+    sr.vstore(C, 0, c, shape=(16, 32))  # 2D 块写回(1D 宽向量 transfer_write 会丢 lane)
 
 
 @triton.jit

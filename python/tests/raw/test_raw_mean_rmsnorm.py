@@ -9,30 +9,30 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f16 = tle.f16
-f32 = tle.f32
+f16 = sr.f16
+f32 = sr.f32
 
 
 # ---------------------------------------------------------------------------
 # mean_1d: sum(x) / N  —— 最小 L0 标量除法验证
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def mean_1d_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def mean_1d_kernel(X: sr.mem(f16), out: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
-    acc = tle.vzero(f32)
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.cast(tle.vload(X, i), f32)
+    acc = sr.vzero(f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.cast(sr.vload(X, i), f32)
         acc = acc + vx
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.cast(tle.vload(X, i), f32)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.cast(sr.vload(X, i), f32)
         acc = acc + tx
-    s = tle.vreduce_sum(acc)
-    tle.sstore(out, 0, s / N)  # ← L0: f32 scalar / index
+    s = sr.vreduce_sum(acc)
+    sr.sstore(out, 0, s / N)  # ← L0: f32 scalar / index
 
 
 @triton.jit
@@ -53,29 +53,29 @@ def test_mean_1d(N):
 # rms_norm_1d: x / sqrt(mean(x^2) + eps)  —— 完整 L0 下游链
 #   reduce → /N → rsqrt(scalar) → 标量广播回向量 mul
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def rms_norm_1d_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def rms_norm_1d_kernel(X: sr.mem(f16), out: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
-    acc = tle.vzero(f32)
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.cast(tle.vload(X, i), f32)
+    acc = sr.vzero(f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.cast(sr.vload(X, i), f32)
         acc = acc + vx * vx
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.cast(tle.vload(X, i), f32)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.cast(sr.vload(X, i), f32)
         acc = acc + tx * tx
-    ms = tle.vreduce_sum(acc) / N  # mean of squares (scalar)
-    scale = tle.rsqrt(ms)  # rsqrt on scalar
+    ms = sr.vreduce_sum(acc) / N  # mean of squares (scalar)
+    scale = sr.rsqrt(ms)  # rsqrt on scalar
     # 归一化循环用独立临时名(nx/mx),避免与 reduce 循环的 vx/tx 同名 →
     # _find_reassigned 会把出作用域的 vx/tx 误当 iter_arg → 引用子 region SSA。
-    for i in tle.range(0, Nfloor, nvl):
-        nx = tle.cast(tle.vload(X, i), f32)
-        tle.vstore(out, i, nx * scale)  # scalar broadcast into vector
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        mx = tle.cast(tle.vload(X, i), f32)
-        tle.vstore(out, i, mx * scale)
+    for i in sr.range(0, Nfloor, nvl):
+        nx = sr.cast(sr.vload(X, i), f32)
+        sr.vstore(out, i, nx * scale)  # scalar broadcast into vector
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        mx = sr.cast(sr.vload(X, i), f32)
+        sr.vstore(out, i, mx * scale)
 
 
 @triton.jit

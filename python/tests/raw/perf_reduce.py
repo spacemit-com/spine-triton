@@ -22,7 +22,7 @@ import triton
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.smt_rvisa as tle  # noqa: F401  (registers backend)
+import triton.language.extra.smt_rvisa as sr  # noqa: F401  (registers backend)
 
 WARMUP, REPS = 20, 100
 _TESTS = os.path.dirname(__file__)

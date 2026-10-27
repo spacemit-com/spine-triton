@@ -13,25 +13,25 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f32 = tle.f32
+f32 = sr.f32
 
 
-@tle.raw_kernel
-def silu_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def silu_kernel(X: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.vload(X, i, dtype=f32)
-        sig = 1.0 / (1.0 + tle.vexp(-vx))  # sigmoid(x)
-        tle.vstore(out, i, vx * sig)
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.vload(X, i, dtype=f32)
-        sig2 = 1.0 / (1.0 + tle.vexp(-tx))
-        tle.vstore(out, i, tx * sig2)
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.vload(X, i, dtype=f32)
+        sig = 1.0 / (1.0 + sr.vexp(-vx))  # sigmoid(x)
+        sr.vstore(out, i, vx * sig)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.vload(X, i, dtype=f32)
+        sig2 = 1.0 / (1.0 + sr.vexp(-tx))
+        sr.vstore(out, i, tx * sig2)
 
 
 @triton.jit

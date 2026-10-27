@@ -20,20 +20,20 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f32 = tle.f32
+f32 = sr.f32
 
 
-@tle.raw_kernel
-def cumsum_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    tle.vconfig(-1, 1)  # sets VL (vzero needs it)
-    acc = tle.vreduce_sum(tle.vzero(f32))  # 0.0 as an f32 scalar (scan seed)
-    for i in tle.range(0, N, 1):
-        xi = tle.sload(X, i, dtype=f32)
+@sr.raw_kernel
+def cumsum_1d_kernel(X: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index):
+    sr.vconfig(-1, 1)  # sets VL (vzero needs it)
+    acc = sr.vreduce_sum(sr.vzero(f32))  # 0.0 as an f32 scalar (scan seed)
+    for i in sr.range(0, N, 1):
+        xi = sr.sload(X, i, dtype=f32)
         acc = acc + xi
-        tle.sstore(out, i, acc)
+        sr.sstore(out, i, acc)
 
 
 @triton.jit

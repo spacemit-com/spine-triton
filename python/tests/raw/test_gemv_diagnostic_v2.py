@@ -5,30 +5,30 @@ import triton.language as tl
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f16 = tle.f16
-f32 = tle.f32
+f16 = sr.f16
+f32 = sr.f32
 
 
-@tle.raw_kernel
-def gemv_smt_rvisa(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, out=True), K: tle.index,
-                   row_base: tle.index, row_end: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def gemv_smt_rvisa(Mat: sr.mem(f16), vec_s: sr.mem(f16), scores: sr.mem(f32, out=True), K: sr.index, row_base: sr.index,
+                   row_end: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Kfloor = (K // nvl) * nvl
-    for n in tle.range(row_base, row_end, 1):
-        acc = tle.vzero(f32)
-        for ki in tle.range(0, Kfloor, nvl):
-            vm = tle.vload(Mat, n * K + ki)
-            vv = tle.vload(vec_s, ki)
-            acc = tle.vmacc(acc, vm, vv)
-        for ki in tle.range(Kfloor, K, nvl):
-            nvl = tle.vconfig(K - ki, 1)
-            tm = tle.vload(Mat, n * K + ki)
-            tv = tle.vload(vec_s, ki)
-            acc = tle.vmacc(acc, tm, tv)
-        tle.sstore(scores, n, tle.vreduce_sum(acc))
+    for n in sr.range(row_base, row_end, 1):
+        acc = sr.vzero(f32)
+        for ki in sr.range(0, Kfloor, nvl):
+            vm = sr.vload(Mat, n * K + ki)
+            vv = sr.vload(vec_s, ki)
+            acc = sr.vmacc(acc, vm, vv)
+        for ki in sr.range(Kfloor, K, nvl):
+            nvl = sr.vconfig(K - ki, 1)
+            tm = sr.vload(Mat, n * K + ki)
+            tv = sr.vload(vec_s, ki)
+            acc = sr.vmacc(acc, tm, tv)
+        sr.sstore(scores, n, sr.vreduce_sum(acc))
 
 
 @triton.jit(do_not_specialize=["K", "N"])

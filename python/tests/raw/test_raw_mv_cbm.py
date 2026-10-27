@@ -2,7 +2,7 @@
 
 mv: C[M] = B[M,K] @ A[K]。表达成 GEMM,A 是被广播维(cube 的 n 维退化)。
 - B 侧:vpack(memref)→linalg.pack 摆 cube。
-- A 侧:tle.spread 标量广播成 cube scratch(绕 vscale)+ vbroadcast 寄存器复制 b2 份。
+- A 侧:sr.spread 标量广播成 cube scratch(绕 vscale)+ vbroadcast 寄存器复制 b2 份。
 - 输出:vpack(vector) 逐级 group_interleave 还原行主序,取 col0。
 
 shape 支持(本文件验证的能力边界):
@@ -25,13 +25,13 @@ from triton.backends.spine_triton.driver import CPUDriver
 triton.runtime.driver.set_active(CPUDriver())
 import triton.language as tl
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f16 = tle.f16
-f32 = tle.f32
+f16 = sr.f16
+f32 = sr.f32
 
-CM, CN, CK = tle.mma_cube(f16)  # (8, 8, 8) for f16
+CM, CN, CK = sr.mma_cube(f16)  # (8, 8, 8) for f16
 VL = CN * CK  # cube lane 宽 = n×k,f16→64
 MB = 2 * CM  # 每 program 的 cube 行块 = 16(b1=MB/CM=2,匹配已坐实还原链)
 Npad = 4 * CN  # A 广播维 = 32(b2=Npad/CN=4,seg=2*CN*16=256≤512 硬件上限)
@@ -51,27 +51,27 @@ def make_mv(M, K):
     Mtot = M  # 闭包常量, 供 kernel 算 valid_rows = imin(MB, M-row_base)
     grid_blocks = (M + MB - 1) // MB  # 任意 M:grid=ceil(M/MB), 末 block 动态行数
 
-    @tle.raw_kernel
-    def mv(B: tle.mem(f16), A: tle.mem(f16), C: tle.mem(f16, out=True), row_base: tle.index):
-        tle.vconfig(VL, 1)  # 活跃 VL = cube lane 宽(经 _active_vl 供 vzero/vload)
+    @sr.raw_kernel
+    def mv(B: sr.mem(f16), A: sr.mem(f16), C: sr.mem(f16, out=True), row_base: sr.index):
+        sr.vconfig(VL, 1)  # 活跃 VL = cube lane 宽(经 _active_vl 供 vzero/vload)
         # ① B 侧:valid_rows = min(MB, M-row_base)(末 block 不满 MB);vpack 只读真实行,
         #    codegen fill+insert 把 M(行)/K(列)一起补到 MB×Kp,越界行/列填 0(PLAN_pad §2.B)。
-        vr = tle.imin(MB, Mtot - row_base)
-        Bcube = tle.vpack(B, inner_tiles=(MB, CK), stride=K, rows=MB, offset=row_base * K, valid_rows=vr)
+        vr = sr.imin(MB, Mtot - row_base)
+        Bcube = sr.vpack(B, inner_tiles=(MB, CK), stride=K, rows=MB, offset=row_base * K, valid_rows=vr)
         # ② A 侧:spread 标量广播成 cube scratch;k_real=K 让尾 tile 填 0(避免 over-read A)
-        scrA = tle.spread(A, cube_shape=(KC, CN, CK), k_real=K)
-        acc = tle.vzero(f32, group=B1 * B2)  # <8×64xf32>
-        for kc in tle.range(0, KC, 1):
-            vb = tle.vload(Bcube, (0, kc), group=B1)  # <2×64xf16>
-            va1 = tle.vload(scrA, (kc, 0))  # <64xf16>(单 cube,A 已 n 广播)
-            va = tle.vbroadcast(va1, B2)  # <4×64xf16>
-            acc = tle.vmadot(acc, vb, va)  # cross_batch_matmul
+        scrA = sr.spread(A, cube_shape=(KC, CN, CK), k_real=K)
+        acc = sr.vzero(f32, group=B1 * B2)  # <8×64xf32>
+        for kc in sr.range(0, KC, 1):
+            vb = sr.vload(Bcube, (0, kc), group=B1)  # <2×64xf16>
+            va1 = sr.vload(scrA, (kc, 0))  # <64xf16>(单 cube,A 已 n 广播)
+            va = sr.vbroadcast(va1, B2)  # <4×64xf16>
+            acc = sr.vmadot(acc, vb, va)  # cross_batch_matmul
         # ⑤ 输出还原:group_interleave 逐级(groupLen 从 CN 起翻倍),cube→行主序 <MB×Npad>
-        c1 = tle.vpack(acc, CN)  # <8×64> → <4×128>
-        c2 = tle.vpack(c1, 2 * CN)  # <4×128> → <2×256>
-        cf = tle.vshape(c2, (MB, Npad))
-        c = tle.cast(cf, f16)
-        tle.vstore(C, row_base * Npad, c, shape=(MB, Npad))
+        c1 = sr.vpack(acc, CN)  # <8×64> → <4×128>
+        c2 = sr.vpack(c1, 2 * CN)  # <4×128> → <2×256>
+        cf = sr.vshape(c2, (MB, Npad))
+        c = sr.cast(cf, f16)
+        sr.vstore(C, row_base * Npad, c, shape=(MB, Npad))
 
     mv._fn.__name__ = f"mv_cbm_{M}_{K}"
 
