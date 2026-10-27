@@ -12,43 +12,43 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f32 = tle.f32
+f32 = sr.f32
 
 
-@tle.raw_kernel
-def cross_entropy_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index, target: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def cross_entropy_1d_kernel(X: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index, target: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
 
     # ── 趟1: max(x) ───────────────────────────────────────────────────────
-    acc_max = tle.vload(X, 0, dtype=f32)
-    for i in tle.range(0, Nfloor, nvl):
-        va = tle.vload(X, i, dtype=f32)
-        acc_max = tle.vmax(acc_max, va)
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        ta = tle.vload(X, i, dtype=f32)
-        acc_max = tle.vmax(acc_max, ta)
-    xmax = tle.vreduce_max(acc_max)
+    acc_max = sr.vload(X, 0, dtype=f32)
+    for i in sr.range(0, Nfloor, nvl):
+        va = sr.vload(X, i, dtype=f32)
+        acc_max = sr.vmax(acc_max, va)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        ta = sr.vload(X, i, dtype=f32)
+        acc_max = sr.vmax(acc_max, ta)
+    xmax = sr.vreduce_max(acc_max)
 
     # ── 趟2: sum(exp(x - max)) ────────────────────────────────────────────
-    acc_sum = tle.vzero(f32)
-    for i in tle.range(0, Nfloor, nvl):
-        vb = tle.vload(X, i, dtype=f32)
-        acc_sum = acc_sum + tle.vexp(vb - xmax)
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tb = tle.vload(X, i, dtype=f32, fill=-1e38)
-        acc_sum = acc_sum + tle.vexp(tb - xmax)
-    denom = tle.vreduce_sum(acc_sum)
+    acc_sum = sr.vzero(f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vb = sr.vload(X, i, dtype=f32)
+        acc_sum = acc_sum + sr.vexp(vb - xmax)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tb = sr.vload(X, i, dtype=f32, fill=-1e38)
+        acc_sum = acc_sum + sr.vexp(tb - xmax)
+    denom = sr.vreduce_sum(acc_sum)
 
     # ── 单元素提取 + 计算 loss ─────────────────────────────────────────────
-    xt = tle.sload(X, target, dtype=f32)  # sload: scalar load at dynamic idx
-    loss = tle.vlog(denom) + xmax - xt  # = -log_softmax[target]
-    tle.sstore(out, 0, loss)
+    xt = sr.sload(X, target, dtype=f32)  # sload: scalar load at dynamic idx
+    loss = sr.vlog(denom) + xmax - xt  # = -log_softmax[target]
+    sr.sstore(out, 0, loss)
 
 
 @triton.jit

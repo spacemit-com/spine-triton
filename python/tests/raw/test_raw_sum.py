@@ -14,39 +14,39 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f16 = tle.f16
-f32 = tle.f32
+f16 = sr.f16
+f32 = sr.f32
 
 
 # ---------------------------------------------------------------------------
 # sum_1d: 对 1D 张量求和
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def sum_1d_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), N: tle.index):
+@sr.raw_kernel
+def sum_1d_kernel(X: sr.mem(f16), out: sr.mem(f32, out=True), N: sr.index):
     """1D sum: 单 kernel 处理整个向量。"""
-    nvl = tle.vconfig(-1, 1)
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
 
-    acc = tle.vzero(f32)
+    acc = sr.vzero(f32)
 
     # Main loop: full tiles
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.vload(X, i)
-        vx_f32 = tle.cast(vx, f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.vload(X, i)
+        vx_f32 = sr.cast(vx, f32)
         acc = acc + vx_f32
 
     # Tail loop: partial tile (use different variable names)
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.vload(X, i)
-        tx_f32 = tle.cast(tx, f32)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.vload(X, i)
+        tx_f32 = sr.cast(tx, f32)
         acc = acc + tx_f32
 
     # Reduce and store
-    tle.sstore(out, 0, tle.vreduce_sum(acc))
+    sr.sstore(out, 0, sr.vreduce_sum(acc))
 
 
 @triton.jit  # Remove do_not_specialize to allow different N values
@@ -73,28 +73,28 @@ def sum_1d_raw(X: torch.Tensor) -> torch.Tensor:
 # ---------------------------------------------------------------------------
 # sum_2d: 对 2D 张量的某个维度求和
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def sum_2d_dim1_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), M: tle.index, N: tle.index, row_idx: tle.index):
+@sr.raw_kernel
+def sum_2d_dim1_kernel(X: sr.mem(f16), out: sr.mem(f32, out=True), M: sr.index, N: sr.index, row_idx: sr.index):
     """2D sum along dim=1: 每行独立求和，输出 [M]。"""
-    nvl = tle.vconfig(-1, 1)
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
 
-    acc = tle.vzero(f32)
+    acc = sr.vzero(f32)
 
     # Main loop
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.vload(X, row_idx * N + i)
-        vx_f32 = tle.cast(vx, f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.vload(X, row_idx * N + i)
+        vx_f32 = sr.cast(vx, f32)
         acc = acc + vx_f32
 
     # Tail loop (use different variable names)
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.vload(X, row_idx * N + i)
-        tx_f32 = tle.cast(tx, f32)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.vload(X, row_idx * N + i)
+        tx_f32 = sr.cast(tx, f32)
         acc = acc + tx_f32
 
-    tle.sstore(out, row_idx, tle.vreduce_sum(acc))
+    sr.sstore(out, row_idx, sr.vreduce_sum(acc))
 
 
 @triton.jit  # Remove do_not_specialize to allow different M, N values

@@ -13,11 +13,11 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f16 = tle.f16
-f32 = tle.f32
+f16 = sr.f16
+f32 = sr.f32
 
 EPS = 1e-5
 
@@ -25,42 +25,42 @@ EPS = 1e-5
 # ---------------------------------------------------------------------------
 # layernorm_1d: C[i] = (x[i] - mean) / sqrt(var + eps)
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def layernorm_1d_kernel(X: tle.mem(f16), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def layernorm_1d_kernel(X: sr.mem(f16), out: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
 
     # ── 趟1: sum(x) ──────────────────────────────────────────────────────
-    acc1 = tle.vzero(f32)
-    for i in tle.range(0, Nfloor, nvl):
-        va = tle.cast(tle.vload(X, i), f32)
+    acc1 = sr.vzero(f32)
+    for i in sr.range(0, Nfloor, nvl):
+        va = sr.cast(sr.vload(X, i), f32)
         acc1 = acc1 + va
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        ta = tle.cast(tle.vload(X, i), f32)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        ta = sr.cast(sr.vload(X, i), f32)
         acc1 = acc1 + ta
-    mean = tle.vreduce_sum(acc1) / N  # f32 scalar
+    mean = sr.vreduce_sum(acc1) / N  # f32 scalar
 
     # ── 趟2: sum(x²) — use E[x²]-mean² to avoid (0-mean)² inflation from padding ─────
-    acc2 = tle.vzero(f32)
-    for i in tle.range(0, Nfloor, nvl):
-        vb = tle.cast(tle.vload(X, i), f32)
+    acc2 = sr.vzero(f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vb = sr.cast(sr.vload(X, i), f32)
         acc2 = acc2 + vb * vb
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tb = tle.cast(tle.vload(X, i), f32)  # fill=0: 0²=0, no inflation
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tb = sr.cast(sr.vload(X, i), f32)  # fill=0: 0²=0, no inflation
         acc2 = acc2 + tb * tb
-    var = tle.vreduce_sum(acc2) / N - mean * mean  # E[x²] - mean² = Var(x)
-    scale = tle.rsqrt(var + EPS)  # f32 scalar (f32 + f32 literal)
+    var = sr.vreduce_sum(acc2) / N - mean * mean  # E[x²] - mean² = Var(x)
+    scale = sr.rsqrt(var + EPS)  # f32 scalar (f32 + f32 literal)
 
     # ── 趟3: (x - mean) * scale ───────────────────────────────────────────
-    for i in tle.range(0, Nfloor, nvl):
-        vc = tle.cast(tle.vload(X, i), f32)
-        tle.vstore(out, i, (vc - mean) * scale)
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tc = tle.cast(tle.vload(X, i), f32)
-        tle.vstore(out, i, (tc - mean) * scale)
+    for i in sr.range(0, Nfloor, nvl):
+        vc = sr.cast(sr.vload(X, i), f32)
+        sr.vstore(out, i, (vc - mean) * scale)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tc = sr.cast(sr.vload(X, i), f32)
+        sr.vstore(out, i, (tc - mean) * scale)
 
 
 @triton.jit

@@ -5,11 +5,11 @@ import triton.language as tl
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f16 = tle.f16
-f32 = tle.f32
+f16 = sr.f16
+f32 = sr.f32
 _BETA = 0.5
 
 
@@ -23,25 +23,25 @@ def pre_scale_tl(vec_ptr, vec_s_ptr, alpha, K, BLOCK: tl.constexpr):
     tl.store(vec_s_ptr + offs, y, mask=mask)
 
 
-@tle.raw_kernel
-def gemv_smt_rvisa(Mat: tle.mem(f16), vec_s: tle.mem(f16), scores: tle.mem(f32, out=True), K: tle.index,
-                   row_base: tle.index, row_end: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def gemv_smt_rvisa(Mat: sr.mem(f16), vec_s: sr.mem(f16), scores: sr.mem(f32, out=True), K: sr.index, row_base: sr.index,
+                   row_end: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Kfloor = (K // nvl) * nvl
-    for n in tle.range(row_base, row_end, 1):
-        acc = tle.vzero(f32)
+    for n in sr.range(row_base, row_end, 1):
+        acc = sr.vzero(f32)
         # Main loop: full vectors
-        for ki in tle.range(0, Kfloor, nvl):
-            vm = tle.vload(Mat, n * K + ki)
-            vv = tle.vload(vec_s, ki)
-            acc = tle.vmacc(acc, vm, vv)
+        for ki in sr.range(0, Kfloor, nvl):
+            vm = sr.vload(Mat, n * K + ki)
+            vv = sr.vload(vec_s, ki)
+            acc = sr.vmacc(acc, vm, vv)
         # Tail: use working pattern from test_raw_mv_svector.py
-        for ki in tle.range(Kfloor, K, nvl):
-            nvl = tle.vconfig(K - ki, 1)
-            tm = tle.vload(Mat, n * K + ki)
-            tv = tle.vload(vec_s, ki)
-            acc = tle.vmacc(acc, tm, tv)
-        tle.sstore(scores, n, tle.vreduce_sum(acc))
+        for ki in sr.range(Kfloor, K, nvl):
+            nvl = sr.vconfig(K - ki, 1)
+            tm = sr.vload(Mat, n * K + ki)
+            tv = sr.vload(vec_s, ki)
+            acc = sr.vmacc(acc, tm, tv)
+        sr.sstore(scores, n, sr.vreduce_sum(acc))
 
 
 @triton.jit(do_not_specialize=["K", "N"])
@@ -52,18 +52,18 @@ def gemv_host(Mat, vec_s, scores, K, N, BLOCK: tl.constexpr):
     _sr_call(gemv_smt_rvisa, outputs=[], inputs=[Mat, vec_s, scores, K, row_base, row_end])
 
 
-@tle.raw_kernel
-def post_scale_llvm(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    vl = tle.llvm_const(8, "i64")
-    zero = tle.llvm_const(0, "i64")
-    beta = tle.llvm_const("5.000000e-01", "vector<[8]xf32>")
-    for i in tle.range(zero, N, vl):
-        p = tle.llvm_poison("vector<[8]xf32>")
-        gs = tle.llvm_gep(tle.llvm_base_ptr(scores), i, "f32")
-        v = tle.call_intrinsic("llvm.riscv.vle", [p, gs, vl], result_type="vector<[8]xf32>")
-        r = tle.call_intrinsic("llvm.fmul", [v, beta], result_type="vector<[8]xf32>")
-        go = tle.llvm_gep(tle.llvm_base_ptr(out), i, "f32")
-        tle.call_intrinsic("llvm.riscv.vse", [r, go, vl], result_type="()")
+@sr.raw_kernel
+def post_scale_llvm(scores: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index):
+    vl = sr.llvm_const(8, "i64")
+    zero = sr.llvm_const(0, "i64")
+    beta = sr.llvm_const("5.000000e-01", "vector<[8]xf32>")
+    for i in sr.range(zero, N, vl):
+        p = sr.llvm_poison("vector<[8]xf32>")
+        gs = sr.llvm_gep(sr.llvm_base_ptr(scores), i, "f32")
+        v = sr.call_intrinsic("llvm.riscv.vle", [p, gs, vl], result_type="vector<[8]xf32>")
+        r = sr.call_intrinsic("llvm.fmul", [v, beta], result_type="vector<[8]xf32>")
+        go = sr.llvm_gep(sr.llvm_base_ptr(out), i, "f32")
+        sr.call_intrinsic("llvm.riscv.vse", [r, go, vl], result_type="()")
 
 
 @triton.jit

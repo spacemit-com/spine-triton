@@ -16,7 +16,7 @@ from importlib.machinery import SourceFileLoader
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.smt_rvisa as tle  # noqa: F401
+import triton.language.extra.smt_rvisa as sr  # noqa: F401
 
 _TESTS = os.path.dirname(__file__)
 sv = SourceFileLoader("mv_sv", os.path.join(_TESTS, "test_raw_mv_svector.py")).load_module()

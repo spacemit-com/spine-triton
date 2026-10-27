@@ -4,25 +4,25 @@ import triton
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f32 = tle.f32
+f32 = sr.f32
 _BETA = 0.5
 
 
-@tle.raw_kernel
-def post_scale_llvm(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    vl = tle.llvm_const(8, "i64")
-    zero = tle.llvm_const(0, "i64")
-    beta = tle.llvm_const("5.000000e-01", "vector<[8]xf32>")
-    for i in tle.range(zero, N, vl):
-        p = tle.llvm_poison("vector<[8]xf32>")
-        gs = tle.llvm_gep(tle.llvm_base_ptr(scores), i, "f32")
-        v = tle.call_intrinsic("llvm.riscv.vle", [p, gs, vl], result_type="vector<[8]xf32>")
-        r = tle.call_intrinsic("llvm.fmul", [v, beta], result_type="vector<[8]xf32>")
-        go = tle.llvm_gep(tle.llvm_base_ptr(out), i, "f32")
-        tle.call_intrinsic("llvm.riscv.vse", [r, go, vl], result_type="()")
+@sr.raw_kernel
+def post_scale_llvm(scores: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index):
+    vl = sr.llvm_const(8, "i64")
+    zero = sr.llvm_const(0, "i64")
+    beta = sr.llvm_const("5.000000e-01", "vector<[8]xf32>")
+    for i in sr.range(zero, N, vl):
+        p = sr.llvm_poison("vector<[8]xf32>")
+        gs = sr.llvm_gep(sr.llvm_base_ptr(scores), i, "f32")
+        v = sr.call_intrinsic("llvm.riscv.vle", [p, gs, vl], result_type="vector<[8]xf32>")
+        r = sr.call_intrinsic("llvm.fmul", [v, beta], result_type="vector<[8]xf32>")
+        go = sr.llvm_gep(sr.llvm_base_ptr(out), i, "f32")
+        sr.call_intrinsic("llvm.riscv.vse", [r, go, vl], result_type="()")
 
 
 @triton.jit

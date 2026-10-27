@@ -14,28 +14,28 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f32 = tle.f32
+f32 = sr.f32
 
 
 # ---------------------------------------------------------------------------
 # l2_norm : sqrt(sum(x²))
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def l2_norm_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def l2_norm_kernel(X: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
-    acc = tle.vzero(f32)
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.vload(X, i, dtype=f32)
+    acc = sr.vzero(f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.vload(X, i, dtype=f32)
         acc = acc + vx * vx
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.vload(X, i, dtype=f32)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.vload(X, i, dtype=f32)
         acc = acc + tx * tx
-    tle.sstore(out, 0, tle.sqrt(tle.vreduce_sum(acc)))
+    sr.sstore(out, 0, sr.sqrt(sr.vreduce_sum(acc)))
 
 
 @triton.jit
@@ -46,19 +46,19 @@ def l2_norm_host(X, out, N):
 # ---------------------------------------------------------------------------
 # l1_norm : sum(|x|)
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def l1_norm_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def l1_norm_kernel(X: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
-    acc = tle.vzero(f32)
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.vload(X, i, dtype=f32)
-        acc = acc + tle.abs(vx)
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.vload(X, i, dtype=f32)
-        acc = acc + tle.abs(tx)
-    tle.sstore(out, 0, tle.vreduce_sum(acc))
+    acc = sr.vzero(f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.vload(X, i, dtype=f32)
+        acc = acc + sr.abs(vx)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.vload(X, i, dtype=f32)
+        acc = acc + sr.abs(tx)
+    sr.sstore(out, 0, sr.vreduce_sum(acc))
 
 
 @triton.jit
@@ -69,19 +69,19 @@ def l1_norm_host(X, out, N):
 # ---------------------------------------------------------------------------
 # linf_norm : max(|x|)
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def linf_norm_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def linf_norm_kernel(X: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
-    acc = tle.abs(tle.vload(X, 0, dtype=f32))
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.vload(X, i, dtype=f32)
-        acc = tle.vmax(acc, tle.abs(vx))
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.vload(X, i, dtype=f32)
-        acc = tle.vmax(acc, tle.abs(tx))
-    tle.sstore(out, 0, tle.vreduce_max(acc))
+    acc = sr.abs(sr.vload(X, 0, dtype=f32))
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.vload(X, i, dtype=f32)
+        acc = sr.vmax(acc, sr.abs(vx))
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.vload(X, i, dtype=f32)
+        acc = sr.vmax(acc, sr.abs(tx))
+    sr.sstore(out, 0, sr.vreduce_max(acc))
 
 
 @triton.jit
@@ -92,26 +92,26 @@ def linf_norm_host(X, out, N):
 # ---------------------------------------------------------------------------
 # normalize : x / l2_norm(x)
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def normalize_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def normalize_kernel(X: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
-    acc = tle.vzero(f32)
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.vload(X, i, dtype=f32)
+    acc = sr.vzero(f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.vload(X, i, dtype=f32)
         acc = acc + vx * vx
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.vload(X, i, dtype=f32)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.vload(X, i, dtype=f32)
         acc = acc + tx * tx
-    inv = tle.rsqrt(tle.vreduce_sum(acc))  # 1 / sqrt(sum(x²))
-    for i in tle.range(0, Nfloor, nvl):
-        nx = tle.vload(X, i, dtype=f32)
-        tle.vstore(out, i, nx * inv)
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        mx = tle.vload(X, i, dtype=f32)
-        tle.vstore(out, i, mx * inv)
+    inv = sr.rsqrt(sr.vreduce_sum(acc))  # 1 / sqrt(sum(x²))
+    for i in sr.range(0, Nfloor, nvl):
+        nx = sr.vload(X, i, dtype=f32)
+        sr.vstore(out, i, nx * inv)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        mx = sr.vload(X, i, dtype=f32)
+        sr.vstore(out, i, mx * inv)
 
 
 @triton.jit

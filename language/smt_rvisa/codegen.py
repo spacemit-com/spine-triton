@@ -45,9 +45,9 @@ def _parse_signature(fn: Callable) -> list[tuple[str, _TypedAnnotation]]:
         ann = param.annotation
         if ann is inspect.Parameter.empty:
             raise ValueError(f"Parameter '{pname}' of @smt_rvisa function '{fn.__name__}' "
-                             f"must have a tle.mem(...) or tle.index annotation.")
+                             f"must have a sr.mem(...) or sr.index annotation.")
         if not isinstance(ann, _TypedAnnotation):
-            raise ValueError(f"Parameter '{pname}' annotation must be tle.mem(...) or tle.index, got {ann!r}")
+            raise ValueError(f"Parameter '{pname}' annotation must be sr.mem(...) or sr.index, got {ann!r}")
         result.append((pname, ann))
     return result
 
@@ -259,6 +259,11 @@ class SmtMLIRBuilderCodegen:
     def _try_const_int(self, node) -> int | None:
         if isinstance(node, ast.Constant) and isinstance(node.value, int):
             return node.value
+        # Runtime params/locals (bound in _env) are never constants; a host
+        # module global sharing the name must not be folded in their place
+        # (see _gen_expr Name resolution for the same hazard).
+        if isinstance(node, ast.Name) and node.id in self._env:
+            return None
         if isinstance(node, ast.Name) and node.id in self._constexpr_ints:
             return self._constexpr_ints[node.id]
         if isinstance(node, ast.BinOp):
@@ -497,7 +502,7 @@ class SmtMLIRBuilderCodegen:
         if _is_smt_rvisa_attr(node.func, "proton_mark", self._aliases):
             pass  # skip profiling marks in builder path
         elif _is_smt_rvisa_attr(node.func, "vconfig", self._aliases):
-            # Bare `tle.vconfig(avl, lmul)` statement: set active VL/valid
+            # Bare `sr.vconfig(avl, lmul)` statement: set active VL/valid
             # without binding a name (same semantics as the assignment form).
             self._apply_vconfig(node)
         elif _is_smt_rvisa_attr(node.func, "vstore", self._aliases):
@@ -517,6 +522,15 @@ class SmtMLIRBuilderCodegen:
 
     def _gen_expr(self, node, hint: str = "") -> tuple:
         if isinstance(node, ast.Name):
+            # Kernel params and locals take precedence over the host-module
+            # global constexpr capture. Params are bound to block args in _env;
+            # locals (e.g. nvl after `nvl = sr.vconfig(...)`) are recorded in
+            # _constexpr_ints by _gen_vconfig_assign. A test-script global that
+            # happens to share a name (`N = 64` loop variable in __main__) must
+            # never shadow these — otherwise N is baked to the first value and
+            # scf.for bounds fold away (N=64 partial-sum bug).
+            if node.id in self._env:
+                return self._env[node.id]
             if node.id in self._constexpr_ints:
                 return self._const_int(self._constexpr_ints[node.id]), INDEX
             if node.id in self._constexpr_floats:

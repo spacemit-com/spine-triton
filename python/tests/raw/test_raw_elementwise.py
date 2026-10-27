@@ -22,124 +22,124 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f16 = tle.f16
-f32 = tle.f32
+f16 = sr.f16
+f32 = sr.f32
 
 
 # ---------------------------------------------------------------------------
 # raw kernels: X[N], Y[N] f32 -> S[1] f32 = sum_i( op(x_i, y_i) ).
 # One §6.4 op per kernel, then vreduce_sum + scalar vstore.
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def ew_add(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
-    acc = tle.vzero(f32)
-    for i in tle.range(0, N, nvl):
-        vx = tle.vload(X, i, dtype=f32)
-        vy = tle.vload(Y, i, dtype=f32)
+@sr.raw_kernel
+def ew_add(X: sr.mem(f32), Y: sr.mem(f32), S: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
+    acc = sr.vzero(f32)
+    for i in sr.range(0, N, nvl):
+        vx = sr.vload(X, i, dtype=f32)
+        vy = sr.vload(Y, i, dtype=f32)
         acc = acc + (vx + vy)
-    tle.sstore(S, 0, tle.vreduce_sum(acc))
+    sr.sstore(S, 0, sr.vreduce_sum(acc))
 
 
-@tle.raw_kernel
-def ew_mul(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
-    acc = tle.vzero(f32)
-    for i in tle.range(0, N, nvl):
-        vx = tle.vload(X, i, dtype=f32)
-        vy = tle.vload(Y, i, dtype=f32)
+@sr.raw_kernel
+def ew_mul(X: sr.mem(f32), Y: sr.mem(f32), S: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
+    acc = sr.vzero(f32)
+    for i in sr.range(0, N, nvl):
+        vx = sr.vload(X, i, dtype=f32)
+        vy = sr.vload(Y, i, dtype=f32)
         acc = acc + (vx * vy)
-    tle.sstore(S, 0, tle.vreduce_sum(acc))
+    sr.sstore(S, 0, sr.vreduce_sum(acc))
 
 
-@tle.raw_kernel
-def ew_sub(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
-    acc = tle.vzero(f32)
-    for i in tle.range(0, N, nvl):
-        vx = tle.vload(X, i, dtype=f32)
-        vy = tle.vload(Y, i, dtype=f32)
+@sr.raw_kernel
+def ew_sub(X: sr.mem(f32), Y: sr.mem(f32), S: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
+    acc = sr.vzero(f32)
+    for i in sr.range(0, N, nvl):
+        vx = sr.vload(X, i, dtype=f32)
+        vy = sr.vload(Y, i, dtype=f32)
         acc = acc + (vx - vy)
-    tle.sstore(S, 0, tle.vreduce_sum(acc))
+    sr.sstore(S, 0, sr.vreduce_sum(acc))
 
 
-@tle.raw_kernel
-def ew_div(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
-    acc = tle.vzero(f32)
-    for i in tle.range(0, N, nvl):
-        vx = tle.vload(X, i, dtype=f32)
-        vy = tle.vload(Y, i, dtype=f32)
+@sr.raw_kernel
+def ew_div(X: sr.mem(f32), Y: sr.mem(f32), S: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
+    acc = sr.vzero(f32)
+    for i in sr.range(0, N, nvl):
+        vx = sr.vload(X, i, dtype=f32)
+        vy = sr.vload(Y, i, dtype=f32)
         acc = acc + (vx / vy)
-    tle.sstore(S, 0, tle.vreduce_sum(acc))
+    sr.sstore(S, 0, sr.vreduce_sum(acc))
 
 
-@tle.raw_kernel
-def ew_neg(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
-    acc = tle.vzero(f32)
-    for i in tle.range(0, N, nvl):
-        vx = tle.vload(X, i, dtype=f32)
+@sr.raw_kernel
+def ew_neg(X: sr.mem(f32), Y: sr.mem(f32), S: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
+    acc = sr.vzero(f32)
+    for i in sr.range(0, N, nvl):
+        vx = sr.vload(X, i, dtype=f32)
         acc = acc + (-vx)
-    tle.sstore(S, 0, tle.vreduce_sum(acc))
+    sr.sstore(S, 0, sr.vreduce_sum(acc))
 
 
-@tle.raw_kernel
-def ew_vmin(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
-    acc = tle.vzero(f32)
-    for i in tle.range(0, N, nvl):
-        vx = tle.vload(X, i, dtype=f32)
-        vy = tle.vload(Y, i, dtype=f32)
-        acc = acc + tle.vmin(vx, vy)
-    tle.sstore(S, 0, tle.vreduce_sum(acc))
+@sr.raw_kernel
+def ew_vmin(X: sr.mem(f32), Y: sr.mem(f32), S: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
+    acc = sr.vzero(f32)
+    for i in sr.range(0, N, nvl):
+        vx = sr.vload(X, i, dtype=f32)
+        vy = sr.vload(Y, i, dtype=f32)
+        acc = acc + sr.vmin(vx, vy)
+    sr.sstore(S, 0, sr.vreduce_sum(acc))
 
 
-@tle.raw_kernel
-def ew_vmax(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
-    acc = tle.vzero(f32)
-    for i in tle.range(0, N, nvl):
-        vx = tle.vload(X, i, dtype=f32)
-        vy = tle.vload(Y, i, dtype=f32)
-        acc = acc + tle.vmax(vx, vy)
-    tle.sstore(S, 0, tle.vreduce_sum(acc))
+@sr.raw_kernel
+def ew_vmax(X: sr.mem(f32), Y: sr.mem(f32), S: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
+    acc = sr.vzero(f32)
+    for i in sr.range(0, N, nvl):
+        vx = sr.vload(X, i, dtype=f32)
+        vy = sr.vload(Y, i, dtype=f32)
+        acc = acc + sr.vmax(vx, vy)
+    sr.sstore(S, 0, sr.vreduce_sum(acc))
 
 
-@tle.raw_kernel
-def ew_sqrt(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
-    acc = tle.vzero(f32)
-    for i in tle.range(0, N, nvl):
-        vx = tle.vload(X, i, dtype=f32)
-        acc = acc + tle.sqrt(vx)
-    tle.sstore(S, 0, tle.vreduce_sum(acc))
+@sr.raw_kernel
+def ew_sqrt(X: sr.mem(f32), Y: sr.mem(f32), S: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
+    acc = sr.vzero(f32)
+    for i in sr.range(0, N, nvl):
+        vx = sr.vload(X, i, dtype=f32)
+        acc = acc + sr.sqrt(vx)
+    sr.sstore(S, 0, sr.vreduce_sum(acc))
 
 
-@tle.raw_kernel
-def ew_abs(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
-    acc = tle.vzero(f32)
-    for i in tle.range(0, N, nvl):
-        vx = tle.vload(X, i, dtype=f32)
-        acc = acc + tle.abs(vx)
-    tle.sstore(S, 0, tle.vreduce_sum(acc))
+@sr.raw_kernel
+def ew_abs(X: sr.mem(f32), Y: sr.mem(f32), S: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
+    acc = sr.vzero(f32)
+    for i in sr.range(0, N, nvl):
+        vx = sr.vload(X, i, dtype=f32)
+        acc = acc + sr.abs(vx)
+    sr.sstore(S, 0, sr.vreduce_sum(acc))
 
 
-@tle.raw_kernel
-def ew_select(X: tle.mem(f32), Y: tle.mem(f32), S: tle.mem(f32, out=True), N: tle.index):
+@sr.raw_kernel
+def ew_select(X: sr.mem(f32), Y: sr.mem(f32), S: sr.mem(f32, out=True), N: sr.index):
     # per-lane: max(x, y) via compare -> mask -> select
-    nvl = tle.vconfig(-1, 1)
-    acc = tle.vzero(f32)
-    for i in tle.range(0, N, nvl):
-        vx = tle.vload(X, i, dtype=f32)
-        vy = tle.vload(Y, i, dtype=f32)
+    nvl = sr.vconfig(-1, 1)
+    acc = sr.vzero(f32)
+    for i in sr.range(0, N, nvl):
+        vx = sr.vload(X, i, dtype=f32)
+        vy = sr.vload(Y, i, dtype=f32)
         m = vx > vy
-        acc = acc + tle.select(m, vx, vy)
-    tle.sstore(S, 0, tle.vreduce_sum(acc))
+        acc = acc + sr.select(m, vx, vy)
+    sr.sstore(S, 0, sr.vreduce_sum(acc))
 
 
 def _make_host(raw_kernel):

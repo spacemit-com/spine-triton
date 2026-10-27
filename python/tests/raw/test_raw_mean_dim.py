@@ -10,26 +10,26 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f32 = tle.f32
+f32 = sr.f32
 
 
-@tle.raw_kernel
-def mean_dim1_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), M: tle.index, N: tle.index, row: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def mean_dim1_kernel(X: sr.mem(f32), out: sr.mem(f32, out=True), M: sr.index, N: sr.index, row: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
     base = row * N
-    acc = tle.vzero(f32)
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.vload(X, base + i, dtype=f32)
+    acc = sr.vzero(f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.vload(X, base + i, dtype=f32)
         acc = acc + vx
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.vload(X, base + i, dtype=f32)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.vload(X, base + i, dtype=f32)
         acc = acc + tx
-    tle.sstore(out, row, tle.vreduce_sum(acc) / N)
+    sr.sstore(out, row, sr.vreduce_sum(acc) / N)
 
 
 @triton.jit

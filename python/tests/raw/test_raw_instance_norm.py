@@ -18,7 +18,7 @@ import pytest
 from importlib.machinery import SourceFileLoader
 import os
 
-import triton.language.extra.smt_rvisa as tle  # noqa: F401
+import triton.language.extra.smt_rvisa as sr  # noqa: F401
 
 _gn = SourceFileLoader("gn_mod", os.path.join(os.path.dirname(__file__), "test_raw_group_norm.py")).load_module()
 

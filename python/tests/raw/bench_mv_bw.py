@@ -7,22 +7,22 @@ import triton
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f32 = tle.f32
+f32 = sr.f32
 
 
 # ── single-thread STREAM COPY via smt_rvisa ──────────────────────────────────
-@tle.raw_kernel
-def copy_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def copy_kernel(X: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nf = (N // nvl) * nvl
-    for i in tle.range(0, Nf, nvl):
-        tle.vstore(out, i, tle.vload(X, i, dtype=f32))
-    for i in tle.range(Nf, N, nvl):
-        tle.vconfig(N - i, 1)
-        tle.vstore(out, i, tle.vload(X, i, dtype=f32))
+    for i in sr.range(0, Nf, nvl):
+        sr.vstore(out, i, sr.vload(X, i, dtype=f32))
+    for i in sr.range(Nf, N, nvl):
+        sr.vconfig(N - i, 1)
+        sr.vstore(out, i, sr.vload(X, i, dtype=f32))
 
 
 @triton.jit

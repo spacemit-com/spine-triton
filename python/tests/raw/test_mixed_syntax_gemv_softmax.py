@@ -24,72 +24,72 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f16 = tle.f16
-f32 = tle.f32
+f16 = sr.f16
+f32 = sr.f32
 
 
 # ── stage 1: GEMV (smt_rvisa) — Mat @ vec → scores ─────────────────────────
-# Mat/vec f16, acc f32: tle.vmacc IS the widening vfwmacc (f16×f16→f32), the
+# Mat/vec f16, acc f32: sr.vmacc IS the widening vfwmacc (f16×f16→f32), the
 # K3-proven idiom. f32 vmacc builds a 2048-bit vector<64xf32> fma that mis-tiles
 # for K>VL. `scores` stays f32 — softmax stage 2 reads it as f32.
-@tle.raw_kernel
-def gemv_stage(Mat: tle.mem(f16), vec: tle.mem(f16), scores: tle.mem(f32, out=True), K: tle.index, N: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def gemv_stage(Mat: sr.mem(f16), vec: sr.mem(f16), scores: sr.mem(f32, out=True), K: sr.index, N: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Kfloor = (K // nvl) * nvl
-    for n in tle.range(0, N, 1):
-        acc = tle.vzero(f32)
-        for ki in tle.range(0, Kfloor, nvl):
-            vm = tle.vload(Mat, n * K + ki)  # f16 (vload default)
-            vv = tle.vload(vec, ki)
-            acc = tle.vmacc(acc, vm, vv)  # widening f16×f16→f32
-        for ki in tle.range(Kfloor, K, nvl):
-            nvl = tle.vconfig(K - ki, 1)
-            tm = tle.vload(Mat, n * K + ki)
-            tv = tle.vload(vec, ki)
-            acc = tle.vmacc(acc, tm, tv)
-        tle.sstore(scores, n, tle.vreduce_sum(acc))
+    for n in sr.range(0, N, 1):
+        acc = sr.vzero(f32)
+        for ki in sr.range(0, Kfloor, nvl):
+            vm = sr.vload(Mat, n * K + ki)  # f16 (vload default)
+            vv = sr.vload(vec, ki)
+            acc = sr.vmacc(acc, vm, vv)  # widening f16×f16→f32
+        for ki in sr.range(Kfloor, K, nvl):
+            nvl = sr.vconfig(K - ki, 1)
+            tm = sr.vload(Mat, n * K + ki)
+            tv = sr.vload(vec, ki)
+            acc = sr.vmacc(acc, tm, tv)
+        sr.sstore(scores, n, sr.vreduce_sum(acc))
 
 
 # ── stage 2: Softmax (smt_rvisa) — scores → out, stable via max-subtract ───
-@tle.raw_kernel
-def softmax_stage(scores: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def softmax_stage(scores: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
 
     # pass 1: max
-    acc_max = tle.vload(scores, 0, dtype=f32)
-    for i in tle.range(0, Nfloor, nvl):
-        va = tle.vload(scores, i, dtype=f32)
-        acc_max = tle.vmax(acc_max, va)
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        ta = tle.vload(scores, i, dtype=f32)
-        acc_max = tle.vmax(acc_max, ta)
-    xmax = tle.vreduce_max(acc_max)
+    acc_max = sr.vload(scores, 0, dtype=f32)
+    for i in sr.range(0, Nfloor, nvl):
+        va = sr.vload(scores, i, dtype=f32)
+        acc_max = sr.vmax(acc_max, va)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        ta = sr.vload(scores, i, dtype=f32)
+        acc_max = sr.vmax(acc_max, ta)
+    xmax = sr.vreduce_max(acc_max)
 
     # pass 2: sum(exp(x - max))
-    acc_sum = tle.vzero(f32)
-    for i in tle.range(0, Nfloor, nvl):
-        vb = tle.vload(scores, i, dtype=f32)
-        acc_sum = acc_sum + tle.vexp(vb - xmax)
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tb = tle.vload(scores, i, dtype=f32, fill=-1e38)  # padded lanes → exp≈0
-        acc_sum = acc_sum + tle.vexp(tb - xmax)
-    denom = tle.vreduce_sum(acc_sum)
+    acc_sum = sr.vzero(f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vb = sr.vload(scores, i, dtype=f32)
+        acc_sum = acc_sum + sr.vexp(vb - xmax)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tb = sr.vload(scores, i, dtype=f32, fill=-1e38)  # padded lanes → exp≈0
+        acc_sum = acc_sum + sr.vexp(tb - xmax)
+    denom = sr.vreduce_sum(acc_sum)
 
     # pass 3: exp(x - max) / denom
     inv_denom = 1.0 / denom
-    for i in tle.range(0, Nfloor, nvl):
-        vc = tle.vload(scores, i, dtype=f32)
-        tle.vstore(out, i, tle.vexp(vc - xmax) * inv_denom)
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tc = tle.vload(scores, i, dtype=f32)
-        tle.vstore(out, i, tle.vexp(tc - xmax) * inv_denom)
+    for i in sr.range(0, Nfloor, nvl):
+        vc = sr.vload(scores, i, dtype=f32)
+        sr.vstore(out, i, sr.vexp(vc - xmax) * inv_denom)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tc = sr.vload(scores, i, dtype=f32)
+        sr.vstore(out, i, sr.vexp(tc - xmax) * inv_denom)
 
 
 # ── Triton host: compose stage1 → stage2 through `scores` buffer ───────────

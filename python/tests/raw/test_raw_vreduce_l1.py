@@ -9,28 +9,28 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f32 = tle.f32
+f32 = sr.f32
 
 
 # ---------------------------------------------------------------------------
 # amax_1d
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def amax_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def amax_1d_kernel(X: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
-    acc = tle.vload(X, 0, dtype=f32)  # seed with first tile
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.vload(X, i, dtype=f32)
-        acc = tle.vmax(acc, vx)  # element-wise max across tiles
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.vload(X, i, dtype=f32)
-        acc = tle.vmax(acc, tx)
-    tle.sstore(out, 0, tle.vreduce_max(acc))  # L1: horizontal max
+    acc = sr.vload(X, 0, dtype=f32)  # seed with first tile
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.vload(X, i, dtype=f32)
+        acc = sr.vmax(acc, vx)  # element-wise max across tiles
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.vload(X, i, dtype=f32)
+        acc = sr.vmax(acc, tx)
+    sr.sstore(out, 0, sr.vreduce_max(acc))  # L1: horizontal max
 
 
 @triton.jit
@@ -41,19 +41,19 @@ def amax_1d_host(X, out, N):
 # ---------------------------------------------------------------------------
 # amin_1d
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def amin_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def amin_1d_kernel(X: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
-    acc = tle.vload(X, 0, dtype=f32)
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.vload(X, i, dtype=f32)
-        acc = tle.vmin(acc, vx)
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.vload(X, i, dtype=f32)
-        acc = tle.vmin(acc, tx)
-    tle.sstore(out, 0, tle.vreduce_min(acc))  # L1: horizontal min
+    acc = sr.vload(X, 0, dtype=f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.vload(X, i, dtype=f32)
+        acc = sr.vmin(acc, vx)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.vload(X, i, dtype=f32)
+        acc = sr.vmin(acc, tx)
+    sr.sstore(out, 0, sr.vreduce_min(acc))  # L1: horizontal min
 
 
 @triton.jit
@@ -64,20 +64,20 @@ def amin_1d_host(X, out, N):
 # ---------------------------------------------------------------------------
 # prod_1d (scalar product of all elements)
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def prod_1d_kernel(X: tle.mem(f32), out: tle.mem(f32, out=True), N: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def prod_1d_kernel(X: sr.mem(f32), out: sr.mem(f32, out=True), N: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
     # Initialise accumulator to 1.0 (identity for mul)
-    acc = tle.vzero(f32) + 1.0  # vzero + 1.0 broadcast
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.vload(X, i, dtype=f32)
+    acc = sr.vzero(f32) + 1.0  # vzero + 1.0 broadcast
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.vload(X, i, dtype=f32)
         acc = acc * vx
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.vload(X, i, dtype=f32)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.vload(X, i, dtype=f32)
         acc = acc * tx
-    tle.sstore(out, 0, tle.vreduce_mul(acc))  # L1: horizontal product
+    sr.sstore(out, 0, sr.vreduce_mul(acc))  # L1: horizontal product
 
 
 @triton.jit

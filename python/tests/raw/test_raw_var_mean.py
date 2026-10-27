@@ -14,40 +14,39 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f32 = tle.f32
+f32 = sr.f32
 EPS = 1e-5
 
 
-@tle.raw_kernel
-def var_mean_1d_kernel(
-        X: tle.mem(f32), var_out: tle.mem(f32, out=True), mean_out: tle.mem(f32, out=True), N: tle.index):
+@sr.raw_kernel
+def var_mean_1d_kernel(X: sr.mem(f32), var_out: sr.mem(f32, out=True), mean_out: sr.mem(f32, out=True), N: sr.index):
     """Single-pass: accumulate sum(x) and sum(x²) simultaneously."""
-    nvl = tle.vconfig(-1, 1)
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
 
-    acc_sum = tle.vzero(f32)  # accumulates x  → for mean
-    acc_sq = tle.vzero(f32)  # accumulates x² → for E[x²]
+    acc_sum = sr.vzero(f32)  # accumulates x  → for mean
+    acc_sq = sr.vzero(f32)  # accumulates x² → for E[x²]
 
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.vload(X, i, dtype=f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.vload(X, i, dtype=f32)
         acc_sum = acc_sum + vx
         acc_sq = acc_sq + vx * vx
 
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.vload(X, i, dtype=f32)  # fill=0 → 0²=0 ✓
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.vload(X, i, dtype=f32)  # fill=0 → 0²=0 ✓
         acc_sum = acc_sum + tx
         acc_sq = acc_sq + tx * tx
 
-    mean = tle.vreduce_sum(acc_sum) / N  # f32 scalar
-    ex2 = tle.vreduce_sum(acc_sq) / N  # E[x²]
+    mean = sr.vreduce_sum(acc_sum) / N  # f32 scalar
+    ex2 = sr.vreduce_sum(acc_sq) / N  # E[x²]
     var = ex2 - mean * mean  # Var(x) = E[x²] - mean²
 
-    tle.sstore(var_out, 0, var)
-    tle.sstore(mean_out, 0, mean)
+    sr.sstore(var_out, 0, var)
+    sr.sstore(mean_out, 0, mean)
 
 
 @triton.jit

@@ -10,44 +10,44 @@ from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 import pytest
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
-f32 = tle.f32
+f32 = sr.f32
 INF_IDX = 1.0e30
 
 
-@tle.raw_kernel
-def max_dim1_kernel(X: tle.mem(f32), vals: tle.mem(f32, out=True), idxs: tle.mem(f32, out=True), M: tle.index,
-                    N: tle.index, row: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def max_dim1_kernel(X: sr.mem(f32), vals: sr.mem(f32, out=True), idxs: sr.mem(f32, out=True), M: sr.index, N: sr.index,
+                    row: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
     base = row * N
-    lane = tle.viota()
+    lane = sr.viota()
 
-    best_val = tle.vload(X, base, dtype=f32)
+    best_val = sr.vload(X, base, dtype=f32)
     best_idx = lane
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.vload(X, base + i, dtype=f32)
-        idx = lane + tle.cast(i, f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.vload(X, base + i, dtype=f32)
+        idx = lane + sr.cast(i, f32)
         gt = vx > best_val
-        best_val = tle.select(gt, vx, best_val)
-        best_idx = tle.select(gt, idx, best_idx)
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.vload(X, base + i, dtype=f32, fill=-1e38)
-        tidx = lane + tle.cast(i, f32)
+        best_val = sr.select(gt, vx, best_val)
+        best_idx = sr.select(gt, idx, best_idx)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.vload(X, base + i, dtype=f32, fill=-1e38)
+        tidx = lane + sr.cast(i, f32)
         gt2 = tx > best_val
-        best_val = tle.select(gt2, tx, best_val)
-        best_idx = tle.select(gt2, tidx, best_idx)
+        best_val = sr.select(gt2, tx, best_val)
+        best_idx = sr.select(gt2, tidx, best_idx)
 
-    gmax = tle.vreduce_max(best_val)
+    gmax = sr.vreduce_max(best_val)
     is_max = best_val >= gmax
-    big = tle.vzero(f32) + INF_IDX
-    masked = tle.select(is_max, best_idx, big)
-    argmax = tle.vreduce_min(masked)
-    tle.sstore(vals, row, gmax)
-    tle.sstore(idxs, row, argmax)
+    big = sr.vzero(f32) + INF_IDX
+    masked = sr.select(is_max, best_idx, big)
+    argmax = sr.vreduce_min(masked)
+    sr.sstore(vals, row, gmax)
+    sr.sstore(idxs, row, argmax)
 
 
 @triton.jit
@@ -73,37 +73,37 @@ def test_max_dim1(M, N):
 # ---------------------------------------------------------------------------
 # min_dim
 # ---------------------------------------------------------------------------
-@tle.raw_kernel
-def min_dim1_kernel(X: tle.mem(f32), vals: tle.mem(f32, out=True), idxs: tle.mem(f32, out=True), M: tle.index,
-                    N: tle.index, row: tle.index):
-    nvl = tle.vconfig(-1, 1)
+@sr.raw_kernel
+def min_dim1_kernel(X: sr.mem(f32), vals: sr.mem(f32, out=True), idxs: sr.mem(f32, out=True), M: sr.index, N: sr.index,
+                    row: sr.index):
+    nvl = sr.vconfig(-1, 1)
     Nfloor = (N // nvl) * nvl
     base = row * N
-    lane = tle.viota()
+    lane = sr.viota()
 
-    best_val = tle.vload(X, base, dtype=f32)
+    best_val = sr.vload(X, base, dtype=f32)
     best_idx = lane
-    for i in tle.range(0, Nfloor, nvl):
-        vx = tle.vload(X, base + i, dtype=f32)
-        idx = lane + tle.cast(i, f32)
+    for i in sr.range(0, Nfloor, nvl):
+        vx = sr.vload(X, base + i, dtype=f32)
+        idx = lane + sr.cast(i, f32)
         lt = vx < best_val
-        best_val = tle.select(lt, vx, best_val)
-        best_idx = tle.select(lt, idx, best_idx)
-    for i in tle.range(Nfloor, N, nvl):
-        tle.vconfig(N - i, 1)
-        tx = tle.vload(X, base + i, dtype=f32, fill=1e38)
-        tidx = lane + tle.cast(i, f32)
+        best_val = sr.select(lt, vx, best_val)
+        best_idx = sr.select(lt, idx, best_idx)
+    for i in sr.range(Nfloor, N, nvl):
+        sr.vconfig(N - i, 1)
+        tx = sr.vload(X, base + i, dtype=f32, fill=1e38)
+        tidx = lane + sr.cast(i, f32)
         lt2 = tx < best_val
-        best_val = tle.select(lt2, tx, best_val)
-        best_idx = tle.select(lt2, tidx, best_idx)
+        best_val = sr.select(lt2, tx, best_val)
+        best_idx = sr.select(lt2, tidx, best_idx)
 
-    gmin = tle.vreduce_min(best_val)
+    gmin = sr.vreduce_min(best_val)
     is_min = best_val <= gmin
-    big = tle.vzero(f32) + INF_IDX
-    masked = tle.select(is_min, best_idx, big)
-    argmin = tle.vreduce_min(masked)
-    tle.sstore(vals, row, gmin)
-    tle.sstore(idxs, row, argmin)
+    big = sr.vzero(f32) + INF_IDX
+    masked = sr.select(is_min, best_idx, big)
+    argmin = sr.vreduce_min(masked)
+    sr.sstore(vals, row, gmin)
+    sr.sstore(idxs, row, argmin)
 
 
 @triton.jit

@@ -8,38 +8,38 @@ import triton
 from triton.backends.spine_triton.driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
-import triton.language.extra.smt_rvisa as tle
+import triton.language.extra.smt_rvisa as sr
 from triton.language.extra.smt_rvisa import call as _sr_call
 
 f32 = "f32"
 
 
-@tle.raw_kernel
-def llvm_direct_mv_k3(A: tle.mem(f32), B: tle.mem(f32), C: tle.mem(f32, out=True), K: tle.index):
+@sr.raw_kernel
+def llvm_direct_mv_k3(A: sr.mem(f32), B: sr.mem(f32), C: sr.mem(f32, out=True), K: sr.index):
     """LLVM-direct MV with K-loop: C = sum_k A[k] * B[k] (element-wise, then reduce).
 
     Simplified: treat A/B as 1D vectors of length K, accumulate into vector C.
     Real MV would tile across rows, but this validates loop+accumulator.
     """
-    vl = tle.llvm_const(8, "i64")
-    acc = tle.llvm_const("0.000000e+00", "vector<[8]xf32>")
-    zero = tle.llvm_const(0, "i64")
+    vl = sr.llvm_const(8, "i64")
+    acc = sr.llvm_const("0.000000e+00", "vector<[8]xf32>")
+    zero = sr.llvm_const(0, "i64")
 
     # Loop bound comes from the scalar K param (driver ABI passes rank-0 memref
     # descriptors with no shape, so llvm_size is unavailable in llvm-direct).
-    for k in tle.range(zero, K, vl):
-        pa = tle.llvm_poison("vector<[8]xf32>")
-        pb = tle.llvm_poison("vector<[8]xf32>")
-        ga = tle.llvm_gep(tle.llvm_base_ptr(A), k, "f32")
-        gb = tle.llvm_gep(tle.llvm_base_ptr(B), k, "f32")
-        va = tle.call_intrinsic("llvm.riscv.vle", [pa, ga, vl], result_type="vector<[8]xf32>")
-        vb = tle.call_intrinsic("llvm.riscv.vle", [pb, gb, vl], result_type="vector<[8]xf32>")
-        prod = tle.call_intrinsic("llvm.fmul", [va, vb], result_type="vector<[8]xf32>")
-        acc = tle.call_intrinsic("llvm.fadd", [acc, prod], result_type="vector<[8]xf32>")
+    for k in sr.range(zero, K, vl):
+        pa = sr.llvm_poison("vector<[8]xf32>")
+        pb = sr.llvm_poison("vector<[8]xf32>")
+        ga = sr.llvm_gep(sr.llvm_base_ptr(A), k, "f32")
+        gb = sr.llvm_gep(sr.llvm_base_ptr(B), k, "f32")
+        va = sr.call_intrinsic("llvm.riscv.vle", [pa, ga, vl], result_type="vector<[8]xf32>")
+        vb = sr.call_intrinsic("llvm.riscv.vle", [pb, gb, vl], result_type="vector<[8]xf32>")
+        prod = sr.call_intrinsic("llvm.fmul", [va, vb], result_type="vector<[8]xf32>")
+        acc = sr.call_intrinsic("llvm.fadd", [acc, prod], result_type="vector<[8]xf32>")
 
     # Store accumulated vector (simplified: no reduction to scalar)
-    gc = tle.llvm_base_ptr(C)
-    tle.call_intrinsic("llvm.riscv.vse", [acc, gc, vl], result_type="()")
+    gc = sr.llvm_base_ptr(C)
+    sr.call_intrinsic("llvm.riscv.vse", [acc, gc, vl], result_type="()")
 
 
 @triton.jit
@@ -47,43 +47,43 @@ def llvm_direct_mv_k3_host(A, B, C, K):
     _sr_call(llvm_direct_mv_k3, outputs=[], inputs=[A, B, C, K])
 
 
-@tle.raw_kernel
-def llvm_direct_gemv_k3(A: tle.mem(f32), B: tle.mem(f32), C: tle.mem(f32, out=True), M: tle.index, K: tle.index):
+@sr.raw_kernel
+def llvm_direct_gemv_k3(A: sr.mem(f32), B: sr.mem(f32), C: sr.mem(f32, out=True), M: sr.index, K: sr.index):
     """LLVM-direct GEMV with multi-program dispatch: each program processes one row.
 
     Grid: (M,)  — one program per row
     Compute: C[row] = sum_k A[row*K + k] * B[k]  (true matrix-vector multiply)
     """
-    vl = tle.llvm_const(8, "i64")
-    eight = tle.llvm_const(8, "i64")
-    zero = tle.llvm_const(0, "i64")
-    row = tle.program_id(0)  # this program's row — the ONLY per-program input
+    vl = sr.llvm_const(8, "i64")
+    eight = sr.llvm_const(8, "i64")
+    zero = sr.llvm_const(0, "i64")
+    row = sr.program_id(0)  # this program's row — the ONLY per-program input
 
     # Accumulator for this row
-    acc = tle.llvm_const("0.000000e+00", "vector<[8]xf32>")
+    acc = sr.llvm_const("0.000000e+00", "vector<[8]xf32>")
 
     # Loop over K dimension with vector stride.
     # SPMD idiom: the per-program offset (row*K + k) is computed INSIDE the kernel
     # with natural Python arithmetic — the emitter lowers `*`/`+` to llvm.mul/llvm.add.
     # No call_intrinsic boilerplate, and crucially no `A + offset` in the host body
     # (which cannot cross the _sr_call boundary — see AGENT.md §8.1).
-    for k in tle.range(zero, K, vl):
-        pa = tle.llvm_poison("vector<[8]xf32>")
-        pb = tle.llvm_poison("vector<[8]xf32>")
+    for k in sr.range(zero, K, vl):
+        pa = sr.llvm_poison("vector<[8]xf32>")
+        pb = sr.llvm_poison("vector<[8]xf32>")
 
         a_offset = row * K + k  # A[row*K + k] — natural arithmetic
-        ga = tle.llvm_gep(tle.llvm_base_ptr(A), a_offset, "f32")
-        gb = tle.llvm_gep(tle.llvm_base_ptr(B), k, "f32")
+        ga = sr.llvm_gep(sr.llvm_base_ptr(A), a_offset, "f32")
+        gb = sr.llvm_gep(sr.llvm_base_ptr(B), k, "f32")
 
-        va = tle.call_intrinsic("llvm.riscv.vle", [pa, ga, vl], result_type="vector<[8]xf32>")
-        vb = tle.call_intrinsic("llvm.riscv.vle", [pb, gb, vl], result_type="vector<[8]xf32>")
-        prod = tle.call_intrinsic("llvm.fmul", [va, vb], result_type="vector<[8]xf32>")
-        acc = tle.call_intrinsic("llvm.fadd", [acc, prod], result_type="vector<[8]xf32>")
+        va = sr.call_intrinsic("llvm.riscv.vle", [pa, ga, vl], result_type="vector<[8]xf32>")
+        vb = sr.call_intrinsic("llvm.riscv.vle", [pb, gb, vl], result_type="vector<[8]xf32>")
+        prod = sr.call_intrinsic("llvm.fmul", [va, vb], result_type="vector<[8]xf32>")
+        acc = sr.call_intrinsic("llvm.fadd", [acc, prod], result_type="vector<[8]xf32>")
 
     # Store accumulated vector to C[row*8 : row*8+8]
     c_offset = row * eight  # natural arithmetic
-    gc = tle.llvm_gep(tle.llvm_base_ptr(C), c_offset, "f32")
-    tle.call_intrinsic("llvm.riscv.vse", [acc, gc, vl], result_type="()")
+    gc = sr.llvm_gep(sr.llvm_base_ptr(C), c_offset, "f32")
+    sr.call_intrinsic("llvm.riscv.vse", [acc, gc, vl], result_type="()")
 
 
 @triton.jit
