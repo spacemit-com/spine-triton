@@ -11,11 +11,20 @@ Constraints (verified on k3, see .claude/rules-archive/09-vmt4d-mv.md):
   The strided view needs spine-mlir with the MV strided-RHS pack fix
   (MR 68, 6f472365); it measured ~2x faster than the pre-transposed layout
   on large shapes and skips the one-time W.t().contiguous() at weight load.
+  On SMALL-N shapes the picture flips: the pre-transposed layout wins (the
+  strided gather dominates when the tile is narrow, e.g. 2.8x @ K=16384
+  N=256 with a [128, 32] tile -- mv_bench bench7, 2026-10-27).
 - f16 inputs with an f32 accumulator (acc_dtype=float32) are supported via
   engine widening; this needs spine-mlir with the VMT4D init-pad dtype fix
   (MR 68). f32 accumulation gives ~1e-6 rel error (vs ~1e-3 for f16 acc)
   and measured no slower than f16 acc.
 - K must be a multiple of BK and N a multiple of BN (no tail masking).
+- The tile matters a lot: a [128, 32] f16 tile is 8KB and stays in
+  registers (no stack round-trip for the pack products), while [128, 256]
+  = 64KB always spills and is 1.9-5.9x slower at the same shape. Small
+  tiles favor small-N large-K shapes; large tiles favor large N (mv_bench
+  bench7 best-vs-best: [128, 32] wins N <= 512, [128, 256] territory is
+  where the svector vmacc arm wins instead).
 """
 import torch
 import triton
@@ -56,12 +65,14 @@ def mv_vmt4d_kernel(
     tl.store(y_ptr + r[:, None] * N + ns[None, :], acc)
 
 
-def triton_mv(x, w, BK=128, BN=256, acc_dtype=torch.float32, strided=True):
+def triton_mv(x, w, BK=128, BN=32, acc_dtype=torch.float32, strided=False):
     # x: [K], w: [N, K] row-major weight.
-    # strided=True (recommended): feed w directly as a zero-copy [K, N] view
-    # -- faster on large shapes and skips the transpose at weight load.
-    # strided=False: use the pre-transposed w.t() layout (deployment hoists
-    # the one-time transpose to weight load).
+    # Default tile [128, 32] + pre-transposed W: the bench-best config for
+    # small-N large-K shapes (mv_bench bench7, 2026-10-27: the [128, 32]
+    # f16 tile is 8KB and stays in registers; measured 1.11x over the
+    # svector vmacc arm @ K=32768 N=512 and par @ K=16384 N=256). For
+    # large-N shapes prefer a wider tile and the strided view instead (see
+    # module docstring).
     K = x.numel()
     N, K_w = w.shape
     assert K == K_w, "incompatible dimensions"
@@ -84,6 +95,7 @@ def _run_correctness(K: int, N: int, dtype=torch.float16, device: str = "cpu"):
 
     # f16-acc output is f16-quantized: compare with a relative gate (ULP of
     # |ref| ~ 60 is already 0.0625). f32-acc output is ~1e-6 rel.
+    # Both layouts are exercised at the bench-best tile [128, 32].
     cases = [
         ("pre f16-acc", torch.float16, False, 2e-2),
         ("pre f32-acc", torch.float32, False, 1e-3),
@@ -111,11 +123,12 @@ def benchmark_gflops(
 
     x = torch.randn(K, dtype=dtype, device=device)
     w = torch.randn(N, K, dtype=dtype, device=device)
+    wt = w.t().contiguous()  # pre-transposed: the winning layout at small N
     y = torch.empty((1, N), dtype=torch.float32)
 
     def launch():
-        mv_vmt4d_kernel[(N // 256, )](x.view(1, K), w, y, K=K, N=N, BK=128, BN=256, ACC_DTYPE=tl.float32,
-                                      STRIDED_B=True)
+        mv_vmt4d_kernel[(N // 32, )](x.view(1, K), wt, y, K=K, N=N, BK=128, BN=32, ACC_DTYPE=tl.float32,
+                                     STRIDED_B=False)
 
     for _ in range(warmup):
         launch()
@@ -128,7 +141,7 @@ def benchmark_gflops(
     ops = 2.0 * float(K) * float(N)
     gflops = ops / avg_s / 1e9
 
-    print(f"[PERF] K={K}, N={N}, iters={iters}, "
+    print(f"[PERF] K={K}, N={N}, tile=[128,32] pre-T, iters={iters}, "
           f"avg={avg_s * 1e3:.3f} ms, GFLOPS={gflops:.3f}")
 
 
@@ -137,8 +150,11 @@ def benchmark_gflops(
 if __name__ == "__main__":
     import os
 
-    for (K, N) in [(2048, 2048), (4096, 4096)]:
+    # correctness at both a small-N (vmt4d win region) and a mid shape
+    for (K, N) in [(16384, 256), (2048, 2048)]:
         _run_correctness(K, N)
 
     if os.getenv("RUN_PERF", "0") == "1":
-        benchmark_gflops(K=4096, N=4096)
+        # bench7 shapes: par and win region for the engine path
+        benchmark_gflops(K=16384, N=256)
+        benchmark_gflops(K=32768, N=512)
